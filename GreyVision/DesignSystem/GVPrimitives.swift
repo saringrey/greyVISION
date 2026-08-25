@@ -303,11 +303,14 @@ struct GVGridField: View {
 /// chamfered plate reads as a panel on a machine. The corner cut is a fixed
 /// dimension rather than a ratio so buttons of different widths stay visually
 /// related, and the footprint is identical to the capsule it replaced.
-struct GVChamferedPlate: Shape {
+struct GVChamferedPlate: Shape, InsettableShape {
     var cut: CGFloat = 7
     /// Cuts only the leading-top and trailing-bottom corners. The deliberate
     /// asymmetry is what stops a row of these looking machine-stamped.
     var diagonal = true
+    /// Inset for `strokeBorder` and other InsettableShape consumers. Unused by
+    /// `path(in:)` below — the inset path is the same outline pulled inward.
+    var insetAmount: CGFloat = 0
 
     func path(in rect: CGRect) -> Path {
         let c = min(cut, min(rect.width, rect.height) / 2)
@@ -331,6 +334,19 @@ struct GVChamferedPlate: Shape {
         }
         path.closeSubpath()
         return path
+    }
+
+    func inset(by amount: CGFloat) -> some InsettableShape {
+        var plate = self
+        plate.insetAmount += amount
+        return plate.chamferedInsetPath
+    }
+
+    /// The inset variant of the chamfered outline.
+    private var chamferedInsetPath: GVChamferedPlate {
+        var plate = self
+        plate.cut = max(0, cut - insetAmount)
+        return plate
     }
 }
 

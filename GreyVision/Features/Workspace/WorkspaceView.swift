@@ -721,40 +721,43 @@ private extension WorkspaceView {
     /// Top-shell control: 40pt chamfered charcoal plate, one glowing state.
     func shellChip(symbol: String, id: String, active: Bool, action: @escaping () -> Void) -> some View {
         let glyph: Color = active ? Color.white : GVTheme.bone.opacity(0.68)
-        let stroke: Color = active ? Color.white.opacity(0.75) : Color.white.opacity(0.09)
+        let glyphShadow: Color = active ? Color.white.opacity(0.55) : Color.black.opacity(0.85)
+        let fill: Color = active ? Color.white.opacity(0.13) : Color(white: 0.105).opacity(0.92)
+        let strokeColor: Color = active ? Color.white.opacity(0.75) : Color.white.opacity(0.09)
+        let plateShadow: Color = active ? Color.white.opacity(0.25) : Color.black.opacity(0.45)
+
         return Button {
             action()
         } label: {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(glyph)
-                .shadow(color: active ? .white.opacity(0.55) : .black.opacity(0.85), radius: active ? 4 : 2)
+                .shadow(color: glyphShadow, radius: active ? 4 : 2)
                 .frame(width: 40, height: 40)
-                .background {
+                .background(
                     GVChamferedPlate(cut: 6)
-                        .fill(active ? Color.white.opacity(0.13) : Color(white: 0.105).opacity(0.92))
-                        .overlay(
-                            GVChamferedPlate(cut: 6)
-                                .strokeBorder(stroke, lineWidth: active ? 1.2 : 1)
-                        )
-                        .shadow(color: active ? .white.opacity(0.25) : .black.opacity(0.45), radius: active ? 7 : 3, y: 2)
-                }
+                        .fill(fill)
+                )
+                .overlay(
+                    GVChamferedPlate(cut: 6)
+                        .strokeBorder(strokeColor, lineWidth: active ? 1.2 : 1)
+                )
+                .shadow(color: plateShadow, radius: active ? 7 : 3, y: 2)
                 .contentShape(Rectangle())
         }
         .buttonStyle(GVPressStyle())
         .animation(GVMotion.snap, value: active)
         .accessibilityIdentifier("workspace.\(id)")
-        .accessibilityAddTraits(active ? [.isSelected] : [])
     }
 
-    func toggleTopDeck(_ deck: WorkspaceTopDeck) {
+    private func toggleTopDeck(_ deck: WorkspaceTopDeck) {
         // A deck and a field control are both popouts under the same row.
         hud.clearField()
         activeTopDeck = activeTopDeck == deck ? nil : deck
     }
 
     @ViewBuilder
-    func topControlDeck(_ deck: WorkspaceTopDeck, geometry: GeometryProxy) -> some View {
+    private func topControlDeck(_ deck: WorkspaceTopDeck, geometry: GeometryProxy) -> some View {
         switch deck {
         case .camera:
             cameraControlDeck(geometry: geometry)
@@ -999,6 +1002,72 @@ private extension WorkspaceView {
         .accessibilityLabel(label)
     }
 
+    /// Hold the image to summon the radial; keep dragging to drive it.
+    ///
+    /// One `DragGesture` rather than a `LongPressGesture.sequenced(before:)`:
+    /// the sequenced form restarts the drag translation at zero on hand-off,
+    /// so the finger's travel during the press was lost and the first
+    /// adjustment jumped. Here the press is a timer armed on touch-down and
+    /// cancelled if the finger travels first, which also keeps a scrub or a
+    /// two-finger fracture from being read as a hold.
+    private var radialGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard appModel.sourceMode != .objects else { return }
+
+                if radialOrigin == nil {
+                    if radialArmTask == nil {
+                        let start = value.startLocation
+                        radialDriver.prepare()
+                        radialArmTask = Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(340))
+                            guard !Task.isCancelled else { return }
+                            radialOrigin = start
+                            radialCurrent = start
+                            radialDriver.reset()
+                            withAnimation(GVMotion.tear) { radialProgress = 1 }
+                            UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.6)
+                        }
+                    }
+                    // Travelling before the timer fires means this was a drag,
+                    // not a hold.
+                    if hypot(value.translation.width, value.translation.height) > 12 {
+                        radialArmTask?.cancel()
+                        radialArmTask = nil
+                    }
+                    return
+                }
+
+                radialCurrent = value.location
+                let spoke = GVRadialInstrument.spoke(
+                    from: radialOrigin ?? value.startLocation,
+                    to: value.location,
+                    deadZone: 34
+                )
+                radialDriver.spokeChanged(to: spoke, runtime: cameraRuntime)
+                if let spoke, spoke.isContinuous, let origin = radialOrigin {
+                    let travel = spoke == .zoom
+                        ? origin.y - value.location.y
+                        : value.location.x - origin.x
+                    radialDriver.drive(spoke, travel: travel - 34, runtime: cameraRuntime)
+                }
+            }
+            .onEnded { value in
+                radialArmTask?.cancel()
+                radialArmTask = nil
+                guard let origin = radialOrigin else { return }
+                let spoke = GVRadialInstrument.spoke(from: origin, to: value.location, deadZone: 34)
+                if let spoke, !spoke.isContinuous {
+                    radialDriver.commitLatch(spoke, runtime: cameraRuntime)
+                }
+                radialDriver.reset()
+                withAnimation(GVMotion.collapse) {
+                    radialProgress = 0
+                    radialOrigin = nil
+                }
+            }
+    }
+
     func dismissWorkspaceSelection() {
         activeTopDeck = nil
         hud.clearField()
@@ -1232,5 +1301,4 @@ private struct GVCoachCard: View {
         .transition(.scale(scale: 0.94).combined(with: .opacity))
         .onTapGesture { onClose() }
     }
-}
 }
