@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "ios-agent-skill": {
+      "source": "Nagarjuna2997/ios-agent-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "ebed91ecae685e85e4e071a9addb53caacd73b430b45bb82a717b87d43b81acd"
+    }
+  }
+}

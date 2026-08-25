@@ -1,0 +1,387 @@
+import XCTest
+
+extension XCUIElement {
+    /// Drives a `GVTerminalParameterRow` the way a finger does.
+    ///
+    /// The row is a custom scrub surface, not a `Slider`. It reports itself as
+    /// one to VoiceOver through `accessibilityRepresentation`, which is why it
+    /// resolves under `app.sliders`, but that substitution carries no scrubber
+    /// geometry — so `adjust(toNormalizedSliderPosition:)` has nothing to
+    /// synthesise an event against and fails. A horizontal drag exercises the
+    /// gesture the operator actually performs.
+    func scrub(by fraction: CGFloat) {
+        let start = coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = coordinate(withNormalizedOffset: CGVector(dx: 0.5 + fraction, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end)
+    }
+}
+
+@MainActor
+final class BootstrapUITests: XCTestCase {
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+    }
+
+    func testBootFormatDockWorkspaceStateMachine() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launch()
+
+        // Queried as any descendant, not staticTexts: the mark is now an
+        // accessibility container (`children: .ignore` with its own label),
+        // so it no longer surfaces as a static text element.
+        XCTAssertTrue(
+            app.descendants(matching: .any)["boot.screen"].waitForExistence(timeout: 15)
+        )
+
+        let codecButton = app.buttons["boot.codec"]
+        XCTAssertTrue(codecButton.waitForExistence(timeout: 3))
+        let resolutionButton = app.buttons["boot.resolution"]
+        XCTAssertTrue(resolutionButton.exists)
+        XCTAssertTrue(resolutionButton.label.contains("4K"))
+        codecButton.tap()
+        XCTAssertTrue(app.buttons["boot.codec.prores-422"].waitForExistence(timeout: 3))
+        app.buttons["boot.codec.prores-422"].tap()
+        XCTAssertTrue(app.scrollViews["boot.choices.codec"].waitForNonExistence(timeout: 3))
+
+        app.buttons["boot.fps"].tap()
+        let frameRateChoices = app.scrollViews["boot.choices.fps"]
+        XCTAssertTrue(frameRateChoices.waitForExistence(timeout: 3))
+        frameRateChoices.swipeLeft()
+        XCTAssertTrue(app.buttons["boot.fps.120-fps"].waitForExistence(timeout: 3))
+        app.buttons["boot.fps.120-fps"].tap()
+        XCTAssertTrue(frameRateChoices.waitForNonExistence(timeout: 3))
+
+        let launchMark = app.descendants(matching: .any)["boot.launch"]
+        XCTAssertTrue(launchMark.waitForExistence(timeout: 3))
+        launchMark.tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["camera.source"].exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["camera.metal.preview"]
+                .waitForExistence(timeout: 3)
+        )
+
+        let frameCategory = app.buttons["workspace.category.frame"]
+        XCTAssertTrue(frameCategory.waitForExistence(timeout: 3))
+        XCTAssertEqual(frameCategory.value as? String, "collapsed")
+        frameCategory.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.effects.frame"]
+                .waitForExistence(timeout: 3)
+        )
+        XCTAssertTrue(gridEffect.exists)
+        gridEffect.tap()
+        XCTAssertTrue(
+                .waitForExistence(timeout: 3)
+        )
+        XCTAssertTrue(densityRow.waitForExistence(timeout: 3))
+        let densityBefore = densityRow.value as? String
+        densityRow.scrub(by: 0.32)
+        XCTAssertNotEqual(densityRow.value as? String, densityBefore, "Scrubbing DENSITY must move its readout")
+
+        XCTAssertTrue(
+                .waitForExistence(timeout: 3)
+        )
+        XCTAssertEqual(gridEffect.value as? String, "inactive")
+
+        XCTAssertTrue(
+                .waitForExistence(timeout: 3)
+        )
+        frameCategory.tap()
+
+        let cameraButton = app.buttons["workspace.camera"]
+        XCTAssertTrue(cameraButton.waitForExistence(timeout: 3))
+        cameraButton.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.camera.deck"]
+                .waitForExistence(timeout: 3)
+        )
+        // The deck is scrub rows now, not +/- buttons. ZOOM and EXPOSURE are
+        // the two that map to live capture-device setters, so they are the two
+        // worth asserting; TORCH, WB and FOCUS are capability-gated.
+        XCTAssertTrue(app.sliders["workspace.camera.zoom"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.sliders["workspace.camera.exposure"].exists)
+        XCTAssertFalse(app.staticTexts["CAMERA CONTROL"].exists)
+    }
+
+    /// Search and recents are the two routes into 133 effects that do not
+    /// require remembering which of nineteen families an effect was filed
+    /// under, so both are worth a test.
+    func testSearchFindsAnEffectAndSelectingItPopulatesRecents() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 5))
+
+        let searchToggle = app.buttons["workspace.search"]
+        XCTAssertTrue(searchToggle.waitForExistence(timeout: 3))
+        XCTAssertEqual(searchToggle.value as? String, "collapsed")
+        searchToggle.tap()
+        XCTAssertEqual(searchToggle.value as? String, "expanded")
+
+        let field = app.textFields["workspace.search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText("HALATION")
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.effects.search"]
+                .waitForExistence(timeout: 3)
+        )
+        let match = app.buttons["workspace.action.halation"]
+        XCTAssertTrue(match.waitForExistence(timeout: 3), "Search must reach an effect by name")
+        match.tap()
+
+        // Selecting through search still opens the effect's parameter deck.
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.parameters.halation"]
+                .waitForExistence(timeout: 3)
+        )
+
+        // Close search; the effect just used must now be on the recents shelf.
+        searchToggle.tap()
+        let recents = app.buttons["workspace.category.recents"]
+        XCTAssertTrue(recents.waitForExistence(timeout: 3))
+        recents.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.effects.recents"]
+                .waitForExistence(timeout: 3)
+        )
+        XCTAssertTrue(
+            app.buttons["workspace.action.halation"].waitForExistence(timeout: 3),
+            "A selected effect must land on the recents shelf"
+        )
+    }
+
+    func testWorkspaceAdaptsToLandscapeAndExpandsCaptureSettings() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace"]
+        app.launch()
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 5))
+
+        let settingsButton = app.buttons["workspace.settings"]
+        let cameraButton = app.buttons["workspace.camera"]
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 3))
+        XCTAssertTrue(cameraButton.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["workspace.camera.deck"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["workspace.settings.deck"].exists)
+        XCTAssertFalse(app.buttons["workspace.record"].exists)
+        XCTAssertFalse(app.buttons["workspace.screenshot"].exists)
+        XCTAssertFalse(app.buttons["workspace.clear-effects"].exists)
+        XCTAssertFalse(app.buttons["workspace.menu"].exists)
+        XCTAssertFalse(app.buttons["workspace.presets"].exists)
+        XCTAssertFalse(app.buttons["workspace.social"].exists)
+        XCTAssertFalse(app.buttons["workspace.exit"].exists)
+
+        cameraButton.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.camera.deck"]
+                .waitForExistence(timeout: 3)
+        )
+
+        settingsButton.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.camera.deck"]
+                .waitForNonExistence(timeout: 3)
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.settings.deck"]
+                .waitForExistence(timeout: 3)
+        )
+        XCTAssertTrue(app.buttons["workspace.record"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["workspace.screenshot"].exists)
+        XCTAssertTrue(app.buttons["workspace.clear-effects"].exists)
+
+        // Record drives the writer now rather than printing a Gate 5 notice,
+        // and the simulator has no capture hardware to record from — proving
+        // the recording path is a device test, not this one. Clear Effects is
+        // the deck action that is deterministic everywhere, so it is the one
+        // used to prove the deck's buttons are live.
+        app.buttons["workspace.clear-effects"].tap()
+        XCTAssertTrue(app.staticTexts["workspace.top.notice"].waitForExistence(timeout: 3))
+
+        settingsButton.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.settings.deck"]
+                .waitForNonExistence(timeout: 3)
+        )
+        XCTAssertFalse(app.buttons["workspace.record"].exists)
+
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    func testRGBSplitOpensCompactParametersAndUpdatesLiveControls() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace"]
+        app.launch()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["camera.metal.preview"]
+                .waitForExistence(timeout: 5)
+        )
+        let categories = app.scrollViews["workspace.categories"]
+        XCTAssertTrue(categories.waitForExistence(timeout: 3))
+        categories.swipeLeft()
+
+        let glitchCategory = app.buttons["workspace.category.glitch"]
+        XCTAssertTrue(glitchCategory.waitForExistence(timeout: 3))
+        glitchCategory.tap()
+        let rgbSplit = app.buttons["workspace.action.rgb-split"]
+        XCTAssertTrue(rgbSplit.waitForExistence(timeout: 3))
+        rgbSplit.tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.parameters.rgbSplit"]
+                .waitForExistence(timeout: 3)
+        )
+        let offset = app.sliders["workspace.parameter.rgbSplit.offset"]
+        let angle = app.sliders["workspace.parameter.rgbSplit.angle"]
+        let mix = app.sliders["workspace.parameter.rgbSplit.mix"]
+        XCTAssertTrue(offset.waitForExistence(timeout: 3))
+        XCTAssertTrue(angle.exists)
+        XCTAssertTrue(mix.exists)
+        let offsetBefore = offset.value as? String
+        offset.scrub(by: 0.32)
+        XCTAssertNotEqual(offset.value as? String, offsetBefore, "Scrubbing OFFSET must move its readout")
+        angle.scrub(by: 0.24)
+        mix.scrub(by: -0.24)
+
+        let stackButton = app.buttons["workspace.parameter.effect.toggle"]
+        XCTAssertTrue(stackButton.exists)
+        XCTAssertEqual(stackButton.value as? String, "disarmed")
+        stackButton.tap()
+        XCTAssertEqual(stackButton.value as? String, "armed")
+
+        let signalTear = app.buttons["workspace.action.signal-tear"]
+        XCTAssertTrue(signalTear.exists)
+        signalTear.tap()
+        XCTAssertEqual(rgbSplit.value as? String, "active")
+        XCTAssertEqual(signalTear.value as? String, "active")
+
+        app.descendants(matching: .any)["camera.metal.preview"].tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.parameters.signalTear"]
+                .waitForNonExistence(timeout: 3)
+        )
+        XCTAssertEqual(rgbSplit.value as? String, "active")
+        XCTAssertEqual(signalTear.value as? String, "inactive")
+    }
+
+    func testSpatialAndTemporalEffectsExposeLiveCompactControls() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace"]
+        app.launch()
+
+        let block = app.buttons["workspace.category.block"]
+        XCTAssertTrue(block.waitForExistence(timeout: 5))
+        block.tap()
+        let pixelate = app.buttons["workspace.action.pixelate"]
+        XCTAssertTrue(pixelate.waitForExistence(timeout: 3))
+        pixelate.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.parameters.pixelate"]
+                .waitForExistence(timeout: 3)
+        )
+        let blockSlider = app.sliders["workspace.parameter.pixelate.block"]
+        XCTAssertTrue(blockSlider.exists)
+        XCTAssertTrue(app.sliders["workspace.parameter.pixelate.blend"].exists)
+        let blockBefore = blockSlider.value as? String
+        blockSlider.scrub(by: 0.32)
+        XCTAssertNotEqual(blockSlider.value as? String, blockBefore, "Scrubbing BLOCK must move its readout")
+
+        let feedbackCategory = app.buttons["workspace.category.feedback"]
+        XCTAssertTrue(feedbackCategory.exists)
+        feedbackCategory.tap()
+        let feedback = app.buttons["workspace.action.feedback"]
+        XCTAssertTrue(feedback.waitForExistence(timeout: 3))
+        feedback.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.parameters.feedback"]
+                .waitForExistence(timeout: 3)
+        )
+        XCTAssertTrue(app.sliders["workspace.parameter.feedback.zoom"].exists)
+    }
+
+    /// Tapping a reading in the status line has to open the control for that
+    /// reading and nothing else.
+    ///
+    /// It used to open whichever deck was nearest — and for frame rate,
+    /// resolution and codec the deck it opened contains no such control, so a
+    /// third of the row was tappable and did nothing.
+    func testTappingAStatusReadingOpensThatFieldsControlAlone() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 5))
+
+        let frameRate = app.descendants(matching: .any)["workspace.status.frameRate"]
+        XCTAssertTrue(frameRate.waitForExistence(timeout: 3))
+        frameRate.tap()
+
+        let control = app.descendants(matching: .any)["workspace.field.frameRate"]
+        XCTAssertTrue(control.waitForExistence(timeout: 3), "FPS must open an FPS control")
+        XCTAssertFalse(
+            app.descendants(matching: .any)["workspace.settings.deck"].exists,
+            "FPS must not open the generic settings deck"
+        )
+        XCTAssertFalse(
+            app.descendants(matching: .any)["workspace.field.iso"].exists,
+            "Only the tapped field's control opens"
+        )
+
+        // A second tap on the same reading puts it away.
+        frameRate.tap()
+        XCTAssertTrue(control.waitForNonExistence(timeout: 3))
+
+        // Codec is the other end of the range: a device-reported list rather
+        // than three fixed rates.
+        let codec = app.descendants(matching: .any)["workspace.status.codec"]
+        XCTAssertTrue(codec.exists)
+        codec.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.field.codec"].waitForExistence(timeout: 3)
+        )
+        XCTAssertFalse(app.descendants(matching: .any)["workspace.field.frameRate"].exists)
+
+        // Dynamic range has no setter anywhere in the capture layer, so its
+        // control states that rather than drawing a picker that does nothing.
+        app.descendants(matching: .any)["workspace.status.dynamicRange"].tap()
+        let range = app.descendants(matching: .any)["workspace.field.dynamicRange"]
+        XCTAssertTrue(range.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["workspace.field.dynamicRange.hdr"].exists)
+    }
+
+    func testLiDARCategoryIsPresentAndTruthfulOnSimulator() throws {
+        #if !targetEnvironment(simulator)
+            throw XCTSkip("This test verifies the explicit simulator-unavailable LiDAR state.")
+        #else
+            let app = XCUIApplication()
+            app.launchArguments = ["--uitesting-workspace"]
+            app.launch()
+
+            XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 5))
+            let categories = app.scrollViews["workspace.categories"]
+            XCTAssertTrue(categories.waitForExistence(timeout: 3))
+            categories.swipeLeft()
+
+            let lidarCategory = app.buttons["workspace.category.lidar"]
+            XCTAssertTrue(lidarCategory.waitForExistence(timeout: 3))
+            lidarCategory.tap()
+            XCTAssertTrue(
+                app.descendants(matching: .any)["workspace.effects.lidar"]
+                    .waitForExistence(timeout: 3)
+            )
+
+            let pointCloud = app.buttons["workspace.action.point-cloud"]
+            XCTAssertTrue(pointCloud.waitForExistence(timeout: 3))
+            pointCloud.tap()
+            XCTAssertTrue(app.staticTexts["workspace.effect.notice"].waitForExistence(timeout: 3))
+        #endif
+    }
+}

@@ -1,0 +1,23 @@
+disabled_rules:
+  - type_body_length
+  - file_length
+  - function_body_length
+  - cyclomatic_complexity
+  - identifier_name
+  - large_tuple
+  - function_parameter_count
+  - line_length
+  - superfluous_disable_command
+  - redundant_string_enum_value
+  - todo
+
+opt_in_rules:
+  - empty_count
+  - contains_over_first_not_nil
+
+excluded:
+  - .agents
+  - .gemini
+  - Pods
+  - DerivedData
+

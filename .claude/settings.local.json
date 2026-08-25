@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__jcodemunch__order",
+      "mcp__jcodemunch__announce_model",
+      "mcp__plugin_claude-mem_mcp-search__get_observations",
+      "Bash(sed 's/\\\\$$//')",
+      "mcp__XcodeBuildMCP__session_show_defaults",
+      "mcp__XcodeBuildMCP__discover_projs",
+      "mcp__XcodeBuildMCP__list_sims",
+      "mcp__XcodeBuildMCP__list_schemes",
+      "mcp__XcodeBuildMCP__session_set_defaults",
+      "mcp__XcodeBuildMCP__build_sim",
+      "mcp__XcodeBuildMCP__test_sim"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "shaders",
+    "shadcn"
+  ]
+}

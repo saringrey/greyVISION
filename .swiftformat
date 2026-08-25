@@ -1,0 +1,28 @@
+# SwiftFormat configuration.
+#
+# There was no config here, so both swiftformat and swiftlint ran on defaults
+# and the docs claimed `swiftformat --lint .` passed. It never did — a default
+# run rewrote 67 of 115 files, including turning 44_100 into 44100 and putting
+# every single-line `if` body on its own line.
+#
+# The rules disabled below are ones this codebase violates on purpose. They are
+# turned off rather than "fixed" so that `--lint` means something: a failure now
+# is drift worth looking at, not the house style losing an argument with a
+# default.
+
+--swiftversion 6.0
+
+# Style the instrument uses deliberately.
+--disable wrapIfStatementBodies      # single-line guard/if bodies are the norm here
+--disable wrapPropertyBodies         # `var id: String { rawValue }` reads better on one line
+--disable trailingCommas             # the effect-order arrays close without one
+--disable numberFormatting           # 44_100 is a sample rate, not a number to regroup
+--disable redundantSelf              # explicit self in os_log interpolation is required
+--disable docComments                # `//` block comments above types are intentional
+--disable conditionalAssignment
+--disable redundantSwiftUIGroup
+--disable environmentEntry
+--disable redundantViewBuilder
+
+# Whitespace and imports are enforced — they cannot change meaning and they are
+# the difference between a readable diff and a noisy one.

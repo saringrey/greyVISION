@@ -1,0 +1,414 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Create AppStateContainer with @Published properties": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210028
+      },
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419222283
+      },
+      {
+        "executionId": "f93cff4c-8477-49b1-adeb-96b54e64eec3",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786421863280
+      },
+      {
+        "executionId": "f93cff4c-8477-49b1-adeb-96b54e64eec3",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786421869028
+      }
+    ],
+    "1.2 Create GestureStateRegistry for gesture conflict resolution": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210117
+      },
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419223257
+      },
+      {
+        "executionId": "f93cff4c-8477-49b1-adeb-96b54e64eec3",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786421864122
+      },
+      {
+        "executionId": "78c89f0b-6fb3-4c47-80d8-b6f2237e9dfc",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786426115040
+      }
+    ],
+    "1.3 Create AccessibilitySettings model and detection system": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210169
+      },
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419224287
+      },
+      {
+        "executionId": "f93cff4c-8477-49b1-adeb-96b54e64eec3",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786421865040
+      },
+      {
+        "executionId": "78c89f0b-6fb3-4c47-80d8-b6f2237e9dfc",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786426115109
+      }
+    ],
+    "2.1 Create CameraMetalSurface view": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210212
+      }
+    ],
+    "2.2 Implement post-processing effect chain system": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210236
+      }
+    ],
+    "3.1 Implement TemporalFrameBuffer class": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210265
+      }
+    ],
+    "4. Checkpoint - Verify core infrastructure": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210284
+      }
+    ],
+    "5.1 Create CornerBracketView SwiftUI component": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210309
+      }
+    ],
+    "5.2 Create CameraViewportView container": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210330
+      }
+    ],
+    "6.1 Create TelemetryManager for camera status tracking": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210361
+      }
+    ],
+    "6.2 Create TelemetryView SwiftUI overlay": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210386
+      }
+    ],
+    "7.1 Create LayoutEngine with viewport calculation": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210412
+      }
+    ],
+    "7.2 Create layout preset system": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210432
+      }
+    ],
+    "7.3 Implement layout persistence": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210453
+      }
+    ],
+    "8.1 Create BootSequenceManager state machine": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210475
+      }
+    ],
+    "8.2 Create PhosphorBloomEffect Metal shader": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210501
+      }
+    ],
+    "8.3 Create CRTScanlineOverlay view": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210522
+      }
+    ],
+    "8.4 Implement boot-to-main transition": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210541
+      }
+    ],
+    "9.1 Create SignalFractureGesture recognizer": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210561
+      }
+    ],
+    "9.2 Create TemporalLayerRenderer for multi-frame display": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210579
+      }
+    ],
+    "9.3 Implement ChromaticAberrationEffect Metal shader": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210599
+      }
+    ],
+    "9.4 Implement fracture return animation": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210620
+      }
+    ],
+    "10.1 Create TimeScrubGesture recognizer": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210641
+      }
+    ],
+    "10.2 Create TimelineOverlayView": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210666
+      }
+    ],
+    "10.3 Implement HistorySeeker with frame buffer integration": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210686
+      }
+    ],
+    "10.4 Implement return-to-live functionality": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210704
+      }
+    ],
+    "11. Checkpoint - Verify gesture systems": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210726
+      }
+    ],
+    "12.1 Create DepthPeelEngine with LiDAR integration": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210747
+      }
+    ],
+    "12.2 Implement depth confidence handling": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210766
+      }
+    ],
+    "12.3 Create SyntheticDepthFallback for non-LiDAR devices": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210787
+      }
+    ],
+    "12.4 Create DepthPeelRenderer for layer composition": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210815
+      }
+    ],
+    "13.1 Create ModulationOrbitGesture recognizer": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210835
+      }
+    ],
+    "13.2 Create OrbitManager for parameter binding": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210854
+      }
+    ],
+    "13.3 Create OrbitVisualizer SwiftUI view": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210874
+      }
+    ],
+    "14.1 Create AudioDamageEngine with AVAudioEngine integration": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210894
+      }
+    ],
+    "14.2 Implement damage effect renderers": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210914
+      }
+    ],
+    "14.3 Implement damage fade-out system": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210934
+      }
+    ],
+    "15.1 Create TerminalSlider SwiftUI component": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210953
+      }
+    ],
+    "15.2 Create ParameterEditor with confirmation overlay": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419210982
+      }
+    ],
+    "15.3 Implement preset loading with animation": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211003
+      }
+    ],
+    "16.1 Create FrameRateMonitor for 60fps validation": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211023
+      }
+    ],
+    "16.2 Optimize Metal rendering pipeline": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211043
+      }
+    ],
+    "16.3 Implement memory management for frame buffers": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211063
+      }
+    ],
+    "16.4 Implement low power mode adaptation": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211082
+      }
+    ],
+    "17.1 Add Reduce Motion support across all features": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211103
+      }
+    ],
+    "17.2 Implement VoiceOver support": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211122
+      }
+    ],
+    "17.3 Add Dynamic Type support": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211142
+      }
+    ],
+    "17.4 Implement high contrast mode support": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211161
+      }
+    ],
+    "18.1 Add CoreHaptics feedback for gestures": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211182
+      }
+    ],
+    "19.1 Wire all components into main app": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211203
+      }
+    ],
+    "19.2 Create app settings interface": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211221
+      }
+    ],
+    "20. Final checkpoint - Complete validation": [
+      {
+        "executionId": "60cc57e7-d3db-4139-a4e8-fb49bdea08ba",
+        "chatSessionId": "sess_4714a602-9e7d-4a91-bc58-0542d54a1c10",
+        "timestamp": 1786419211240
+      }
+    ]
+  }
+}
