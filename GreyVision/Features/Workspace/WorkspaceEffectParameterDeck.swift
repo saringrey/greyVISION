@@ -1,13 +1,18 @@
 import SwiftUI
 
-/// Compact single-rail parameter deck.
+/// Parameter deck for one effect.
 ///
-/// Every parameter sits on ONE horizontal slider rail under a single header
-/// row, so the frame above stays visible while values are driven. Nothing was
-/// removed from the old grouped inspector: power, favourite, stack arming,
-/// hide-chrome, close, per-parameter drag, double-tap reset and section
-/// grouping (now filter chips) all remain, and the rail adds RANDOMIZE,
-/// COPY/PASTE, per-effect A/B snapshots and a FINE adjust mode on top.
+/// The deck keeps every capability the old dense version had — power,
+/// favourite, stack arming, hide-chrome, close, per-parameter drag, double-tap
+/// reset, section filtering, RANDOMIZE, COPY/PASTE, per-effect A/B snapshots
+/// and FINE adjust — but splits it into two visual registers:
+///
+///  • The always-visible spine: header, section tabs and the slider rail.
+///    These are the controls every adjustment touches, so they are large.
+///  • A TOOLS drawer holding the occasional actions (reset, randomize,
+///    clipboard, A/B store/recall, fine mode). One tap opens it, one tap
+///    fires an action and the drawer closes itself, returning the operator
+///    straight to the rails.
 struct WorkspaceEffectParameterDeck: View {
     let effect: WorkspaceAdjustableEffect
     @Binding var rgbSplitParameters: RGBSplitEffectParameters
@@ -23,16 +28,23 @@ struct WorkspaceEffectParameterDeck: View {
 
     @State private var sectionFilter: ParamSection = .all
     @State private var fineMode = false
+    @State private var showTools = false
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 7) {
             headerRow
-            toolRow
+            filterRow
+
+            if showTools {
+                toolsPanel
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             sliderRow
-                .gvScrollProgressLine()
         }
         .gvCompactDeckPlate()
         .animation(GVMotion.micro, value: fineMode)
+        .animation(GVMotion.micro, value: showTools)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.parameters.\(effect.rawValue)")
     }
@@ -40,19 +52,19 @@ struct WorkspaceEffectParameterDeck: View {
     // MARK: - Header
 
     private var headerRow: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             GVTerminalText(
                 text: "FX.PARAM // \(effect.label)",
-                size: GVMetrics.textSmall,
+                size: GVMetrics.textBody,
                 weight: .black,
                 tracking: 1.1,
                 alignment: .leading,
                 intensity: 1.15
             )
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 8)
 
-            GVDeckChip(label: "", symbol: "power", active: isEffectEnabled, tint: .white, id: "power") {
+            GVDeckChip(label: "", symbol: "power", active: isEffectEnabled, tint: .white, height: 27, id: "power") {
                 toggleEffectEnabled()
             }
             GVDeckChip(
@@ -60,109 +72,207 @@ struct WorkspaceEffectParameterDeck: View {
                 symbol: isFavorite ? "star.fill" : "star",
                 active: isFavorite,
                 tint: .white,
+                height: 27,
                 id: "favorite"
             ) {
                 onFavoriteToggled()
             }
             // Was an ambiguous icon called STACK. The behaviour is arming
             // ADD-TO-STACK for the next selection, so it says that.
-            GVDeckChip(label: isStackArmed ? "ADD\u{2713}" : "ADD", active: isStackArmed, tint: .white, id: "addmode") {
+            GVDeckChip(label: isStackArmed ? "ADD\u{2713}" : "ADD", active: isStackArmed, tint: .white, height: 27, id: "addmode") {
                 onStackChanged(!isStackArmed)
             }
-            GVDeckChip(label: "", symbol: "eye.slash", id: "hidechrome") {
+            GVDeckChip(label: "", symbol: "eye.slash", height: 27, id: "hidechrome") {
                 onHideChrome()
             }
-            GVDeckChip(label: "", symbol: "xmark", id: "close") {
+            GVDeckChip(label: "", symbol: "xmark", height: 27, id: "close") {
                 onClose()
             }
         }
     }
 
-    // MARK: - Tools
+    // MARK: - Section tabs + tools toggle
 
-    private var toolRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
-                ForEach(presentSections) { section in
-                    GVDeckChip(
-                        label: section == .all ? "ALL" : section.label,
-                        active: sectionFilter == section,
-                        id: "filter.\(section.rawValue)"
-                    ) {
-                        sectionFilter = section
+    /// Sections are the only always-visible navigation, so they get real
+    /// tabs rather than another row of micro-chips. The rare actions live
+    /// behind TOOLS instead of competing with them for space.
+    private var filterRow: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(presentSections) { section in
+                        sectionTab(section)
                     }
                 }
+                .padding(.vertical, 1)
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .gvHorizontalEdgeFade()
 
-                divider
+            GVDeckChip(
+                label: "TOOLS",
+                symbol: "slider.horizontal.3",
+                active: showTools,
+                tint: .white,
+                height: 30,
+                id: "tools"
+            ) {
+                withAnimation(GVMotion.micro) { showTools.toggle() }
+            }
+            .accessibilityValue(showTools ? "open" : "closed")
+        }
+    }
 
-                GVDeckChip(label: "RST", id: "reset") {
+    private func sectionTab(_ section: ParamSection) -> some View {
+        let selected = sectionFilter == section
+        return Button {
+            withAnimation(GVMotion.scan) { sectionFilter = section }
+        } label: {
+            Text(section == .all ? "ALL" : section.label)
+                .gvMono(GVMetrics.textSmall, .black)
+                .tracking(0.9)
+                .foregroundStyle(selected ? Color.white : GVTheme.bone.opacity(0.72))
+                .shadow(color: selected ? .white.opacity(0.45) : .clear, radius: 3)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(selected ? Color.white.opacity(0.15) : Color(white: 0.155))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(
+                                    selected ? Color.white.opacity(0.85) : Color.white.opacity(0.09),
+                                    lineWidth: selected ? 1.1 : 0.8
+                                )
+                        )
+                        .shadow(color: selected ? .white.opacity(0.25) : .clear, radius: 5)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle())
+        .accessibilityIdentifier("workspace.chip.filter.\(section.rawValue)")
+        .accessibilityValue(selected ? "on" : "off")
+    }
+
+    // MARK: - Tools drawer
+
+    private var toolsPanel: some View {
+        VStack(spacing: 6) {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4),
+                spacing: 6
+            ) {
+                toolButton("RESET", id: "reset") {
                     reset()
                     toasts.show("FX // \(effect.label) RESET TO DEFAULTS")
                 }
-                GVDeckChip(label: "RAND", id: "random") {
+                toolButton("RANDOM", id: "random") {
                     randomize()
                     toasts.show("FX // \(effect.label) RANDOMIZED")
                 }
-                GVDeckChip(label: "CPY", id: "copy") {
+                toolButton("COPY", id: "copy") {
                     copySettings()
                 }
-                GVDeckChip(label: "PST", dimmed: !EffectClipboard.hasContent, id: "paste") {
+                toolButton("PASTE", id: "paste", dimmed: !EffectClipboard.hasContent) {
                     pasteSettings()
                 }
-
-                divider
-
-                GVDeckChip(label: "ST.A", id: "storea") {
+                toolButton("ST.A", id: "storea") {
                     storeSnapshot(.a)
                     toasts.show("FX // STORED SLOT A")
                 }
-                GVDeckChip(label: "ST.B", id: "storeb") {
+                toolButton("ST.B", id: "storeb") {
                     storeSnapshot(.b)
                     toasts.show("FX // STORED SLOT B")
                 }
-                GVDeckChip(
-                    label: "A",
-                    dimmed: !ABSlots.has(effect.rawValue, .a),
-                    id: "recalla"
-                ) {
+                toolButton("A", id: "recalla", dimmed: !ABSlots.has(effect.rawValue, .a)) {
                     recallSnapshot(.a)
                 }
-                GVDeckChip(
-                    label: "B",
-                    dimmed: !ABSlots.has(effect.rawValue, .b),
-                    id: "recallb"
-                ) {
+                toolButton("B", id: "recallb", dimmed: !ABSlots.has(effect.rawValue, .b)) {
                     recallSnapshot(.b)
                 }
-
-                divider
-
-                GVDeckChip(label: "FINE", active: fineMode, id: "fine") {
-                    fineMode.toggle()
-                    toasts.show(fineMode ? "DRAG // FINE 0.25X" : "DRAG // COARSE")
-                }
-                .accessibilityValue(fineMode ? "on" : "off")
             }
-            .padding(.vertical, 1)
-            .scrollTargetLayout()
+
+            Button {
+                fineMode.toggle()
+                toasts.show(fineMode ? "DRAG // FINE 0.25X" : "DRAG // COARSE")
+            } label: {
+                HStack {
+                    Text("FINE DRAG")
+                        .gvMono(GVMetrics.textSmall, .black)
+                        .tracking(1.0)
+                    Spacer(minLength: 0)
+                    Text(fineMode ? "0.25\u{00D7} ON" : "\u{00D7}1.00 OFF")
+                        .gvMono(GVMetrics.textSmall, .bold)
+                        .tracking(0.8)
+                        .foregroundStyle(fineMode ? Color.white : GVTheme.bone.opacity(0.55))
+                }
+                .foregroundStyle(fineMode ? Color.white : GVTheme.bone.opacity(0.78))
+                .shadow(color: fineMode ? .white.opacity(0.45) : .clear, radius: 3)
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(fineMode ? Color.white.opacity(0.13) : Color(white: 0.135))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(
+                                    fineMode ? Color.white.opacity(0.85) : Color.white.opacity(0.09),
+                                    lineWidth: fineMode ? 1.1 : 0.8
+                                )
+                        )
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(GVPressStyle())
+            .accessibilityIdentifier("workspace.chip.fine")
+            .accessibilityValue(fineMode ? "on" : "off")
         }
-        .scrollTargetBehavior(.viewAligned)
-        .gvHorizontalEdgeFade()
+        .padding(.top, 1)
     }
 
-    private var divider: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.12))
-            .frame(width: 1, height: 14)
+    /// Fires the action, then closes the drawer so the thumb lands back on
+    /// the rails it came here to drive. FINE is the exception — it stays
+    /// open because its state is the point.
+    private func toolButton(_ label: String, id: String, dimmed: Bool = false, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            withAnimation(GVMotion.micro) { showTools = false }
+        } label: {
+            Text(label)
+                .gvMono(GVMetrics.textSmall, .black)
+                .tracking(0.8)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .foregroundStyle(Color.white.opacity(dimmed ? 0.30 : 0.85))
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(Color.white.opacity(dimmed ? 0.04 : 0.12), lineWidth: 0.8)
+                        )
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle())
+        .disabled(dimmed)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("workspace.chip.\(id)")
     }
 
-    // MARK: - Sliders
+    // MARK: - Parameters
 
+    /// Full-width tuner rows instead of a cramped rail of mini sliders: every
+    /// parameter gets the whole line, so labels are legible and drags have
+    /// travel. The list scrolls vertically; sections filter it above.
     private var sliderRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 2) {
                 ForEach(filteredSpecs) { spec in
-                    GVRailSlider(
+                    GVParamRow(
                         label: spec.label,
                         value: spec.value,
                         defaultValue: spec.defaultValue,
@@ -174,12 +284,8 @@ struct WorkspaceEffectParameterDeck: View {
                 }
             }
             .padding(.vertical, 2)
-            .padding(.horizontal, 1)
-            .padding(.bottom, 3)
-            .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.viewAligned)
-        .gvHorizontalEdgeFade()
+        .frame(height: min(CGFloat(filteredSpecs.count) * 46 + 6, 232))
         .animation(GVMotion.scan, value: sectionFilter)
     }
 
@@ -427,6 +533,187 @@ struct WorkspaceEffectParameterDeck: View {
         }
         applyValues(values)
         toasts.show("RECALLED \(slot == .a ? "A" : "B")")
+    }
+}
+
+// MARK: - Session-wide clipboard and A/B storage
+
+/// One parameter as a full-width row: label and live value on the reading
+/// line, a wide drag track beneath. Same interaction contract as the old rail
+/// sliders — relative dragging, FINE quarter-speed, default detent notch,
+/// double-tap reset, haptic ticks per 10% — with room to actually aim.
+private struct GVParamRow: View {
+    let label: String
+    @Binding var value: Double
+    let defaultValue: Double
+    let range: ClosedRange<Double>
+    let format: (Double) -> String
+    var fine: Bool = false
+
+    @State private var dragStart: Double?
+    @State private var isDragging = false
+    @State private var lastTickBucket: Int = -1
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @MainActor private static let tickGenerator = UIImpactFeedbackGenerator(style: .soft)
+
+    private var fraction: Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        return min(max((value - range.lowerBound) / span, 0), 1)
+    }
+
+    private var isAtDefault: Bool {
+        abs(value - defaultValue) < (range.upperBound - range.lowerBound) * 0.004
+    }
+
+    var body: some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 8) {
+                Text(label)
+                    .gvMono(GVMetrics.textSmall, .bold)
+                    .tracking(0.9)
+                    .foregroundStyle(isDragging ? Color.white : GVTheme.bone.opacity(0.85))
+                    .shadow(color: isDragging ? .white.opacity(0.5) : .clear, radius: 3)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer(minLength: 8)
+
+                Text(format(value))
+                    .gvMono(GVMetrics.textSmall, .black)
+                    .tracking(0.5)
+                    .foregroundStyle(isDragging ? Color.white : GVTheme.bone.opacity(0.62))
+                    .shadow(color: isDragging ? .white.opacity(0.45) : .clear, radius: 3)
+            }
+
+            GeometryReader { geometry in
+                let width = geometry.size.width
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(Color(white: 0.13))
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.8)
+                        )
+
+                    // Default detent: shows where double-tap lands.
+                    Rectangle()
+                        .fill(isAtDefault ? Color.white.opacity(0.95) : Color.white.opacity(0.28))
+                        .frame(width: 1.4, height: 9)
+                        .offset(x: 6 + (width - 14) * fractionForDefault)
+
+                    Capsule(style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.95), Color.white.opacity(0.55)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(6, width * fraction))
+                        .shadow(
+                            color: .white.opacity(isDragging ? 0.6 : 0.22),
+                            radius: isDragging ? 5 : 2
+                        )
+
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 13, height: 13)
+                        .shadow(
+                            color: .white.opacity(isDragging ? 0.95 : 0.42),
+                            radius: isDragging ? 7 : 3
+                        )
+                        .offset(x: (width - 13) * fraction)
+                }
+                .frame(height: 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .gesture(dragGesture(width: width))
+            }
+            .frame(height: 18)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isDragging ? Color.white.opacity(0.05) : Color.clear)
+        )
+        // Floating readout above the knob while the finger is down.
+        .overlay(alignment: .top) {
+            if isDragging {
+                Text(format(value))
+                    .gvMono(GVMetrics.textMicro, .black)
+                    .tracking(0.4)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color(white: 0.11).opacity(0.96))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.8)
+                            )
+                            .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
+                            .shadow(color: .white.opacity(0.22), radius: 6)
+                    )
+                    .fixedSize()
+                    .offset(y: -24)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
+                    .allowsHitTesting(false)
+            }
+        }
+        .onTapGesture(count: 2) {
+            value = defaultValue
+        }
+        .animation(GVMotion.micro, value: isDragging)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(format(value))
+        .accessibilityAddTraits(defaultValue == value ? [] : [.updatesFrequently])
+        .accessibilityAdjustableAction { direction in
+            let step = (range.upperBound - range.lowerBound) * 0.05
+            switch direction {
+            case .increment: value = min(value + step, range.upperBound)
+            case .decrement: value = max(value - step, range.lowerBound)
+            @unknown default: break
+            }
+        }
+    }
+
+    private var fractionForDefault: Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        return min(max((defaultValue - range.lowerBound) / span, 0), 1)
+    }
+
+    private func dragGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { gesture in
+                if !isDragging {
+                    Self.tickGenerator.prepare()
+                }
+                isDragging = true
+                let start = dragStart ?? value
+                if dragStart == nil { dragStart = value }
+                let span = range.upperBound - range.lowerBound
+                let sensitivity = span / (width * (fine ? 4 : 1))
+                let moved = Double(gesture.translation.width) * sensitivity
+                value = min(max(start + moved, range.lowerBound), range.upperBound)
+
+                let bucket = Int(fraction * 10)
+                if bucket != lastTickBucket {
+                    lastTickBucket = bucket
+                    Self.tickGenerator.impactOccurred(intensity: 0.32)
+                }
+            }
+            .onEnded { _ in
+                isDragging = false
+                dragStart = nil
+                lastTickBucket = -1
+            }
     }
 }
 

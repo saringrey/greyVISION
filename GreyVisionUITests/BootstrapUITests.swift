@@ -63,33 +63,13 @@ final class BootstrapUITests: XCTestCase {
                 .waitForExistence(timeout: 3)
         )
 
-        let frameCategory = app.buttons["workspace.category.frame"]
-        XCTAssertTrue(frameCategory.waitForExistence(timeout: 3))
-        XCTAssertEqual(frameCategory.value as? String, "collapsed")
-        frameCategory.tap()
-        XCTAssertTrue(
-            app.descendants(matching: .any)["workspace.effects.frame"]
-                .waitForExistence(timeout: 3)
+        XCTAssertTrue(app.descendants(matching: .any)["camera.metal.preview"]
+            .waitForExistence(timeout: 3)
         )
-        XCTAssertTrue(gridEffect.exists)
-        gridEffect.tap()
-        XCTAssertTrue(
-                .waitForExistence(timeout: 3)
-        )
-        XCTAssertTrue(densityRow.waitForExistence(timeout: 3))
-        let densityBefore = densityRow.value as? String
-        densityRow.scrub(by: 0.32)
-        XCTAssertNotEqual(densityRow.value as? String, densityBefore, "Scrubbing DENSITY must move its readout")
 
-        XCTAssertTrue(
-                .waitForExistence(timeout: 3)
-        )
-        XCTAssertEqual(gridEffect.value as? String, "inactive")
-
-        XCTAssertTrue(
-                .waitForExistence(timeout: 3)
-        )
-        frameCategory.tap()
+        // The old FRAME category check (grid effect + density scrub) was
+        // removed: that category and its parameter deck no longer exist in
+        // the dock, so there is nothing left to drive.
 
         let cameraButton = app.buttons["workspace.camera"]
         XCTAssertTrue(cameraButton.waitForExistence(timeout: 3))
@@ -170,8 +150,11 @@ final class BootstrapUITests: XCTestCase {
         XCTAssertTrue(cameraButton.exists)
         XCTAssertFalse(app.descendants(matching: .any)["workspace.camera.deck"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["workspace.settings.deck"].exists)
-        XCTAssertFalse(app.buttons["workspace.record"].exists)
-        XCTAssertFalse(app.buttons["workspace.screenshot"].exists)
+        // Record and photo moved out of the hidden settings deck into a
+        // permanent capture row beside the FX toggle: a take must be
+        // startable whenever the shot is framed, deck open or not.
+        XCTAssertTrue(app.buttons["workspace.record.toggle"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["workspace.capture.photo"].exists)
         XCTAssertFalse(app.buttons["workspace.clear-effects"].exists)
         XCTAssertFalse(app.buttons["workspace.menu"].exists)
         XCTAssertFalse(app.buttons["workspace.presets"].exists)
@@ -193,9 +176,7 @@ final class BootstrapUITests: XCTestCase {
             app.descendants(matching: .any)["workspace.settings.deck"]
                 .waitForExistence(timeout: 3)
         )
-        XCTAssertTrue(app.buttons["workspace.record"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["workspace.screenshot"].exists)
-        XCTAssertTrue(app.buttons["workspace.clear-effects"].exists)
+        XCTAssertTrue(app.buttons["workspace.clear-effects"].waitForExistence(timeout: 3))
 
         // Record drives the writer now rather than printing a Gate 5 notice,
         // and the simulator has no capture hardware to record from — proving
@@ -203,14 +184,18 @@ final class BootstrapUITests: XCTestCase {
         // the deck action that is deterministic everywhere, so it is the one
         // used to prove the deck's buttons are live.
         app.buttons["workspace.clear-effects"].tap()
-        XCTAssertTrue(app.staticTexts["workspace.top.notice"].waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.toast"].waitForExistence(timeout: 3)
+        )
 
         settingsButton.tap()
         XCTAssertTrue(
             app.descendants(matching: .any)["workspace.settings.deck"]
                 .waitForNonExistence(timeout: 3)
         )
-        XCTAssertFalse(app.buttons["workspace.record"].exists)
+        // The capture row is permanent: closing the deck does not take the
+        // record control away.
+        XCTAssertTrue(app.buttons["workspace.record.toggle"].exists)
 
         XCUIDevice.shared.orientation = .portrait
     }

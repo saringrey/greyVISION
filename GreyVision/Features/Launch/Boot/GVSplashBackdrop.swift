@@ -38,13 +38,13 @@ struct GVSplashBackdrop: View {
                 // bands or rings, and a low peak so it never reads as a shape.
                 RadialGradient(
                     stops: [
-                        .init(color: GVTheme.violetDeep.opacity((0.20 + energy * 0.08) * amplitude), location: 0.00),
-                        .init(color: GVTheme.violetDeep.opacity((0.150 + energy * 0.06) * amplitude), location: 0.14),
-                        .init(color: GVTheme.violetDeep.opacity(0.092 * amplitude), location: 0.28),
-                        .init(color: GVTheme.violetDeep.opacity(0.052 * amplitude), location: 0.42),
-                        .init(color: GVTheme.violetDeep.opacity(0.027 * amplitude), location: 0.56),
-                        .init(color: GVTheme.violetDeep.opacity(0.012 * amplitude), location: 0.70),
-                        .init(color: GVTheme.violetDeep.opacity(0.004 * amplitude), location: 0.84),
+                        .init(color: BootPalette.deep.opacity((0.20 + energy * 0.08) * amplitude), location: 0.00),
+                        .init(color: BootPalette.deep.opacity((0.150 + energy * 0.06) * amplitude), location: 0.14),
+                        .init(color: BootPalette.deep.opacity(0.092 * amplitude), location: 0.28),
+                        .init(color: BootPalette.deep.opacity(0.052 * amplitude), location: 0.42),
+                        .init(color: BootPalette.deep.opacity(0.027 * amplitude), location: 0.56),
+                        .init(color: BootPalette.deep.opacity(0.012 * amplitude), location: 0.70),
+                        .init(color: BootPalette.deep.opacity(0.004 * amplitude), location: 0.84),
                         .init(color: .clear, location: 1.00)
                     ],
                     center: .center,
@@ -56,9 +56,9 @@ struct GVSplashBackdrop: View {
                 // overlapping ramps hide any residual step in either one.
                 RadialGradient(
                     stops: [
-                        .init(color: GVTheme.violet.opacity(0.042 * amplitude), location: 0.00),
-                        .init(color: GVTheme.violet.opacity(0.020 * amplitude), location: 0.38),
-                        .init(color: GVTheme.violet.opacity(0.006 * amplitude), location: 0.68),
+                        .init(color: BootPalette.glow.opacity(0.042 * amplitude), location: 0.00),
+                        .init(color: BootPalette.glow.opacity(0.020 * amplitude), location: 0.38),
+                        .init(color: BootPalette.glow.opacity(0.006 * amplitude), location: 0.68),
                         .init(color: .clear, location: 1.00)
                     ],
                     center: UnitPoint(x: 0.5, y: 0.42),

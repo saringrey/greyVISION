@@ -17,7 +17,7 @@ struct DeterministicStarfield: View {
                     let rect = CGRect(x: x, y: y, width: star.size, height: star.size)
                     context.fill(
                         Path(ellipseIn: rect),
-                        with: .color((star.isViolet ? GVTheme.violet : .white).opacity(pulse))
+                        with: .color((star.isViolet ? BootPalette.glow : .white).opacity(pulse))
                     )
                 }
                 if !reduceMotion {
@@ -106,7 +106,7 @@ struct DeterministicStarfield: View {
         context.fill(
             Path(ellipseIn: CGRect(x: headX - 4, y: headY - 4, width: 8, height: 8)),
             with: .radialGradient(
-                Gradient(colors: [GVTheme.violet.opacity(0.6 * fade), .clear]),
+                Gradient(colors: [BootPalette.glow.opacity(0.65 * fade), .clear]),
                 center: CGPoint(x: headX, y: headY),
                 startRadius: 0,
                 endRadius: 4

@@ -283,19 +283,20 @@ struct WorkspaceView: View {
 
                     Spacer(minLength: 8)
 
-                    chromeToggle
-                        .padding(.bottom, GVMetrics.gapTight)
-                        .opacity(isChromeHidden ? 0 : 1)
+                    HStack(spacing: GVMetrics.gapTight) {
+                        chromeToggle
 
+                        Spacer(minLength: 0)
 
+                        // Record and photo now live inside the effect dock,
+                        // beside where effects are chosen.
+                    }
                     .padding(.horizontal, GVMetrics.gapWide)
                     .padding(.top, GVMetrics.stepRelated)
-                    // Deliberately not hidden by the chevron: the toggle
-                    // collapses the effect interface only. Record, the level
-                    // and the frame telemetry are instrument state, and an
-                    // operator hiding the effect browser to see the shot still
-                    // needs to be able to start a take.
-
+                    .padding(.bottom, GVMetrics.gapTight)
+                    .opacity(isChromeHidden ? 0 : 1)
+                    // Invisible chrome must not keep eating taps.
+                    .allowsHitTesting(!isChromeHidden)
                     // The single notice channel. Anchored just above the dock
                     // so feedback lands beside where the hands already are,
                     // instead of three unrelated places at once.
@@ -315,6 +316,19 @@ struct WorkspaceView: View {
                         dismissSelectionSignal: $dismissSelectionSignal,
                         statsMailbox: renderStats,
                         onHideChrome: { withAnimation(GVMotion.panel) { isChromeHidden = true } },
+                        onCapturePhoto: {
+                            capture.takeScreenshot(cameraRuntime: cameraRuntime)
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        },
+                        onToggleRecording: {
+                            let wasRecording = cameraRuntime.isRecording
+                            capture.toggleRecording(cameraRuntime: cameraRuntime)
+                            if wasRecording {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            } else {
+                                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            }
+                        },
                         presetsPresented: $presetsPresented
                     )
                     .padding(.horizontal, 6)
@@ -328,6 +342,21 @@ struct WorkspaceView: View {
                     .animation(GVMotion.deck, value: isDeckCollapsed)
                 }
                 .ignoresSafeArea(edges: [.top, .bottom])
+                // HIDE UI restore layer. When the eye icon sends chrome away,
+                // this transparent sheet owns every tap: one touch anywhere
+                // brings the instrument back. Without it the only recovery
+                // was a gesture nobody could discover.
+                .overlay {
+                    if isChromeHidden {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(GVMotion.panel) { isChromeHidden = false }
+                            }
+                            .accessibilityLabel("Show interface")
+                            .accessibilityIdentifier("workspace.chrome.restore")
+                    }
+                }
                 // Pitch rides the right edge, clear of both decks. Both gauges
                 // are chrome, so HIDE UI takes them with everything else.
                 .overlay(alignment: .leading) {
@@ -420,6 +449,12 @@ struct WorkspaceView: View {
         .onChange(of: capture.statusMessage) { _, message in
             guard let message else { return }
             showTopNotice(message)
+        }
+        // A finished still opens the quick-take viewer. Videos surface the
+        // same way once the renderer hands the exported clip back.
+        .onChange(of: cameraRuntime.lastCapture) { _, lastCapture in
+            guard lastCapture != nil else { return }
+            withAnimation(GVMotion.panel) { isQuickTakePresented = true }
         }
         .onChange(of: cameraRuntime.recordingMessage) { _, value in
             guard let value else { return }
@@ -633,11 +668,11 @@ struct WorkspaceView: View {
 
 
 
+
 private enum WorkspaceTopDeckPlaceholder {}
 
 private enum WorkspaceTopDeck: String, Identifiable {
     case camera
-    case dev
     case settings
 
     var id: String {
@@ -681,19 +716,18 @@ private extension WorkspaceView {
                     .frame(width: islandReserve)
                     .accessibilityHidden(true)
 
+                // Two purposeful controls, centred in the right shoulder:
+                // the camera deck and system settings. Developer tools stay
+                // reachable through the settings deck's DEV switch instead of
+                // claiming a permanent slot here.
                 HStack(spacing: 7) {
                     shellChip(symbol: "camera.aperture", id: "camera",
                               active: activeTopDeck == .camera) { toggleTopDeck(.camera) }
 
-                    if preferences.developerEnabled {
-                        shellChip(symbol: "wrench.and.screwdriver", id: "dev",
-                                  active: activeTopDeck == .dev) { toggleTopDeck(.dev) }
-                    }
-
                     shellChip(symbol: "slider.horizontal.3", id: "settings",
                               active: activeTopDeck == .settings) { toggleTopDeck(.settings) }
                 }
-                .fixedSize()
+                .frame(maxWidth: .infinity, alignment: .center)
             }
             .padding(.horizontal, horizontalInset)
             .frame(height: panelHeight)
@@ -718,13 +752,11 @@ private extension WorkspaceView {
         .gvDecay(decay)
     }
 
-    /// Top-shell control: 40pt chamfered charcoal plate, one glowing state.
+    /// Top-shell control. Styled after the grey//VISION wordmark beside it:
+    /// white type on nothing — no plate — with a single lit rule underneath
+    /// carrying the active state.
     func shellChip(symbol: String, id: String, active: Bool, action: @escaping () -> Void) -> some View {
-        let glyph: Color = active ? Color.white : GVTheme.bone.opacity(0.68)
-        let glyphShadow: Color = active ? Color.white.opacity(0.55) : Color.black.opacity(0.85)
-        let fill: Color = active ? Color.white.opacity(0.13) : Color(white: 0.105).opacity(0.92)
-        let strokeColor: Color = active ? Color.white.opacity(0.75) : Color.white.opacity(0.09)
-        let plateShadow: Color = active ? Color.white.opacity(0.25) : Color.black.opacity(0.45)
+        let glyph: Color = active ? Color.white : GVTheme.bone.opacity(0.62)
 
         return Button {
             action()
@@ -732,17 +764,17 @@ private extension WorkspaceView {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(glyph)
-                .shadow(color: glyphShadow, radius: active ? 4 : 2)
+                .shadow(color: .black.opacity(0.85), radius: 2, y: 1)
+                .shadow(color: active ? Color.white.opacity(0.55) : .clear, radius: 4)
                 .frame(width: 40, height: 40)
-                .background(
-                    GVChamferedPlate(cut: 6)
-                        .fill(fill)
-                )
-                .overlay(
-                    GVChamferedPlate(cut: 6)
-                        .strokeBorder(strokeColor, lineWidth: active ? 1.2 : 1)
-                )
-                .shadow(color: plateShadow, radius: active ? 7 : 3, y: 2)
+                // Column of type over a rule, not a plate. Selection lights
+                // the rule and the glyph; nothing is enclosed.
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(active ? Color.white : Color.white.opacity(0.16))
+                        .frame(height: active ? 1.5 : 1)
+                        .shadow(color: active ? Color.white.opacity(0.8) : .clear, radius: 4)
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(GVPressStyle())
@@ -761,8 +793,6 @@ private extension WorkspaceView {
         switch deck {
         case .camera:
             cameraControlDeck(geometry: geometry)
-        case .dev:
-            devMenuDeck
         case .settings:
             captureSettingsDeck
         }
@@ -817,137 +847,90 @@ private extension WorkspaceView {
         .accessibilityIdentifier("workspace.camera.deck")
     }
 
-    /// Slimmed diagnostics deck \u2014 restart only; everything else lives in SYSTEM.
-    var devMenuDeck: some View {
-        GVAnimatedGlassPanel(cornerRadius: 14, fillOpacity: 0, isTransparent: true) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    captureActionButton(symbol: "arrow.clockwise", label: "Restart engine", tint: GVTheme.acid) {
-                        appModel.restartEngine()
-                        showTopNotice("CAMERA PIPELINE // RESTARTING")
-                    }
-                    .accessibilityIdentifier("workspace.dev.restart")
-                }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 6)
-                .scrollTargetLayout()
-            }
-            .contentMargins(.horizontal, 10, for: .scrollContent)
-            .scrollTargetBehavior(.viewAligned)
-            .gvHorizontalEdgeFade()
-        }
-        .frame(width: 350, height: 62)
-        .frame(maxWidth: 620, alignment: .center)
-        .accessibilityIdentifier("workspace.dev.deck")
-    }
-
     /// System switches. Capture actions live on the primary row / floating pair.
+    /// Kept to what is necessary and purposeful: the creative reset, the two
+    /// recording-relevant switches, the effect-family gate, the developer
+    /// gate, and help. Ambience toggles and stubs live elsewhere or nowhere.
     var captureSettingsDeck: some View {
         GVAnimatedGlassPanel(cornerRadius: 14, fillOpacity: 0, isTransparent: true) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    captureActionButton(symbol: "eraser", label: "Clear effects", tint: GVTheme.violet) {
-                        clearEffects()
-                    }
-                    .accessibilityIdentifier("workspace.clear-effects")
+            HStack(spacing: 7) {
+                captureActionButton(symbol: "eraser", label: "Clear FX", tint: GVTheme.violet) {
+                    clearEffects()
+                }
+                .accessibilityIdentifier("workspace.clear-effects")
 
+                captureActionButton(
+                    symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
+                    label: "Audio",
+                    tint: audioRuntime.isEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                ) {
+                    Task { @MainActor in
+                        await audioRuntime.toggle()
+                        showTopNotice(audioNotice)
+                    }
+                }
+                .accessibilityIdentifier("workspace.audio")
+
+                captureActionButton(
+                    symbol: preferences.watermarkEnabled ? "video.badge.checkmark" : "video.slash",
+                    label: "Burn HUD",
+                    tint: preferences.watermarkEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                ) {
+                    preferences.watermarkEnabled.toggle()
+                    showTopNotice(preferences.watermarkEnabled ? "RECORDING // BURN HUD" : "RECORDING // CLEAN")
+                }
+                .accessibilityIdentifier("workspace.watermark")
+
+                captureActionButton(
+                    symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
+                    label: "Experimental",
+                    tint: preferences.experimentalEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                ) {
+                    preferences.experimentalEnabled.toggle()
+                    showTopNotice(preferences.experimentalEnabled ? "EXPERIMENTAL // ON" : "EXPERIMENTAL // OFF")
+                }
+                .accessibilityIdentifier("workspace.experimental")
+
+                captureActionButton(
+                    symbol: preferences.startupAnimationEnabled ? "sparkles" : "forward.end.fill",
+                    label: "Startup",
+                    tint: preferences.startupAnimationEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                ) {
+                    preferences.startupAnimationEnabled.toggle()
+                    showTopNotice(
+                        preferences.startupAnimationEnabled
+                            ? "STARTUP // FULL CEREMONY"
+                            : "STARTUP // FAST ENTRY"
+                    )
+                }
+                .accessibilityIdentifier("workspace.startup")
+
+                captureActionButton(
+                    symbol: "wrench.and.screwdriver",
+                    label: preferences.developerEnabled ? "Dev ON" : "Dev OFF",
+                    tint: preferences.developerEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                ) {
+                    preferences.developerEnabled.toggle()
+                    showTopNotice(preferences.developerEnabled ? "DEV // TOOLS REVEALED" : "DEV // TOOLS HIDDEN")
+                }
+                .accessibilityIdentifier("workspace.devmode")
+
+                if preferences.developerEnabled {
                     captureActionButton(symbol: "arrow.clockwise", label: "Restart", tint: GVTheme.acid) {
                         appModel.restartEngine()
                         showTopNotice("CAMERA PIPELINE // RESTARTING")
                     }
                     .accessibilityIdentifier("workspace.restart")
-
-                    captureActionButton(
-                        symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
-                        label: "Audio",
-                        tint: audioRuntime.isEnabled ? GVTheme.acid : GVTheme.violet
-                    ) {
-                        Task { @MainActor in
-                            await audioRuntime.toggle()
-                            showTopNotice(audioNotice)
-                        }
-                    }
-                    .accessibilityIdentifier("workspace.audio")
-
-                    captureActionButton(
-                        symbol: preferences.soundEnabled ? "speaker.wave.2" : "speaker.slash",
-                        label: "Interface sound",
-                        tint: preferences.soundEnabled ? GVTheme.acid : GVTheme.ash
-                    ) {
-                        preferences.soundEnabled.toggle()
-                        showTopNotice(preferences.soundEnabled ? "SOUND // ON" : "SOUND // MUTED")
-                    }
-                    .accessibilityIdentifier("workspace.sound")
-
-                    captureActionButton(
-                        symbol: preferences.musicEnabled ? "music.note.list" : "music.note",
-                        label: "Menu track",
-                        tint: preferences.musicEnabled ? GVTheme.acid : GVTheme.ash
-                    ) {
-                        preferences.musicEnabled.toggle()
-                        showTopNotice(preferences.musicEnabled ? "TRACK // PLAYING" : "TRACK // STOPPED")
-                    }
-                    .accessibilityIdentifier("workspace.music")
-
-                    captureActionButton(
-                        symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
-                        label: "Experimental",
-                        tint: preferences.experimentalEnabled ? GVTheme.acid : GVTheme.ash
-                    ) {
-                        preferences.experimentalEnabled.toggle()
-                        showTopNotice(preferences.experimentalEnabled ? "EXPERIMENTAL // ON" : "EXPERIMENTAL // OFF")
-                    }
-                    .accessibilityIdentifier("workspace.experimental")
-
-                    captureActionButton(
-                        symbol: preferences.sigilsEnabled ? "hand.draw.fill" : "hand.draw",
-                        label: "Sigils",
-                        tint: preferences.sigilsEnabled ? GVTheme.acid : GVTheme.ash
-                    ) {
-                        preferences.sigilsEnabled.toggle()
-                        showTopNotice(preferences.sigilsEnabled ? "SIGILS // ARMED" : "SIGILS // DISARMED")
-                    }
-                    .accessibilityIdentifier("workspace.sigils")
-
-                    captureActionButton(
-                        symbol: preferences.watermarkEnabled ? "video.badge.checkmark" : "video.slash",
-                        label: "Burn HUD",
-                        tint: preferences.watermarkEnabled ? GVTheme.acid : GVTheme.ash
-                    ) {
-                        preferences.watermarkEnabled.toggle()
-                        showTopNotice(preferences.watermarkEnabled ? "RECORDING // BURN HUD" : "RECORDING // CLEAN")
-                    }
-                    .accessibilityIdentifier("workspace.watermark")
-
-                    captureActionButton(
-                        symbol: "wrench.and.screwdriver",
-                        label: preferences.developerEnabled ? "Dev ON" : "Dev OFF",
-                        tint: preferences.developerEnabled ? GVTheme.acid : GVTheme.ash
-                    ) {
-                        preferences.developerEnabled.toggle()
-                        showTopNotice(preferences.developerEnabled ? "DEV // TOOLS REVEALED" : "DEV // TOOLS HIDDEN")
-                    }
-                    .accessibilityIdentifier("workspace.devmode")
-
-                    captureActionButton(symbol: "questionmark.circle", label: "Help", tint: GVTheme.violet) {
-                        coachPresented = true
-                    }
-                    .accessibilityIdentifier("workspace.help")
-
-                    captureActionButton(symbol: "hand.raised", label: "Privacy", tint: GVTheme.ash) {
-                        showTopNotice("PRIVACY POLICY // RESERVED")
-                    }
-                    .accessibilityIdentifier("workspace.privacy")
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 6)
-                .scrollTargetLayout()
+
+                captureActionButton(symbol: "questionmark.circle", label: "Help", tint: GVTheme.violet) {
+                    coachPresented = true
+                }
+                .accessibilityIdentifier("workspace.help")
             }
-            .contentMargins(.horizontal, 10, for: .scrollContent)
-            .scrollTargetBehavior(.viewAligned)
-            .gvHorizontalEdgeFade()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
         }
-        .frame(width: 350, height: 62)
         .frame(maxWidth: 620, alignment: .center)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.settings.deck")
@@ -982,21 +965,27 @@ private extension WorkspaceView {
         Button {
             action()
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: 5) {
                 Image(systemName: symbol)
-                    .font(.system(size: GVMetrics.textValue, weight: .bold))
+                    .font(.system(size: GVMetrics.textValue + 2, weight: .bold))
+                    .shadow(color: tint.opacity(0.45), radius: 3)
                 Text(label.uppercased())
                     .gvMono(GVMetrics.textMicro, .black)
-                    .tracking(0.32)
+                    .tracking(0.5)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
             .foregroundStyle(tint)
-            .frame(width: 54, height: 54)
-            .background(Color.clear, in: Circle())
-            .overlay(
-                Circle().strokeBorder(tint.opacity(0.35), lineWidth: 1)
+            .frame(width: 52, height: 54)
+            .background(
+                GVChamferedPlate(cut: 8)
+                    .fill(Color(white: 0.105).opacity(0.92))
             )
+            .overlay(
+                GVChamferedPlate(cut: 8)
+                    .strokeBorder(tint.opacity(0.30), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
         }
         .buttonStyle(GVPressStyle())
         .accessibilityLabel(label)

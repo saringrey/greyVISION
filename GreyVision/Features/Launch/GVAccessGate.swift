@@ -57,6 +57,16 @@ struct GVAccessGate: View {
                 lockButton
                     .transition(.opacity)
             }
+
+            // Violet port ring around the Dynamic Island.
+            GeometryReader { geometry in
+                GVIslandHalo(topInset: geometry.safeAreaInsets.top)
+            }
+            .allowsHitTesting(false)
+
+            // Analog display pass over everything: scanlines, tracking band,
+            // dropout streaks, vignette.
+            GateCRTOverlay()
         }
         .animation(GVMotion.resolved(GVMotion.tear, reduceMotion: reduceMotion), value: isFormPresented)
         .accessibilityIdentifier("access.gate")
@@ -398,7 +408,7 @@ private struct GateMarquee: View {
 
             TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 60, paused: false)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
-                let speed: CGFloat = 26
+                let speed: CGFloat = 52
                 let travel = CGFloat(fmod(t * Double(speed), Double(wrapW)))
 
                 // Leading drifts left off its natural start; trailing is the
@@ -409,17 +419,28 @@ private struct GateMarquee: View {
                     : -(wrapW * 2) + travel
 
                 let line = Text(repeated)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .tracking(2.6)
+                    .font(.system(size: 26, weight: .regular, design: .monospaced))
+                    .tracking(3.4)
 
                 ZStack {
                     // Soft white bloom sitting behind the glyphs.
                     line
                         .foregroundStyle(.white.opacity(0.14))
-                        .blur(radius: 6)
+                        .blur(radius: 9)
+
+                    // VHS chroma fringe: red/cyan split reads as tape bleed.
+                    line
+                        .foregroundStyle(Color(red: 1, green: 0.25, blue: 0.30).opacity(0.20))
+                        .shadow(color: .clear, radius: 0)
+                        .offset(x: 1.6)
 
                     line
-                        .foregroundStyle(Color(white: 0.46))
+                        .foregroundStyle(Color(red: 0.25, green: 0.95, blue: 1).opacity(0.18))
+                        .shadow(color: .clear, radius: 0)
+                        .offset(x: -1.6)
+
+                    line
+                        .foregroundStyle(Color(white: 0.52))
                         .shadow(color: .white.opacity(0.22), radius: 2.5)
                 }
                 .fixedSize()
@@ -434,7 +455,7 @@ private struct GateMarquee: View {
                 .frame(width: screenW, alignment: .leading)
             }
         }
-        .frame(height: 22)
+        .frame(height: 44)
         // Feathered edges: the line dissolves into black at both ends rather
         // than being cut by the display.
         .mask(
@@ -457,6 +478,124 @@ private struct MarqueeWidthKey: PreferenceKey {
     nonisolated(unsafe) static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// Full-screen analog display pass for the gate: static scanlines, a slow
+/// VHS tracking band drifting down the panel, rare dropout streaks, a
+/// head-switching noise strip at the bottom edge, and corner vignette.
+/// Everything is deterministic and deliberately faint — the screen should
+/// read as tired hardware, not as a broken one. Never hit-testable.
+private struct GateCRTOverlay: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            scanlines
+
+            if !reduceMotion {
+                TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { timeline in
+                    let t = timeline.date.timeIntervalSinceReferenceDate
+                    Canvas { context, size in
+                        drawTrackingBand(t: t, size: size, into: &context)
+                        drawDropouts(t: t, size: size, into: &context)
+                        drawHeadSwitch(t: t, size: size, into: &context)
+                    }
+                }
+            }
+
+            vignette
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// Static phosphor lines, drawn once per layout — no timeline cost.
+    private var scanlines: some View {
+        Canvas { context, size in
+            var y: CGFloat = 0
+            while y < size.height {
+                context.fill(
+                    Path(CGRect(x: 0, y: y, width: size.width, height: 1.1)),
+                    with: .color(.black.opacity(0.26))
+                )
+                y += 3.4
+            }
+        }
+    }
+
+    /// The bright band that rolls down a tape image every few seconds.
+    private func drawTrackingBand(t: TimeInterval, size: CGSize, into context: inout GraphicsContext) {
+        let bandHeight: CGFloat = 130
+        let period = Double(size.height + bandHeight * 2)
+        let y = CGFloat(fmod(t * 42, period)) - bandHeight
+        let gradient = Gradient(stops: [
+            .init(color: .white.opacity(0), location: 0),
+            .init(color: .white.opacity(0.055), location: 0.55),
+            .init(color: .white.opacity(0.10), location: 0.72),
+            .init(color: .white.opacity(0.03), location: 0.92),
+            .init(color: .white.opacity(0), location: 1)
+        ])
+        context.fill(
+            Path(CGRect(x: 0, y: y, width: size.width, height: bandHeight)),
+            with: .linearGradient(gradient, startPoint: CGPoint(x: 0, y: y), endPoint: CGPoint(x: 0, y: y + bandHeight))
+        )
+    }
+
+    /// Occasional single-line dropouts — the tape momentarily losing oxide.
+    /// Hash-bucketed like the glitch digits so every device decays alike.
+    private func drawDropouts(t: TimeInterval, size: CGSize, into context: inout GraphicsContext) {
+        let bucket = Int(t * 2)
+        guard Self.hash(bucket) < 0.22 else { return }
+        let y = Self.hash(bucket &+ 7) * Double(size.height - 40) + 20
+        let x = Self.hash(bucket &+ 13) * Double(size.width) * 0.6
+        let width = size.width * (0.18 + CGFloat(Self.hash(bucket &+ 19)) * 0.4)
+        context.fill(
+            Path(CGRect(x: x, y: y, width: width, height: 1.6)),
+            with: .color(.white.opacity(0.10))
+        )
+    }
+
+    /// Head-switching noise: a strip of jittered horizontal tearing hugging
+    /// the bottom edge, exactly where a VCR never tracked cleanly.
+    private func drawHeadSwitch(t: TimeInterval, size: CGSize, into context: inout GraphicsContext) {
+        let frame = Int(t * 24)
+        let baseY = size.height - 16
+        for line in 0 ..< 7 {
+            let jitterX = (Self.hash(frame &+ line &* 131) - 0.5) * 26
+            let y = baseY + CGFloat(line) * 2.1
+            context.fill(
+                Path(CGRect(x: jitterX, y: y, width: size.width + 26, height: 0.9)),
+                with: .color(.white.opacity(line % 2 == 0 ? 0.035 : 0.06))
+            )
+        }
+    }
+
+    private var vignette: some View {
+        LinearGradient(
+            colors: [.black.opacity(0.34), .clear],
+            startPoint: .bottom,
+            endPoint: UnitPoint(x: 0.5, y: 0.55)
+        )
+        .blendMode(.multiply)
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.12),
+                    .init(color: .clear, location: 0.30)
+                ],
+                startPoint: .bottom,
+                endPoint: .top
+            )
+        )
+    }
+
+    nonisolated private static func hash(_ value: Int) -> Double {
+        var mixed = UInt64(bitPattern: Int64(value)) &* 6_364_136_223_846_793_005
+        mixed = mixed &+ 1_442_695_040_888_963_407
+        return Double((mixed >> 33) % 100_000) / 100_000
     }
 }
 

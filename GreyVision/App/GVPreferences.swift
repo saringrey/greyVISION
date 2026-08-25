@@ -17,6 +17,15 @@ final class GVPreferences: ObservableObject {
         static let developer = "gv.preferences.developer"
         static let density = "gv.preferences.hudDensity"
         static let coachSeen = "gv.preferences.coach.seen"
+        static let startupAnimation = "gv.preferences.startup.animation"
+    }
+
+    /// Whether unlocking runs the full boot ceremony or lands straight in the
+    /// workspace. On by default because the sequence is the instrument's
+    /// opening statement; operators who reopen the app many times a day can
+    /// turn it off from the settings deck.
+    @Published var startupAnimationEnabled: Bool {
+        didSet { defaults.set(startupAnimationEnabled, forKey: Key.startupAnimation) }
     }
 
     /// How much telemetry the instrument prints at once. 0 minimal, 1
@@ -126,6 +135,11 @@ final class GVPreferences: ObservableObject {
         coachSeen = defaults.bool(forKey: Key.coachSeen)
         sigilsEnabled = defaults.bool(forKey: Key.sigils)
         experimentalEnabled = defaults.bool(forKey: Key.experimental)
+
+        defaults.register(defaults: [Key.startupAnimation: true])
+        startupAnimationEnabled = defaults.object(forKey: Key.startupAnimation) == nil
+            ? true
+            : defaults.bool(forKey: Key.startupAnimation)
         
         defaults.register(defaults: ["gv.preferences.watermark": true])
         watermarkEnabled = defaults.bool(forKey: "gv.preferences.watermark")

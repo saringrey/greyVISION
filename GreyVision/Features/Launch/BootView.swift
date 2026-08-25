@@ -43,403 +43,12 @@ struct BootView: View {
             let logoWidth = min(geometry.size.width, compactHeight ? 430 : 520)
             let logoHeight = min(geometry.size.height * (compactHeight ? 0.42 : 0.46), compactHeight ? 340 : 460)
 
-            ZStack {
-                GVTheme.void.ignoresSafeArea()
-
-                // PHASE 0-2: Void → Spark → Bloom (dramatic opening)
-                if sequence.phase <= .bloom {
-                    Color.black.ignoresSafeArea()
-
-                    // Dramatic phosphor spark and bloom
-                    TimelineView(.animation(minimumInterval: 1 / 60, paused: false)) { timeline in
-                        let elapsed = timeline.date.timeIntervalSince(sequence.phaseStart)
-
-                        ZStack {
-                            // Phase 1: Spark pixel
-                            if sequence.isSparkVisible, !sequence.isBloomActive {
-                                Circle()
-                                    .fill(
-                                        RadialGradient(
-                                            colors: [GVTheme.violet, GVTheme.violetDeep.opacity(0.8), .clear],
-                                            center: .center,
-                                            startRadius: 0,
-                                            endRadius: 2
-                                        )
-                                    )
-                                    .frame(width: 4, height: 4)
-                                    .blur(radius: 0.5)
-                                    .shadow(color: GVTheme.violet, radius: 8)
-                                    .opacity(min(elapsed / 0.3, 1.0))
-                            }
-
-                            // Phase 2: Bloom explosion
-                            if sequence.isBloomActive {
-                                let progress = min(elapsed / GVBootTiming.bloomSeconds, 1.0)
-                                let radius: CGFloat = 2000 * progress
-                                let intensity = progress < 0.3 ? progress / 0.3 : 1.0 - ((progress - 0.3) / 0.7) * 0.85
-
-                                // Feathered: many small steps rather than four
-                                // wide ones. Four stops over a 2000pt radius
-                                // put visible rings in the falloff, and the
-                                // outermost jump to clear read as a hard disc
-                                // edge sweeping outward.
-                                RadialGradient(
-                                    stops: [
-                                        .init(color: GVTheme.violet.opacity(intensity * 0.90), location: 0.00),
-                                        .init(color: GVTheme.violet.opacity(intensity * 0.72), location: 0.14),
-                                        .init(color: GVTheme.violetDeep.opacity(intensity * 0.52), location: 0.28),
-                                        .init(color: GVTheme.violetDeep.opacity(intensity * 0.34), location: 0.42),
-                                        .init(color: GVTheme.violetDeep.opacity(intensity * 0.20), location: 0.56),
-                                        .init(color: GVTheme.violetDeep.opacity(intensity * 0.10), location: 0.70),
-                                        .init(color: GVTheme.violetDeep.opacity(intensity * 0.04), location: 0.82),
-                                        .init(color: GVTheme.violetDeep.opacity(intensity * 0.01), location: 0.92),
-                                        .init(color: .clear, location: 1.00)
-                                    ],
-                                    center: .center,
-                                    startRadius: 0,
-                                    endRadius: radius * 0.4
-                                )
-                                // Heavier blur held for longer keeps the edge
-                                // soft across the whole expansion.
-                                .blur(radius: max(18 * (1 - progress * 0.7), 5))
-                                .compositingGroup()
-                                .blendMode(.plusLighter)
-                            }
-                        }
-                    }
-                    .ignoresSafeArea()
-                }
-
-                Group {
-                    RadialGradient(
-                        stops: [
-                            .init(color: GVTheme.violetDeep.opacity(0.26), location: 0),
-                            .init(color: GVTheme.violetDeep.opacity(0.17), location: 0.22),
-                            .init(color: GVTheme.violetDeep.opacity(0.08), location: 0.46),
-                            .init(color: GVTheme.void.opacity(0.22), location: 0.68),
-                            .init(color: .black, location: 1)
-                        ],
-                        center: .center,
-                        startRadius: 18,
-                        endRadius: max(geometry.size.width, geometry.size.height) * 0.82
-                    )
-                    // The veil is a light field, not a drawn shape — a soft
-                    // blur across the whole gradient removes the banding rings
-                    // that read as seams where the stops met.
-                    .blur(radius: 22)
-                    .ignoresSafeArea()
-
-                    // Top edge only. These three field layers were the only
-                    // ones respecting the safe area, so the starfield, snow
-                    // and grid all stopped short of the top of the display and
-                    // left a bare band across the notch. The bottom inset is
-                    // kept: the capture dock sits there and needs the room.
-                    GVAurora()
-                        .ignoresSafeArea()
-
-                    DeterministicStarfield()
-                        .opacity(0.58)
-                        .ignoresSafeArea(edges: .top)
-
-                    GVSnowField()
-                        .opacity(0.88)
-                        .ignoresSafeArea(edges: .top)
-
-                    GVGridField()
-                        .opacity(0.46)
-                        .ignoresSafeArea(edges: .top)
-
-                    GVScanlines(opacity: 0.05)
-                        .ignoresSafeArea()
-
-                    // Registration marks for the display, not for the
-                    // content: they sit at the physical corners so the whole
-                    // panel reads as one framed instrument.
-                    GVBrackets(
-                        color: GVTheme.bone.opacity(0.34),
-                        length: compactHeight ? 34 : 44,
-                        lineWidth: 1.4,
-                        // The display's own corner radius less the inset, so
-                        // the elbows follow the glass instead of cutting the
-                        // corner off. 62pt is the 6.9" Pro Max radius; the
-                        // smaller value keeps 6.1" and 6.3" honest too.
-                        cornerRadius: (compactHeight ? 55 : 62) - 9
-                    )
-                    .padding(9)
-                    .ignoresSafeArea()
-                }
-                .opacity(isInterfaceVisible ? 1 : 0)
-                .animation(.easeOut(duration: 0.9), value: isInterfaceVisible)
-
-                // The workspace tubes, carried onto the splash so the two
-                // screens are lit the same way. Held back until the interface
-                // is up: during the void and spark they would be the only
-                // light on screen and would give the spark away.
-                VStack(spacing: 0) {
-                    GVNeonEdge(
-                        edge: .top,
-                        reach: max(geometry.safeAreaInsets.top, 12) + 128,
-                        intensity: 1.65
-                    )
-                    Spacer(minLength: 0)
-                    GVNeonEdge(edge: .bottom, reach: 190, intensity: 1.65)
-                }
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-                .opacity(isInterfaceVisible ? 1 : 0)
-
-                // PHASE 1 — sensors discovering signal in darkness.
-                wakeLayer
-                    .ignoresSafeArea()
-                    .opacity(sequence.phase >= .wake ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.6), value: sequence.phase)
-
-                GVDualScanner(isActive: sequence.phase >= .discovery)
-                    .ignoresSafeArea()
-
-                // Weather behind the mark. Two storms, offset and mirrored,
-                // so the lightning reads as a field around the sigil rather
-                // than a single strike in one place.
-                if sequence.isMarkVisible {
-                    ZStack {
-                        GVStormCloud()
-                            .frame(width: logoWidth * 1.5, height: logoHeight * 0.9)
-                            .offset(x: -logoWidth * 0.16, y: -logoHeight * 0.10)
-                        GVStormCloud()
-                            .frame(width: logoWidth * 1.3, height: logoHeight * 0.78)
-                            .scaleEffect(x: -1, y: 1)
-                            .offset(x: logoWidth * 0.18, y: logoHeight * 0.06)
-                    }
-                    .blendMode(.plusLighter)
-                    .allowsHitTesting(false)
-                    // Pinned to the display and clipped. Without this the
-                    // wider cloud — logoWidth * 1.5, larger than the screen —
-                    // set the root ZStack's width, and every other layer then
-                    // centred inside those oversized bounds and shifted right.
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped()
-                    .transition(.opacity)
-                }
-
-                VStack(spacing: 0) {
-                    VStack(spacing: 1) {
-                        // The mark leads. It is the subject of the screen, so
-                        // it takes the top rather than sitting under a block
-                        // of version text that is only there to be read once.
-                        if sequence.revealedIdentityRows.contains(1) {
-                            GVASCIIWordmark(
-                                text: "grey//VISION",
-                                glyphSize: compactHeight ? 4.6 : 5.4,
-                                columns: compactHeight ? 104 : 118,
-                                tint: GVTheme.bone,
-                                accent: GVTheme.violet,
-                                revealStart: identityRowDate(1),
-                                revealDuration: 2.8
-                            )
-                            .gvBlackHalo(radius: 30, opacity: 0.66)
-                            .contentShape(Rectangle())
-                            .onTapGesture(perform: presentSocialLinks)
-                            .accessibilityIdentifier("boot.screen")
-                            .padding(.top, max(geometry.safeAreaInsets.top - 48, 4))
-                        }
-
-                        // Gated on the phase, not just faded: during the void
-                        // and spark the console still laid out its rows, and
-                        // the separator dots in them showed as a grey matrix
-                        // floating in the black above the spark.
-                        if sequence.phase > .bloom {
-                            bootConsole(compactHeight: compactHeight)
-                                .padding(.top, compactHeight ? 3 : 6)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                }
-
-                // Mark centred on the display; identity overlaid on its
-                // lower half.
-                //
-                // Stacking the two in a VStack tied the mark's position to the
-                // height of the text under it, so growing the manifest from
-                // four rows to twelve silently pushed the rabbit upward — it
-                // was never repositioned, it was displaced. They are separate
-                // layers now: the mark holds the centre of the screen and the
-                // text is offset down over it, which is also the overlap that
-                // was wanted.
-                //
-                // The identity keeps its own width constraint. It must never
-                // inherit the mark's frame, which is wider than the display
-                // and once pushed the wordmark off the right edge.
-                ZStack {
-                    GVLogoReconstruction(
-                        isActive: sequence.isMarkVisible,
-                        start: markStart
-                    ) {
-                        LogoTreatment(
-                            decay: isReady ? 0.12 : 0.28,
-                            interactive: isReady,
-                            accessibilityIdentifier: "boot.social",
-                            onActivate: presentSocialLinks
-                        )
-                        .frame(width: logoWidth, height: logoHeight)
-                        .overlay {
-                            RadialGradient(
-                                colors: [.clear, .black.opacity(0.08), .black.opacity(0.48)],
-                                center: .center,
-                                startRadius: logoWidth * 0.20,
-                                endRadius: logoWidth * 0.56
-                            )
-                            .allowsHitTesting(false)
-                        }
-                        .overlay {
-                            // Masked to the mark's own alpha. Unmasked the
-                            // band would sweep a rectangle across the void,
-                            // which is the tell that it is a gradient rather
-                            // than light on an object.
-                            GVLogoGlint(start: markStart)
-                                .mask(
-                                    Image("OfficialLogo")
-                                        .resizable()
-                                        .scaledToFit()
-                                )
-                        }
-                    }
-                    .frame(width: logoWidth, height: logoHeight)
-                    // Incantation orbiting the mark. Sits behind it in the
-                    // stack and stays under a third opacity: it is an
-                    // inscription around the sigil, not a second headline.
-                    // Radius is derived from the mark so it clears the
-                    // artwork on any device rather than being tuned to one.
-                    .background {
-                        GVCircularText(
-                            text: "I CAN SUMMON ANY SPIRIT. I CAN SUMMON ANY SPIRIT. ",
-                            radius: min(logoWidth, logoHeight) * 0.46,
-                            spinDuration: 34,
-                            fontSize: compactHeight ? 9 : 10.5,
-                            color: GVTheme.bone,
-                            opacity: 0.24
-                        )
-                        .opacity(sequence.isMarkVisible ? 1 : 0)
-                        .animation(.easeOut(duration: 1.1), value: sequence.isMarkVisible)
-                    }
-                    // Applied outside GVLogoReconstruction on purpose. The
-                    // reconstruction wraps the mark in a layerEffect, and a
-                    // layerEffect rasterises and clips to its own bounds, so a
-                    // feather applied inside LogoTreatment was being squared
-                    // off again one level up. That hard bottom edge is the
-                    // seam that kept cutting through the manifest.
-                    .mask(
-                        LinearGradient(
-                            stops: [
-                                // Both ends feather. The previous version was
-                                // opaque at location 0, so the top of the
-                                // mark's frame terminated on a hard line — the
-                                // seam sitting under THERMAL.STATE.
-                                .init(color: .clear, location: 0),
-                                .init(color: .black.opacity(0.55), location: 0.14),
-                                .init(color: .black, location: 0.34),
-                                .init(color: .black, location: 0.62),
-                                .init(color: .black.opacity(0.55), location: 0.82),
-                                .init(color: .clear, location: 1.0)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .gvBlackHalo(radius: 44, opacity: 0.55)
-                    .background {
-                        // The violet bloom lives here rather than full-bleed
-                        // behind the whole screen. Centred on the display it
-                        // washed the entire lower block; anchored to the mark
-                        // it lights the rabbit and reaches just far enough to
-                        // catch the wordmark, which is where the glow belongs.
-                        //
-                        // Sized well beyond the mark on purpose: a background
-                        // takes the frame it is given, and one matching the
-                        // mark would terminate the gradient on a hard edge.
-                        GVAtmosphericBloom(
-                            progress: sequence.phase >= .wake ? 1 : 0,
-                            falloff: sequence.phase >= .sync ? 1 : 0
-                        )
-                        .frame(width: logoWidth * 1.5, height: logoHeight * 1.5)
-                        .allowsHitTesting(false)
-                        .animation(.easeOut(duration: 0.9), value: sequence.phase)
-                    }
-
-                    // The block is top-anchored, not centred.
-                    //
-                    // It used to be centred and dropped, which meant growing it
-                    // pushed its top edge up into the rabbit and its bottom
-                    // down through the format dock in equal measure. Pinning
-                    // the top and deriving the height from the dock clearance
-                    // lets the window fill the gap without eating either.
-                    //
-                    // The top still sits inside the mark's lower spikes on
-                    // purpose — the feather is what keeps that reading as depth
-                    // rather than as a collision.
-                    let identityTop = logoHeight * (compactHeight ? 0.36 : 0.34)
-                    let identityWindow = max(
-                        geometry.size.height / 2 - (compactHeight ? 74 : 84) - identityTop,
-                        150
-                    )
-
-                    splashIdentity(compactHeight: compactHeight, availableHeight: identityWindow)
-                        .frame(maxWidth: geometry.size.width - 16)
-                        // `offset` moves the centre, and the block is exactly
-                        // `identityWindow` tall, so half of it puts the top
-                        // edge on `identityTop`.
-                        .offset(y: identityTop + identityWindow / 2)
-                        .gvDecay(sequence.glitchedElement == .identity, seed: 3)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .ignoresSafeArea()
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    SplashCaptureDock(
-                        setup: $appModel.setup,
-                        isReady: isReady,
-                        isCollapsing: isDeparting,
-                        bottomInset: geometry.safeAreaInsets.bottom,
-                        onLaunch: launchWorkspace
-                    )
-                    .padding(.horizontal, 12)
-                }
-                .ignoresSafeArea(edges: .bottom)
-                // Staged onto the same clock as everything above it. The rail
-                // used to switch on in one frame while the manifest was still
-                // resolving row by row, which made the most important control
-                // on the screen look like it had been pasted in.
-                .opacity(dockReveal)
-                .offset(y: (1 - dockReveal) * 26)
-                .animation(.easeOut(duration: 0.55), value: dockReveal)
-                .gvDecay(sequence.glitchedElement == .dock, seed: 4)
-
-                if isSocialPresented {
-                    SocialLinksOverlay(isPresented: $isSocialPresented)
-                        .transition(
-                            .scale(scale: 0.88, anchor: .center)
-                                .combined(with: .opacity)
-                        )
-                        .zIndex(20)
-                }
-
-                // Global CRT glass. Sits above every layer including the mark,
-                // so the artwork is seen *through* the same tube as the rest of
-                // the interface rather than sitting on top of it — which is
-                // what stopped it reading as a pasted-on image.
-                GVBootCRTGlass()
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                    .zIndex(12)
-
-                // PHASE 4 — CRT synchronisation beam.
-                GVSyncSweep(isActive: sequence.phase == .sync, start: sequence.phaseStart)
-                    .ignoresSafeArea()
-                    .zIndex(15)
-            }
-            .gvChromaticLock(isActive: sequence.phase == .sync, start: sequence.phaseStart)
-            .gvRasterTear(isActive: isDeparting, start: sequence.phaseStart)
-            .scaleEffect(isDeparting && !reduceMotion ? 1.006 : 1)
+            splashContent(
+                geometry: geometry,
+                logoWidth: logoWidth,
+                logoHeight: logoHeight,
+                compactHeight: compactHeight
+            )
         }
         .onDisappear {
             GVSoundEngine.shared.stopStings()
@@ -496,7 +105,12 @@ struct BootView: View {
         .onChange(of: sequence.glitchedElement) { previous, current in
             // One shot, on the first corruption only. Retriggering per glitch
             // would stack copies of the same cue over each other.
-            guard previous == nil, current != nil, !hasPlayedGlitchCue else { return }
+            // (Explicit `GVBootElement?` annotations: inference of the
+            // optional comparisons stalled the type-checker inside this very
+            // large body.)
+            let previousElement: GVBootElement? = previous
+            let currentElement: GVBootElement? = current
+            guard currentElement != nil, previousElement == nil, !hasPlayedGlitchCue else { return }
             hasPlayedGlitchCue = true
             GVSoundEngine.shared.play(.bootGlitch)
         }
@@ -507,9 +121,351 @@ struct BootView: View {
         .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isSocialPresented)
     }
 
+    /// The full splash stack. Its own method rather than inline in `body`:
+    /// this view is large enough that keeping everything in one expression
+    /// stalls the type-checker.
+    private func splashContent(
+        geometry: GeometryProxy,
+        logoWidth: CGFloat,
+        logoHeight: CGFloat,
+        compactHeight: Bool
+    ) -> some View {
+        ZStack {
+            GVTheme.void.ignoresSafeArea()
+
+            // PHASE 0-2: Void → Spark → Bloom (dramatic opening)
+            if sequence.phase <= .bloom {
+                Color.black.ignoresSafeArea()
+                openingField
+            }
+
+            BootAmbientField(
+                reach: max(geometry.size.width, geometry.size.height) * 0.82,
+                compactHeight: compactHeight
+            )
+            .opacity(isInterfaceVisible ? 1 : 0)
+            .animation(.easeOut(duration: 0.9), value: isInterfaceVisible)
+
+            // The workspace tubes, carried onto the splash so the two
+            // screens are lit the same way. Held back until the interface
+            // is up: during the void and spark they would be the only
+            // light on screen and would give the spark away.
+            VStack(spacing: 0) {
+                GVNeonEdge(
+                    edge: .top,
+                    reach: max(geometry.safeAreaInsets.top, 12) + 128,
+                    tint: BootPalette.glow,
+                    intensity: 1.65
+                )
+                Spacer(minLength: 0)
+                GVNeonEdge(edge: .bottom, reach: 190, tint: BootPalette.glow, intensity: 1.65)
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .opacity(isInterfaceVisible ? 1 : 0)
+
+            // PHASE 1 — sensors discovering signal in darkness.
+            wakeLayer
+                .ignoresSafeArea()
+                .opacity(sequence.phase >= .wake ? 1 : 0)
+                .animation(.easeInOut(duration: 0.6), value: sequence.phase)
+
+            GVDualScanner(isActive: sequence.phase >= .discovery)
+                .ignoresSafeArea()
+
+            // Weather behind the mark. Two storms, offset and mirrored,
+            // so the lightning reads as a field around the sigil rather
+            // than a single strike in one place.
+            if sequence.isMarkVisible {
+                ZStack {
+                    GVStormCloud()
+                        .frame(width: logoWidth * 1.5, height: logoHeight * 0.9)
+                        .offset(x: -logoWidth * 0.16, y: -logoHeight * 0.10)
+                    GVStormCloud()
+                        .frame(width: logoWidth * 1.3, height: logoHeight * 0.78)
+                        .scaleEffect(x: -1, y: 1)
+                        .offset(x: logoWidth * 0.18, y: logoHeight * 0.06)
+                }
+                .blendMode(.plusLighter)
+                .allowsHitTesting(false)
+                // Pinned to the display and clipped. Without this the
+                // wider cloud — logoWidth * 1.5, larger than the screen —
+                // set the root ZStack's width, and every other layer then
+                // centred inside those oversized bounds and shifted right.
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipped()
+                .transition(.opacity)
+            }
+
+            VStack(spacing: 0) {
+                VStack(spacing: 1) {
+                    // The mark leads. It is the subject of the screen, so
+                    // it takes the top rather than sitting under a block
+                    // of version text that is only there to be read once.
+                    if sequence.revealedIdentityRows.contains(1) {
+                        GVASCIIWordmark(
+                            text: "grey//VISION",
+                            glyphSize: compactHeight ? 4.6 : 5.4,
+                            columns: compactHeight ? 104 : 118,
+                            tint: GVTheme.bone,
+                            accent: BootPalette.glow,
+                            revealStart: identityRowDate(1),
+                            revealDuration: 2.8
+                        )
+                        .gvBlackHalo(radius: 30, opacity: 0.66)
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: presentSocialLinks)
+                        .accessibilityIdentifier("boot.screen")
+                        .padding(.top, max(geometry.safeAreaInsets.top - 48, 4))
+                    }
+
+                    // Gated on the phase, not just faded: during the void
+                    // and spark the console still laid out its rows, and
+                    // the separator dots in them showed as a grey matrix
+                    // floating in the black above the spark.
+                    if sequence.phase > .bloom {
+                        bootConsole(compactHeight: compactHeight)
+                            .padding(.top, compactHeight ? 3 : 6)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            markLayer(
+                geometry: geometry,
+                logoWidth: logoWidth,
+                logoHeight: logoHeight,
+                compactHeight: compactHeight
+            )
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                SplashCaptureDock(
+                    setup: $appModel.setup,
+                    isReady: isReady,
+                    isCollapsing: isDeparting,
+                    bottomInset: geometry.safeAreaInsets.bottom,
+                    onLaunch: launchWorkspace
+                )
+                .padding(.horizontal, 12)
+            }
+            .ignoresSafeArea(edges: .bottom)
+            // Staged onto the same clock as everything above it. The rail
+            // used to switch on in one frame while the manifest was still
+            // resolving row by row, which made the most important control
+            // on the screen look like it had been pasted in.
+            .opacity(dockReveal)
+            .offset(y: (1 - dockReveal) * 26)
+            .animation(.easeOut(duration: 0.55), value: dockReveal)
+            .gvDecay(sequence.glitchedElement == .dock, seed: 4)
+            // Above the CRT glass (12) and the sync sweep (15): the dock is
+            // the one control surface on this screen and must not be seen
+            // through the tube.
+            .zIndex(16)
+
+            if isSocialPresented {
+                SocialLinksOverlay(isPresented: $isSocialPresented)
+                    .transition(
+                        .scale(scale: 0.88, anchor: .center)
+                            .combined(with: .opacity)
+                    )
+                    .zIndex(20)
+            }
+
+            // Global CRT glass. Sits above every layer including the mark,
+            // so the artwork is seen *through* the same tube as the rest of
+            // the interface rather than sitting on top of it — which is
+            // what stopped it reading as a pasted-on image.
+            GVBootCRTGlass()
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .zIndex(12)
+
+            // PHASE 4 — CRT synchronisation beam.
+            GVSyncSweep(isActive: sequence.phase == .sync, start: sequence.phaseStart)
+                .ignoresSafeArea()
+                .zIndex(15)
+        }
+        .gvChromaticLock(isActive: sequence.phase == .sync, start: sequence.phaseStart)
+        .gvRasterTear(isActive: isDeparting, start: sequence.phaseStart)
+        .scaleEffect(isDeparting && !reduceMotion ? 1.006 : 1)
+    }
+
+    /// Mark centred on the display; identity overlaid on its lower half.
+    ///
+    /// Stacking the two in a VStack tied the mark's position to the height of
+    /// the text under it, so growing the manifest from four rows to twelve
+    /// silently pushed the rabbit upward — it was never repositioned, it was
+    /// displaced. They are separate layers now: the mark holds the centre of
+    /// the screen and the text is offset down over it, which is also the
+    /// overlap that was wanted.
+    ///
+    /// The identity keeps its own width constraint. It must never inherit the
+    /// mark's frame, which is wider than the display and once pushed the
+    /// wordmark off the right edge.
+    ///
+    /// (Its own method rather than inline in `body`: this view is large enough
+    /// that keeping everything in one expression stalls the type-checker.)
+    private func markLayer(
+        geometry: GeometryProxy,
+        logoWidth: CGFloat,
+        logoHeight: CGFloat,
+        compactHeight: Bool
+    ) -> some View {
+        ZStack {
+
+            //
+            // Stacking the two in a VStack tied the mark's position to the
+            // height of the text under it, so growing the manifest from
+            // four rows to twelve silently pushed the rabbit upward — it
+            // was never repositioned, it was displaced. They are separate
+            // layers now: the mark holds the centre of the screen and the
+            // text is offset down over it, which is also the overlap that
+            // was wanted.
+            //
+            // The identity keeps its own width constraint. It must never
+            // inherit the mark's frame, which is wider than the display
+            // and once pushed the wordmark off the right edge.
+            ZStack {
+                GVLogoReconstruction(
+                    isActive: sequence.isMarkVisible,
+                    start: markStart
+                ) {
+                    LogoTreatment(
+                        decay: isReady ? 0.12 : 0.28,
+                        interactive: isReady,
+                        accessibilityIdentifier: "boot.social",
+                        onActivate: presentSocialLinks
+                    )
+                    .frame(width: logoWidth, height: logoHeight)
+                    .overlay {
+                        RadialGradient(
+                            colors: [.clear, .black.opacity(0.08), .black.opacity(0.48)],
+                            center: .center,
+                            startRadius: logoWidth * 0.20,
+                            endRadius: logoWidth * 0.56
+                        )
+                        .allowsHitTesting(false)
+                    }
+                    .overlay {
+                        // Masked to the mark's own alpha. Unmasked the
+                        // band would sweep a rectangle across the void,
+                        // which is the tell that it is a gradient rather
+                        // than light on an object.
+                        GVLogoGlint(start: markStart)
+                            .mask(
+                                Image("OfficialLogo")
+                                    .resizable()
+                                    .scaledToFit()
+                            )
+                    }
+                }
+                .frame(width: logoWidth, height: logoHeight)
+                // Incantation orbiting the mark. Sits behind it in the
+                // stack and stays under a third opacity: it is an
+                // inscription around the sigil, not a second headline.
+                // Radius is derived from the mark so it clears the
+                // artwork on any device rather than being tuned to one.
+                .background {
+                    GVCircularText(
+                        text: "I CAN SUMMON ANY SPIRIT. I CAN SUMMON ANY SPIRIT. ",
+                        radius: min(logoWidth, logoHeight) * 0.46,
+                        spinDuration: 34,
+                        fontSize: compactHeight ? 9 : 10.5,
+                        color: GVTheme.bone,
+                        opacity: 0.24
+                    )
+                    .opacity(sequence.isMarkVisible ? 1 : 0)
+                    .animation(.easeOut(duration: 1.1), value: sequence.isMarkVisible)
+                }
+                // Applied outside GVLogoReconstruction on purpose. The
+                // reconstruction wraps the mark in a layerEffect, and a
+                // layerEffect rasterises and clips to its own bounds, so a
+                // feather applied inside LogoTreatment was being squared
+                // off again one level up. That hard bottom edge is the
+                // seam that kept cutting through the manifest.
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            // Both ends feather. The previous version was
+                            // opaque at location 0, so the top of the
+                            // mark's frame terminated on a hard line — the
+                            // seam sitting under THERMAL.STATE.
+                            .init(color: .clear, location: 0),
+                            .init(color: .black.opacity(0.55), location: 0.14),
+                            .init(color: .black, location: 0.34),
+                            .init(color: .black, location: 0.62),
+                            .init(color: .black.opacity(0.55), location: 0.82),
+                            .init(color: .clear, location: 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .gvBlackHalo(radius: 44, opacity: 0.55)
+                .background {
+                    // The violet bloom lives here rather than full-bleed
+                    // behind the whole screen. Centred on the display it
+                    // washed the entire lower block; anchored to the mark
+                    // it lights the rabbit and reaches just far enough to
+                    // catch the wordmark, which is where the glow belongs.
+                    //
+                    // Sized well beyond the mark on purpose: a background
+                    // takes the frame it is given, and one matching the
+                    // mark would terminate the gradient on a hard edge.
+                    GVAtmosphericBloom(
+                        progress: sequence.phase >= .wake ? 1 : 0,
+                        falloff: sequence.phase >= .sync ? 1 : 0
+                    )
+                    .frame(width: logoWidth * 1.5, height: logoHeight * 1.5)
+                    .allowsHitTesting(false)
+                    .animation(.easeOut(duration: 0.9), value: sequence.phase)
+                }
+
+                // The block is top-anchored, not centred.
+                //
+                // It used to be centred and dropped, which meant growing it
+                // pushed its top edge up into the rabbit and its bottom
+                // down through the format dock in equal measure. Pinning
+                // the top and deriving the height from the dock clearance
+                // lets the window fill the gap without eating either.
+                //
+                // The top still sits inside the mark's lower spikes on
+                // purpose — the feather is what keeps that reading as depth
+                // rather than as a collision.
+                let identityTop = logoHeight * (compactHeight ? 0.36 : 0.34)
+                let identityWindow = max(
+                    geometry.size.height / 2 - (compactHeight ? 74 : 84) - identityTop,
+                    150
+                )
+
+                splashIdentity(compactHeight: compactHeight, availableHeight: identityWindow)
+                    .frame(maxWidth: geometry.size.width - 16)
+                    // `offset` moves the centre, and the block is exactly
+                    // `identityWindow` tall, so half of it puts the top
+                    // edge on `identityTop`.
+                    .offset(y: identityTop + identityWindow / 2)
+                    .gvDecay(sequence.glitchedElement == .identity, seed: 3)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .ignoresSafeArea()
+    }
+
+    /// Dramatic phosphor spark and bloom. A separate property so the generic
+    /// TimelineView closure is type-checked outside the (very large) body.
+    private var openingField: some View {
+        TimelineView(.animation(minimumInterval: 1 / 60, paused: false)) { timeline in
+            BootOpeningField(
+                sequence: sequence,
+                elapsed: timeline.date.timeIntervalSince(sequence.phaseStart)
+            )
+        }
+        .ignoresSafeArea()
+    }
+
     /// PHASE 3+ star field. Hidden during void/spark/bloom phases
-    @ViewBuilder private var wakeLayer: some View {
-        if sequence.phase >= .wake, sequence.phase < .armed {
+    @ViewBuilder private var wakeLayer: some View {        if sequence.phase >= .wake, sequence.phase < .armed {
             TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { timeline in
                 GVStarfieldWake(
                     progress: wakeProgress(now: timeline.date),
@@ -648,7 +604,7 @@ struct BootView: View {
                         text: "MADE WITH LOVE BY",
                         fontSize: compactHeight ? 10.5 : 12,
                         tracking: 1.2,
-                        strokeColor: GVTheme.violet,
+                        strokeColor: BootPalette.glow,
                         fillColor: GVTheme.bone.opacity(0.78),
                         strokeWidth: 0.9,
                         drawDuration: 3.4,
@@ -888,6 +844,166 @@ struct BootView: View {
     }
 }
 
+/// The splash's standing atmosphere: deep veil, aurora, starfield, snow,
+/// grid, scanlines and corner registration marks. Extracted from `BootView`
+/// purely to keep that body type-checkable; behaviour is unchanged.
+private struct BootAmbientField: View {
+    let reach: CGFloat
+    let compactHeight: Bool
+
+    var body: some View {
+        Group {
+            RadialGradient(
+                stops: Self.veilStops(reach: reach),
+                center: .center,
+                startRadius: 18,
+                endRadius: reach
+            )
+            // The veil is a light field, not a drawn shape — a soft blur
+            // across the whole gradient removes the banding rings that read
+            // as seams where the stops met.
+            .blur(radius: 22)
+            .ignoresSafeArea()
+
+            // Top edge only. These three field layers were the only ones
+            // respecting the safe area, so the starfield, snow and grid all
+            // stopped short of the top of the display and left a bare band
+            // across the notch. The bottom inset is kept: the capture dock
+            // sits there and needs the room.
+            GVAurora()
+                .ignoresSafeArea()
+
+            DeterministicStarfield()
+                .opacity(0.58)
+                .ignoresSafeArea(edges: .top)
+
+            GVSnowField()
+                .opacity(0.88)
+                .ignoresSafeArea(edges: .top)
+
+            GVGridField()
+                .opacity(0.46)
+                .ignoresSafeArea(edges: .top)
+
+            GVScanlines(opacity: 0.05)
+                .ignoresSafeArea()
+
+            // Registration marks for the display, not for the content: they
+            // sit at the physical corners so the whole panel reads as one
+            // framed instrument.
+            GVBrackets(
+                color: GVTheme.bone.opacity(0.34),
+                length: compactHeight ? 34 : 44,
+                lineWidth: 1.4,
+                // The display's own corner radius less the inset, so the
+                // elbows follow the glass instead of cutting the corner off.
+                // 62pt is the 6.9" Pro Max radius; the smaller value keeps
+                // 6.1" and 6.3" honest too.
+                cornerRadius: (compactHeight ? 55 : 62) - 9
+            )
+            .padding(9)
+            .ignoresSafeArea()
+        }
+    }
+
+    private static func veilStops(reach: CGFloat) -> [Gradient.Stop] {
+        [
+            .init(color: BootPalette.deep.opacity(0.19), location: 0),
+            .init(color: BootPalette.deep.opacity(0.12), location: 0.22),
+            .init(color: BootPalette.deep.opacity(0.055), location: 0.46),
+            .init(color: GVTheme.void.opacity(0.30), location: 0.68),
+            .init(color: .black, location: 1)
+        ]
+    }
+}
+
+/// PHASE 0-2 opening field: the spark pixel and the bloom detonating out of
+/// it. Extracted from `BootView` because gradient literals this size inside
+/// the boot timeline stalled the type-checker; it also keeps each ramp in one
+/// readable place.
+private struct BootOpeningField: View {
+    let sequence: GVBootSequence
+    let elapsed: TimeInterval
+
+    var body: some View {
+        ZStack {
+            // Phase 1: Spark pixel
+            if sequence.isSparkVisible, !sequence.isBloomActive {
+                BootSpark(elapsed: elapsed)
+            }
+
+            // Phase 2: Bloom explosion
+            if sequence.isBloomActive {
+                BootBloomLayer(elapsed: elapsed)
+                    .compositingGroup()
+                    .blendMode(.plusLighter)
+            }
+        }
+    }
+}
+
+/// Phase 1: a single hot pixel igniting in the void.
+private struct BootSpark: View {
+    let elapsed: TimeInterval
+
+    var body: some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    colors: [.white, BootPalette.glow.opacity(0.85), .clear],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: 2
+                )
+            )
+            .frame(width: 4, height: 4)
+            .blur(radius: 0.5)
+            .shadow(color: BootPalette.glow, radius: 8)
+            .shadow(color: BootPalette.ember.opacity(0.6), radius: 14)
+            .opacity(min(elapsed / 0.3, 1.0))
+    }
+}
+
+/// Phase 2 of the boot opening: the bloom detonating out of the spark.
+///
+/// Extracted from `BootView` because a gradient literal this size inside the
+/// boot timeline stalled the type-checker; it also keeps the stop ramp in one
+/// readable place.
+private struct BootBloomLayer: View {
+    let elapsed: TimeInterval
+
+    /// Feathered: many small steps rather than four wide ones. Four stops
+    /// over a 2000pt radius put visible rings in the falloff, and the
+    /// outermost jump to clear read as a hard disc edge sweeping outward.
+    private static func stops(_ intensity: Double) -> [Gradient.Stop] {
+        [
+            .init(color: .white.opacity(intensity * 0.95), location: 0.00),
+            .init(color: BootPalette.glow.opacity(intensity * 0.78), location: 0.14),
+            .init(color: BootPalette.glow.opacity(intensity * 0.50), location: 0.28),
+            .init(color: BootPalette.deep.opacity(intensity * 0.36), location: 0.42),
+            .init(color: BootPalette.deep.opacity(intensity * 0.21), location: 0.56),
+            .init(color: BootPalette.ember.opacity(intensity * 0.09), location: 0.70),
+            .init(color: BootPalette.deep.opacity(intensity * 0.04), location: 0.82),
+            .init(color: BootPalette.deep.opacity(intensity * 0.01), location: 0.92),
+            .init(color: .clear, location: 1.00)
+        ]
+    }
+
+    var body: some View {
+        let progress = min(elapsed / GVBootTiming.bloomSeconds, 1.0)
+        let radius: CGFloat = 2000 * progress
+        let intensity = progress < 0.3 ? progress / 0.3 : 1.0 - ((progress - 0.3) / 0.7) * 0.85
+
+        RadialGradient(
+            stops: Self.stops(intensity),
+            center: .center,
+            startRadius: 0,
+            endRadius: radius * 0.4
+        )
+        .blur(radius: max(18 * (1 - progress * 0.7), 5))
+    }
+}
+
 /// The signature line above the wordmark.
 ///
 /// Set in SF rather than the monospace used everywhere else on this screen, so
@@ -960,8 +1076,8 @@ private struct SplashCaptureDock: View {
     private let codecChoices: [CaptureSetupDraft.VideoCodec] = CaptureSetupDraft.VideoCodec.curated
 
     var body: some View {
-        VStack(spacing: 5) {
-            HStack(spacing: 8) {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
                 dockButton(
                     .format,
                     value: "\(setup.videoCodec.compactLabel) \u{00B7} \(setup.frameRate.rawValue) \u{00B7} \(setup.resolution.rawValue)"
@@ -972,27 +1088,19 @@ private struct SplashCaptureDock: View {
 
             GVTerminalText(
                 text: isReady ? "FORMAT ARMED // LAUNCH" : "LOCAL PROBE IN PROGRESS",
-                size: 6.8,
+                size: 9.5,
                 weight: .bold,
-                tracking: 1.0,
+                tracking: 1.2,
                 baseColor: isReady ? GVTheme.bone.opacity(0.72) : GVTheme.bone.opacity(0.42),
                 intensity: 0.42
             )
             .padding(.bottom, max(bottomInset, 5))
         }
-        // The dock is white type on a transparent plate over a violet field,
-        // which at the bottom of the splash is close to white on white. The
-        // halo sinks it into a dark pocket without giving any of the four
-        // controls a border back.
-        .gvBlackHalo(radius: 34, opacity: 0.72)
         .frame(maxWidth: 560)
         .overlay(alignment: .top) {
             if let activeSection {
                 choiceRail(for: activeSection)
-                    .offset(y: -76)
-                    // Same reason as the dock below it: the option cards are
-                    // unplated type over the splash field.
-                    .gvBlackHalo(radius: 30, opacity: 0.7)
+                    .offset(y: -128)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -1048,7 +1156,8 @@ private struct SplashCaptureDock: View {
                             label: resolution.rawValue,
                             detail: resolution.availabilityNote,
                             selected: setup.resolution == resolution,
-                            enabled: resolution.isSelectable
+                            enabled: resolution.isSelectable,
+                            collapsesMenu: true
                         ) {
                             setup.resolution = resolution
                         }
@@ -1110,10 +1219,10 @@ private struct SplashCaptureDock: View {
 
     private func groupHeader(_ title: String) -> some View {
         Text(title)
-            .gvMono(GVMetrics.textMicro, .bold)
-            .tracking(1.4)
+            .gvMono(GVMetrics.textSmall, .bold)
+            .tracking(1.6)
             .foregroundStyle(GVTheme.ash.opacity(0.85))
-            .frame(width: 34)
+            .frame(width: 46)
     }
 
     private func dockButton(_ section: SplashDockSection, value: String) -> some View {
@@ -1121,76 +1230,76 @@ private struct SplashCaptureDock: View {
         return Button {
             activeSection = isActive ? nil : section
         } label: {
-            VStack(spacing: 3) {
-                // `ash` is calibrated against the workspace's near-black.
-                // The splash lays these over a lit violet field, where the
-                // same grey drops to roughly a third of its contrast — hence
-                // bone held back rather than ash. The value below stays at
-                // full bone, so the size and weight still carry the hierarchy.
+            VStack(spacing: 6) {
                 GVTerminalText(
                     text: section.label,
-                    size: 6,
+                    size: 9.5,
                     weight: .bold,
-                    tracking: 1.1,
+                    tracking: 1.6,
                     baseColor: isActive ? GVTheme.violet : GVTheme.bone.opacity(0.76),
                     intensity: 0.55
                 )
                 GVTerminalText(
                     text: value,
-                    size: 9,
+                    size: 15,
                     weight: .black,
-                    tracking: 0.75,
+                    tracking: 1.0,
                     baseColor: GVTheme.bone,
                     intensity: 0.8
                 )
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
             }
-            // Column of type over a rule, not a plate. Selection lights the
-            // rule and the label; nothing is enclosed. Three chamfered plates
-            // in a row repeated the workspace dock's gesture on a screen with
-            // no camera behind it to justify the weight.
-            .frame(width: isActive ? 158 : 96, height: 40)
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(isActive ? Color.white : Color.white.opacity(0.14))
-                    .frame(height: isActive ? 1.6 : 1)
-                    .shadow(color: isActive ? Color.white.opacity(0.8) : .clear, radius: 5)
-            }
+            // Same white-transparent chamfered plate as the workspace settings
+            // deck, so the splash dock and the camera chrome read as one
+            // instrument instead of two different control languages.
+            .frame(width: isActive ? 300 : 200, height: 80)
+            .background(
+                GVChamferedPlate(cut: 10)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                GVChamferedPlate(cut: 10)
+                    .strokeBorder(isActive ? Color.white.opacity(0.85) : Color.white.opacity(0.22), lineWidth: isActive ? 1.4 : 1)
+            )
+            .shadow(color: .black.opacity(0.55), radius: 8, y: 3)
+            .shadow(color: isActive ? Color.white.opacity(0.30) : .clear, radius: 7)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVPressStyle())
         .accessibilityLabel("\(section.label), \(value)")
         .accessibilityIdentifier("boot.\(section.rawValue)")
     }
 
     private var launchButton: some View {
         Button(action: onLaunch) {
-            VStack(spacing: 3) {
+            VStack(spacing: 6) {
                 GVTerminalText(
                     text: "ARM",
-                    size: 6,
+                    size: 9.5,
                     weight: .bold,
-                    tracking: 1.1,
+                    tracking: 1.6,
                     baseColor: isReady ? .white : GVTheme.bone.opacity(0.5),
                     intensity: 0.85
                 )
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 13, weight: .black))
+                    .font(.system(size: 24, weight: .black))
                     .foregroundStyle(isReady ? Color.white : GVTheme.faint)
-                    .shadow(color: isReady ? Color.white.opacity(0.65) : .clear, radius: 4)
+                    .shadow(color: isReady ? Color.white.opacity(0.65) : .clear, radius: 5)
             }
             // The one committing control on the screen, so it is the only one
-            // that emits. Still no plate: it reads as a lit marking rather
-            // than as a button laid on top of the splash.
-            .frame(width: 62, height: 40)
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(isReady ? Color.white : Color.white.opacity(0.14))
-                    .frame(height: isReady ? 2 : 1)
-                    .shadow(color: isReady ? Color.white.opacity(0.9) : .clear, radius: 7)
-            }
+            // that emits.
+            .frame(width: 124, height: 80)
+            .background(
+                GVChamferedPlate(cut: 10)
+                    .fill(isReady ? Color.white.opacity(0.13) : Color.white.opacity(0.04))
+            )
+            .overlay(
+                GVChamferedPlate(cut: 10)
+                    .strokeBorder(isReady ? Color.white.opacity(0.85) : Color.white.opacity(0.16), lineWidth: isReady ? 1.4 : 1)
+            )
             .contentShape(Rectangle())
+            .shadow(color: .black.opacity(0.55), radius: 8, y: 3)
             .shadow(color: isReady ? Color.white.opacity(0.35) : .clear, radius: 9)
         }
         .buttonStyle(GVPressStyle())
@@ -1204,10 +1313,15 @@ private struct SplashCaptureDock: View {
         detail: String,
         selected: Bool,
         enabled: Bool,
+        collapsesMenu: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button {
             action()
+            // The chooser stays open while the operator works through codec
+            // and cadence; only a resolution pick completes the format, and
+            // that is what collapses the rail.
+            guard collapsesMenu else { return }
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(230))
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -1215,18 +1329,18 @@ private struct SplashCaptureDock: View {
                 }
             }
         } label: {
-            VStack(spacing: 6) {
-                HStack(spacing: 5) {
+            VStack(spacing: 8) {
+                HStack(spacing: 6) {
                     if !enabled {
                         Image(systemName: "lock.fill")
-                            .font(.system(size: 7, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(GVTheme.ash)
                     }
                     GVTerminalText(
                         text: label,
-                        size: 9,
+                        size: 13.5,
                         weight: .black,
-                        tracking: 1.0,
+                        tracking: 1.2,
                         baseColor: selected ? GVTheme.violet : GVTheme.bone,
                         intensity: 0.78
                     )
@@ -1234,15 +1348,15 @@ private struct SplashCaptureDock: View {
                 }
                 GVTerminalText(
                     text: detail,
-                    size: 6.2,
+                    size: 9,
                     weight: .bold,
-                    tracking: 0.65,
+                    tracking: 0.8,
                     baseColor: selected ? GVTheme.violet.opacity(0.8) : GVTheme.bone.opacity(0.74),
                     intensity: 0.48
                 )
                 .lineLimit(1)
             }
-            .frame(width: 94, height: 46)
+            .frame(width: 176, height: 88)
             // Same plate language as the workspace effect rail: chamfered
             // charcoal, hairline structure, and one glowing white accent that
             // only the committed option earns.

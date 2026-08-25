@@ -36,9 +36,9 @@ struct GVSyncSweep: View {
                                 LinearGradient(
                                     colors: [
                                         .clear,
-                                        GVTheme.violet.opacity(0.85),
+                                        BootPalette.glow.opacity(0.85),
                                         .white,
-                                        GVTheme.violet.opacity(0.85),
+                                        BootPalette.glow.opacity(0.85),
                                         .clear
                                     ],
                                     startPoint: .leading,
@@ -46,7 +46,7 @@ struct GVSyncSweep: View {
                                 )
                             )
                             .frame(height: 1.4)
-                            .shadow(color: GVTheme.violet.opacity(0.44), radius: 4)
+                            .shadow(color: BootPalette.glow.opacity(0.5), radius: 4)
                             .offset(y: beamY)
                             .opacity(progress >= 1 ? 0 : 1)
                     }

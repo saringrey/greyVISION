@@ -27,9 +27,9 @@ struct GVAurora: View {
     ]
 
     private static let tints: [Color] = [
-        GVTheme.violet,
-        GVTheme.violetDeep,
-        Color(red: 0.35, green: 0.85, blue: 0.78)
+        BootPalette.glow,
+        BootPalette.deep,
+        BootPalette.ion
     ]
 
     var body: some View {

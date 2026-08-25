@@ -48,9 +48,22 @@ final class AppModel: ObservableObject {
     }
 
     /// Correct code entered. The only way out of `.gate`.
+    ///
+    /// With the startup ceremony enabled this hands over to the boot sequence;
+    /// with it disabled the operator lands straight in the workspace — the
+    /// camera pipeline starts through exactly the same path `startEngine`
+    /// uses, so there is still one capture session.
     func unlockAccess() {
         guard route == .gate else { return }
-        route = .boot
+        if preferences.startupAnimationEnabled {
+            route = .boot
+        } else {
+            sourceMode = .camera
+            runtimeStatus = .queued
+            entrySettleStart = nil
+            route = .workspace
+            beginEngineStart()
+        }
     }
 
     func startEngine() {

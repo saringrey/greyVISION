@@ -92,8 +92,8 @@ struct GVStormCloud: View {
                 Ellipse().path(in: rect),
                 with: .radialGradient(
                     Gradient(colors: [
-                        GVTheme.violetDeep.opacity(opacity),
-                        GVTheme.violetDeep.opacity(opacity * 0.4),
+                        BootPalette.deep.opacity(opacity),
+                        BootPalette.deep.opacity(opacity * 0.4),
                         .clear
                     ]),
                     center: CGPoint(x: rect.midX, y: rect.midY),
@@ -139,14 +139,14 @@ struct GVStormCloud: View {
                 fork.addLine(to: CGPoint(x: x + jitter * 1.4, y: y + size.height * 0.14))
                 context.stroke(
                     fork,
-                    with: .color(GVTheme.violet.opacity(0.55 * intensity)),
+                    with: .color(BootPalette.glow.opacity(0.55 * intensity)),
                     lineWidth: 0.8
                 )
             }
         }
 
         context.stroke(path, with: .color(.white.opacity(0.9 * intensity)), lineWidth: 1.1)
-        context.stroke(path, with: .color(GVTheme.violet.opacity(0.7 * intensity)), lineWidth: 2.6)
-        context.stroke(path, with: .color(GVTheme.violetDeep.opacity(0.34 * intensity)), lineWidth: 6)
+        context.stroke(path, with: .color(BootPalette.glow.opacity(0.75 * intensity)), lineWidth: 2.6)
+        context.stroke(path, with: .color(BootPalette.deep.opacity(0.42 * intensity)), lineWidth: 6)
     }
 }

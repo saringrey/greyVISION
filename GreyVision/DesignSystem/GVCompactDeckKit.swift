@@ -179,6 +179,9 @@ struct GVDeckChip: View {
     var active = false
     var dimmed = false
     var tint: Color = .white
+    /// Tap-target height. The 20pt default was under finger-sized; decks that
+    /// need a primary control pass a taller value.
+    var height: CGFloat = 24
     let id: String
     let action: () -> Void
 
@@ -196,8 +199,8 @@ struct GVDeckChip: View {
             }
             .foregroundStyle(active ? tint : GVTheme.bone.opacity(dimmed ? 0.32 : 0.78))
             .shadow(color: active ? tint.opacity(0.55) : .clear, radius: 3)
-            .padding(.horizontal, symbol == nil ? 7 : 6)
-            .frame(height: 20)
+            .padding(.horizontal, symbol == nil ? 8 : 7)
+            .frame(height: height)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(active ? tint.opacity(0.14) : Color(white: 0.155))

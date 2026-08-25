@@ -22,6 +22,10 @@ struct WorkspaceDockView: View {
     /// under them; the decks carry numbers.
     let statsMailbox: CameraRenderStatsMailbox
     let onHideChrome: () -> Void
+    /// Capture actions moved into the dock: recording and photo live beside
+    /// where effects are chosen, instead of floating over the frame.
+    let onCapturePhoto: () -> Void
+    let onToggleRecording: () -> Void
 
     @Binding var presetsPresented: Bool
 
@@ -98,6 +102,7 @@ struct WorkspaceDockView: View {
             }
 
             activeStackStrip
+            captureRow
             categoryRail
         }
         .padding(.top, 6)
@@ -291,6 +296,7 @@ struct WorkspaceDockView: View {
                                     guard target != index else { return }
                                     effectStack.move(fromOffsets: IndexSet(integer: index), toOffset: target)
                                 },
+                                onDuplicate: { _ = effectStack.duplicate(slot.id) },
                                 onRemove: { effectStack.remove(slot.id) }
                             ) {
                                 selectedDepthEffect = nil
@@ -311,6 +317,7 @@ struct WorkspaceDockView: View {
         isOn: Bool,
         onPower: @escaping () -> Void,
         onMove: ((Int) -> Void)?,
+        onDuplicate: (() -> Void)? = nil,
         onRemove: @escaping () -> Void,
         onSelect: @escaping () -> Void
     ) -> some View {
@@ -359,6 +366,18 @@ struct WorkspaceDockView: View {
                 .accessibilityLabel("Move \(title) later")
             }
 
+            if let onDuplicate {
+                Button(action: onDuplicate) {
+                    Image(systemName: "plus.square.on.square")
+                        .font(.system(size: 8, weight: .black))
+                        .foregroundStyle(GVTheme.bone.opacity(0.55))
+                        .frame(width: 16, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(GVPressStyle(scale: 0.85))
+                .accessibilityLabel("Duplicate \(title)")
+            }
+
             Button(action: onRemove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .black))
@@ -384,14 +403,71 @@ struct WorkspaceDockView: View {
         )
     }
 
+    /// Capture pair inside the dock. Record carries its state in the glyph
+    /// and border together; photo is a plain instrument button.
+    private var captureRow: some View {
+        HStack(spacing: 7) {
+            Spacer(minLength: 0)
+
+            Button {
+                onCapturePhoto()
+            } label: {
+                Image(systemName: "camera.viewfinder")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(GVTheme.bone.opacity(0.9))
+                    .frame(width: 34, height: 32)
+                    .background(
+                        GVChamferedPlate(cut: 6)
+                            .fill(Color(white: 0.105).opacity(0.92))
+                    )
+                    .overlay(
+                        GVChamferedPlate(cut: 6)
+                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(GVPressStyle())
+            .accessibilityLabel("Capture photo")
+            .accessibilityIdentifier("workspace.capture.photo")
+
+            let recording = cameraRuntime.isRecording
+            Button {
+                onToggleRecording()
+            } label: {
+                Image(systemName: recording ? "stop.fill" : "record.circle")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(recording ? GVTheme.record : GVTheme.bone.opacity(0.9))
+                    .shadow(color: recording ? GVTheme.record.opacity(0.6) : .clear, radius: 4)
+                    .frame(width: 34, height: 32)
+                    .background(
+                        GVChamferedPlate(cut: 6)
+                            .fill(recording ? GVTheme.record.opacity(0.14) : Color(white: 0.105).opacity(0.92))
+                    )
+                    .overlay(
+                        GVChamferedPlate(cut: 6)
+                            .strokeBorder(
+                                recording ? GVTheme.record.opacity(0.75) : Color.white.opacity(0.16),
+                                lineWidth: 1
+                            )
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(GVPressStyle())
+            .animation(GVMotion.micro, value: cameraRuntime.isRecording)
+            .accessibilityLabel(recording ? "Stop recording" : "Record video")
+            .accessibilityIdentifier("workspace.record.toggle")
+        }
+        .padding(.horizontal, GVMetrics.screenInset)
+    }
+
     private var categoryRail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                GVDeckChip(label: "", symbol: "square.grid.2x2", active: presetsPresented, tint: .white, id: "panel.presets") {
-                    withAnimation(GVMotion.deck) { presetsPresented.toggle() }
-                }
-                categoryButton(.active, populated: !activeEffectList.isEmpty)
-                ForEach(visibleCategories.filter { $0 != .active }) { category in
+                // Favourites is the only shelf glyph left of the families —
+                // presets and the active/recents shelves moved out to keep
+                // this rail scannable.
+                categoryButton(.favorites, populated: hasContent(.favorites))
+                ForEach(visibleCategories.filter { $0 != .active && $0 != .favorites && $0 != .recents }) { category in
                     categoryButton(category, populated: hasContent(category))
                 }
             }
