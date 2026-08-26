@@ -26,12 +26,16 @@ struct GVAdaptiveScrim: View {
     let edge: Edge
     var height: CGFloat
     let statsMailbox: CameraRenderStatsMailbox
+    /// Anchor for this scrim's poll cadence. The workspace hands every
+    /// telemetry consumer the same anchor so their periodic timers fire in
+    /// lockstep instead of as independent, phase-shifted invalidations.
+    let tickStart: Date
 
     var body: some View {
         // 4 Hz. This tracks a lighting condition, not a frame — the renderer
         // already smooths it heavily, and polling faster would only spend
         // battery arriving at the same number.
-        TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : 0.25)) { _ in
+        TimelineView(.periodic(from: tickStart, by: reduceMotion ? 1 : 0.25)) { _ in
             let stats = statsMailbox.latest
             let load = edge == .top ? stats.topChromeLoad : stats.bottomChromeLoad
 
@@ -50,12 +54,23 @@ struct GVAdaptiveScrim: View {
     private func stops(for strength: Double) -> [Gradient.Stop] {
         // Quiet end and loud end of each stop, interpolated by `strength`.
         //
-        // The bottom is weighted toward its middle rather than its edge: that
-        // is where the category rail sits, and a gradient that only gets dark
-        // at the very bottom leaves the rail exactly where it was.
+        // Both ramps are long-tailed: they stay at zero well past the band's
+        // inner boundary and only reach full weight at the screen edge. A
+        // short ramp reads as a painted-on slab with a hard seam where the
+        // band ends; a long feather reads as shadow falling off naturally.
+        // Peak opacities are held well below saturation so the frame still
+        // reads through the chrome bands.
         let ramp: [(location: Double, quiet: Double, loud: Double)] = edge == .top
-            ? [(0.0, 0.00, 0.06), (0.34, 0.10, 0.48), (0.70, 0.24, 0.74), (1.0, 0.38, 0.90)]
-            : [(0.0, 0.00, 0.08), (0.34, 0.32, 0.74), (0.62, 0.70, 0.92), (1.0, 0.88, 0.97)]
+            ? [(0.00, 0.00, 0.00),
+               (0.30, 0.00, 0.07),
+               (0.55, 0.01, 0.17),
+               (0.80, 0.05, 0.32),
+               (1.00, 0.11, 0.48)]
+            : [(0.00, 0.00, 0.00),
+               (0.28, 0.02, 0.24),
+               (0.55, 0.10, 0.44),
+               (0.78, 0.26, 0.60),
+               (1.00, 0.46, 0.76)]
 
         return ramp.map { stop in
             let opacity = stop.quiet + (stop.loud - stop.quiet) * strength

@@ -175,17 +175,19 @@ private extension GVFieldAdjuster {
     }
 
     func chip(_ option: GVFieldControl.Option, isSelected: Bool) -> some View {
-        Button {
+        let visualScale: CGFloat = field == .codec ? 0.9 : 1
+
+        return Button {
             select(option)
         } label: {
             Text(option.label)
-                .gvMono(GVMetrics.textSmall, isSelected ? .black : .bold)
-                .tracking(0.6)
+                .gvMono(GVMetrics.textSmall * visualScale, isSelected ? .black : .bold)
+                .tracking(0.6 * visualScale)
                 .foregroundStyle(isSelected ? GVTheme.bone : GVTheme.ash)
                 .lineLimit(1)
                 .fixedSize()
-                .padding(.horizontal, GVMetrics.stepInternal)
-                .frame(height: 26)
+                .padding(.horizontal, GVMetrics.stepInternal * visualScale)
+                .frame(height: 26 * visualScale)
                 .background(
                     RoundedRectangle(cornerRadius: GVMetrics.radiusTight, style: .continuous)
                         .fill(isSelected ? GVTheme.violet.opacity(0.34) : Color.white.opacity(0.05))

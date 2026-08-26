@@ -432,6 +432,7 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
         defer { device.unlockForConfiguration() }
 
         device.activeFormat = format
+        device.videoZoomFactor = device.minAvailableVideoZoomFactor
         let requestedFPS = Double(configuration.framesPerSecond)
         let bestRange = format.videoSupportedFrameRateRanges.min { lhs, rhs in
             let lhsResolved = min(max(requestedFPS, lhs.minFrameRate), lhs.maxFrameRate)
@@ -447,8 +448,6 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
         device.activeVideoMaxFrameDuration = duration
         device.automaticallyAdjustsVideoHDREnabled = false
 
-        // Open on the widest native stop when the virtual device reaches
-        // below 1.0 — that ultra-wide FOV is what a fresh launch expects.
         device.isVideoHDREnabled = configuration.prefersHDR && format.isVideoHDRSupported
 
         if device.isFocusModeSupported(.continuousAutoFocus) {

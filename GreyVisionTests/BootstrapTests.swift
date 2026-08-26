@@ -1,4 +1,5 @@
 @testable import GreyVision
+import AVFoundation
 import Metal
 
 // NOTE: several tests were removed here. They asserted against an API set
@@ -370,5 +371,82 @@ final class BootstrapTests: XCTestCase {
         XCTAssertEqual(dynamics.y, 0.75)
         XCTAssertEqual(dynamics.z, 0.3)
         XCTAssertEqual(dynamics.w, 0.0)
+    }
+
+    // MARK: - Camera device selection priority
+
+    private func candidate(
+        _ id: String,
+        _ type: AVCaptureDevice.DeviceType
+    ) -> CameraDiscovery.DeviceCandidate {
+        CameraDiscovery.DeviceCandidate(uniqueID: id, deviceTypeRawValue: type.rawValue)
+    }
+
+    func testRearSelectionPrefersDualWideOverTripleDualAndWide() {
+        let candidates = [
+            candidate("wide", .builtInWideAngleCamera),
+            candidate("dual", .builtInDualCamera),
+            candidate("triple", .builtInTripleCamera),
+            candidate("dualwide", .builtInDualWideCamera)
+        ]
+
+        XCTAssertEqual(
+            CameraDiscovery.selectCandidate(from: candidates, position: .rear, preferredDeviceID: nil)?.uniqueID,
+            "dualwide"
+        )
+    }
+
+    func testFrontSelectionPrefersTrueDepth() {
+        let candidates = [
+            candidate("wide", .builtInWideAngleCamera),
+            candidate("truedepth", .builtInTrueDepthCamera)
+        ]
+
+        XCTAssertEqual(
+            CameraDiscovery.selectCandidate(from: candidates, position: .front, preferredDeviceID: nil)?.uniqueID,
+            "truedepth"
+        )
+    }
+
+    func testPreferredIDWinsOverPriority() {
+        let candidates = [
+            candidate("wide", .builtInWideAngleCamera),
+            candidate("ultra", .builtInUltraWideCamera)
+        ]
+
+        XCTAssertEqual(
+            CameraDiscovery.selectCandidate(from: candidates, position: .rear, preferredDeviceID: "ultra")?.uniqueID,
+            "ultra"
+        )
+    }
+
+    func testUnknownPreferredIDFallsThroughToPriority() {
+        let candidates = [
+            candidate("wide", .builtInWideAngleCamera),
+            candidate("tele", .builtInTelephotoCamera)
+        ]
+
+        XCTAssertEqual(
+            CameraDiscovery.selectCandidate(from: candidates, position: .rear, preferredDeviceID: "ghost")?.uniqueID,
+            "wide"
+        )
+    }
+
+    func testSelectionWithoutPriorityMatchReturnsFirstCandidate() {
+        let candidates = [
+            candidate("ultra", .builtInUltraWideCamera),
+            candidate("tele", .builtInTelephotoCamera)
+        ]
+
+        XCTAssertEqual(
+            CameraDiscovery.selectCandidate(from: candidates, position: .front, preferredDeviceID: nil)?.uniqueID,
+            "ultra"
+        )
+    }
+
+    func testSelectionWithNoCandidatesIsNil() {
+        XCTAssertNil(
+            CameraDiscovery.selectCandidate(from: [], position: .rear, preferredDeviceID: nil)
+        )
     }
 }

@@ -36,10 +36,29 @@ struct AudioReactiveSnapshot: Equatable, Sendable {
     /// Drives repair: in silence the frame slowly heals back toward clean.
     var silence: Float = 0
 
+    /// Sixteen log-spaced band energies, 40 Hz to 14 kHz, each 0...1.
+    ///
+    /// The three coarse bands above answer "is there bass", which is enough to
+    /// modulate a filter and not nearly enough to *draw* a spectrum. A scope
+    /// needs the shape of the signal, so the analyser now publishes the shape
+    /// it already computed instead of throwing it away after summing it into
+    /// three numbers.
+    var spectrum = SIMD16<Float>()
+
     static let zero = AudioReactiveSnapshot(rms: 0, bass: 0, mid: 0, treble: 0, peak: 0)
 
     var metalBands: SIMD4<Float> {
         SIMD4(rms, bass, mid, treble)
+    }
+
+    /// The spectrum repacked as the four `float4`s the effect uniform carries.
+    var metalSpectrum: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) {
+        (
+            SIMD4(spectrum[0], spectrum[1], spectrum[2], spectrum[3]),
+            SIMD4(spectrum[4], spectrum[5], spectrum[6], spectrum[7]),
+            SIMD4(spectrum[8], spectrum[9], spectrum[10], spectrum[11]),
+            SIMD4(spectrum[12], spectrum[13], spectrum[14], spectrum[15])
+        )
     }
 
     /// Second audio uniform: the dynamics the band energies cannot express.
@@ -403,7 +422,8 @@ private final class AudioReactiveAnalyzer: @unchecked Sendable {
             dominantFrequency: dominantFrequency(binWidth: binWidth),
             transient: saturate(transientEnvelope),
             sustain: sustainEnvelope,
-            silence: silenceEnvelope
+            silence: silenceEnvelope,
+            spectrum: logSpectrum(binWidth: binWidth)
         )
         handlerLock.withLock { handler }?(snapshot)
     }
@@ -428,6 +448,24 @@ private final class AudioReactiveAnalyzer: @unchecked Sendable {
         }
         guard peakMagnitude > 0 else { return 0 }
         return (Float(lower) + Float(peakIndex)) * binWidth
+    }
+
+    /// Sixteen bands spaced logarithmically across 40 Hz - 14 kHz.
+    ///
+    /// Log spacing rather than linear because a linear split puts thirteen of
+    /// sixteen bands above 4 kHz, where almost nothing lives, and draws a
+    /// spectrum that is flat everywhere the music actually is.
+    private func logSpectrum(binWidth: Float) -> SIMD16<Float> {
+        var bands = SIMD16<Float>()
+        let lowest: Float = 40
+        let highest: Float = 14_000
+        let ratio = highest / lowest
+        for index in 0 ..< 16 {
+            let low = lowest * pow(ratio, Float(index) / 16)
+            let high = lowest * pow(ratio, Float(index + 1) / 16)
+            bands[index] = normalizedEnergy(from: low, through: high, binWidth: binWidth)
+        }
+        return bands
     }
 
     private func normalizedEnergy(from low: Float, through high: Float, binWidth: Float) -> Float {

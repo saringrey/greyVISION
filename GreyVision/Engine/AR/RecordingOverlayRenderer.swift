@@ -53,25 +53,37 @@ final class RecordingOverlayRenderer: @unchecked Sendable {
         let scale = min(max(reference / Self.referenceEdge, 1), 1.5)
         let margin = 52 * scale
 
-        // Bottom-left stack: wordmark with the channel line beneath it.
+        // Top-left stack: the oversized wordmark with the channel line beneath
+        // it — the same slot the workspace header carries the live mark, so
+        // the burn matches what the operator framed around. Anchored off the
+        // frame's top edge and sized to dominate without covering the action.
+        let brandSize = 52 * scale
+        let sigSize = 20 * scale
+        let brandImage = cachedText("grey//VISION", size: brandSize, alpha: 0.92, kern: 3 * scale, key: "brand-\(Int(brandSize))")
+        let sigImage = cachedText("GV://CAM/01", size: sigSize, alpha: 0.55, kern: 1.6 * scale, key: "sig-\(Int(sigSize))")
+
+        let brandHeight = CGFloat(brandImage.width > 0 ? brandImage.height : 0)
+        let sigHeight = CGFloat(sigImage.width > 0 ? sigImage.height : 0)
+        let stackTop = CGFloat(height) - margin
+
         drawGlowedImage(
             context,
-            image: cachedText("grey//VISION", size: 26 * scale, alpha: 0.92, kern: 2 * scale, key: "brand-\(Int(scale * 10))"),
+            image: brandImage,
             x: margin,
-            y: margin + 20 * scale,
-            haloRadius: 24 * scale,
+            y: stackTop - brandHeight,
+            haloRadius: 34 * scale,
             haloAlpha: 0.22,
-            coreRadius: 7 * scale,
+            coreRadius: 10 * scale,
             coreAlpha: 0.5
         )
         drawGlowedImage(
             context,
-            image: cachedText("GV://CAM/01", size: 14 * scale, alpha: 0.55, kern: 1.2 * scale, key: "sig-\(Int(scale * 10))"),
+            image: sigImage,
             x: margin,
-            y: margin - 4 * scale,
-            haloRadius: 14 * scale,
+            y: stackTop - brandHeight - 8 * scale - sigHeight,
+            haloRadius: 16 * scale,
             haloAlpha: 0.16,
-            coreRadius: 5 * scale,
+            coreRadius: 6 * scale,
             coreAlpha: 0.35
         )
 

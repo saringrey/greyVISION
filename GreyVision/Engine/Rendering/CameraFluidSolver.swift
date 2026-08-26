@@ -280,6 +280,10 @@ final class CameraFluidSolver {
             blob1: .zero,
             blob2: .zero,
             blob3: .zero,
+            spectrum0: .zero,
+            spectrum1: .zero,
+            spectrum2: .zero,
+            spectrum3: .zero,
             // The solver is a stage, not an accumulator; nothing here
             // is anchored to the world.
             worldReprojection: matrix_identity_float3x3

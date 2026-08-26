@@ -2,17 +2,19 @@ import SwiftUI
 
 /// Parameter deck for one effect.
 ///
-/// The deck keeps every capability the old dense version had — power,
-/// favourite, stack arming, hide-chrome, close, per-parameter drag, double-tap
-/// reset, section filtering, RANDOMIZE, COPY/PASTE, per-effect A/B snapshots
-/// and FINE adjust — but splits it into two visual registers:
+/// One flat register: a compact header row (power, favourite, stack arming,
+/// hide-chrome, TOOLS, close) over a short list of full-width tuner rows.
+/// An effect carries only a handful of parameters, so the old section tabs —
+/// ALL / CORE / SPACE / ADV — were navigation for furniture and are gone.
 ///
-///  • The always-visible spine: header, section tabs and the slider rail.
-///    These are the controls every adjustment touches, so they are large.
-///  • A TOOLS drawer holding the occasional actions (reset, randomize,
-///    clipboard, A/B store/recall, fine mode). One tap opens it, one tap
-///    fires an action and the drawer closes itself, returning the operator
-///    straight to the rails.
+/// The occasional actions (reset, randomize, clipboard, A/B store/recall,
+/// fine mode) live behind TOOLS: one tap opens it, one tap fires an action
+/// and the drawer closes itself, returning the operator straight to the rails.
+///
+/// STACK opens the render chain itself — see `WorkspaceEffectStackStrip`. The
+/// model underneath has always been an ordered list of identified slots; until
+/// that strip existed, none of the ordering, duplication or removal it
+/// supports could be reached from the app.
 struct WorkspaceEffectParameterDeck: View {
     let effect: WorkspaceAdjustableEffect
     @Binding var rgbSplitParameters: RGBSplitEffectParameters
@@ -22,18 +24,33 @@ struct WorkspaceEffectParameterDeck: View {
     let isFavorite: Bool
     let onFavoriteToggled: () -> Void
     let onHideChrome: () -> Void
+    let onSelectEffect: (WorkspaceAdjustableEffect) -> Void
     let onClose: () -> Void
 
     @EnvironmentObject private var toasts: GVToastBox
 
-    @State private var sectionFilter: ParamSection = .all
     @State private var fineMode = false
     @State private var showTools = false
+    @State private var showStack = false
+    /// Which stack slot this deck is editing. Nil means "the first slot for
+    /// this effect", which is what every call site meant before slots could
+    /// be duplicated.
+    @State private var focusedSlot: CameraEffectStackParameters.Slot.ID?
 
     var body: some View {
         VStack(spacing: 7) {
             headerRow
-            filterRow
+
+            if showStack {
+                WorkspaceEffectStackStrip(
+                    effectStack: $effectStack,
+                    rgbSplitParameters: $rgbSplitParameters,
+                    editing: effect,
+                    focusedSlot: $focusedSlot,
+                    onSelect: onSelectEffect
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
             if showTools {
                 toolsPanel
@@ -45,16 +62,42 @@ struct WorkspaceEffectParameterDeck: View {
         .gvCompactDeckPlate()
         .animation(GVMotion.micro, value: fineMode)
         .animation(GVMotion.micro, value: showTools)
+        .animation(GVMotion.panel, value: showStack)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.parameters.\(effect.rawValue)")
     }
 
     // MARK: - Header
 
+    /// The slot this deck edits: the one focused in the strip when it carries
+    /// this effect, otherwise the first slot placed for it.
+    ///
+    /// Everything below goes through this rather than through the effect-keyed
+    /// subscript, which always resolves to slot one — so a duplicated node
+    /// would otherwise be un-editable and DUP would produce a copy nothing
+    /// could tell apart.
+    private var editedSlot: CameraEffectStackParameters.Slot.ID? {
+        if let focusedSlot,
+           let slot = effectStack.slot(focusedSlot),
+           slot.effect == effect
+        {
+            return focusedSlot
+        }
+        return effectStack.firstSlotID(for: effect)
+    }
+
+    /// Where this effect sits in the render chain, or nil when it is not
+    /// placed. Shown in the header because "which of these runs first" is the
+    /// question a stacked chain raises immediately and nothing answered.
+    private var renderPosition: Int? {
+        editedSlot.flatMap { effectStack.renderPosition(of: $0) }
+    }
+
     private var headerRow: some View {
         HStack(spacing: 6) {
             GVTerminalText(
-                text: "FX.PARAM // \(effect.label)",
+                text: renderPosition.map { "FX.\(String(format: "%02d", $0)) // \(effect.label)" }
+                    ?? "FX.PARAM // \(effect.label)",
                 size: GVMetrics.textBody,
                 weight: .black,
                 tracking: 1.1,
@@ -85,74 +128,33 @@ struct WorkspaceEffectParameterDeck: View {
             GVDeckChip(label: "", symbol: "eye.slash", height: 27, id: "hidechrome") {
                 onHideChrome()
             }
-            GVDeckChip(label: "", symbol: "xmark", height: 27, id: "close") {
-                onClose()
+            GVDeckChip(
+                label: "",
+                symbol: "square.3.layers.3d",
+                active: showStack,
+                tint: .white,
+                height: 27,
+                id: "stack"
+            ) {
+                withAnimation(GVMotion.panel) { showStack.toggle() }
             }
-        }
-    }
-
-    // MARK: - Section tabs + tools toggle
-
-    /// Sections are the only always-visible navigation, so they get real
-    /// tabs rather than another row of micro-chips. The rare actions live
-    /// behind TOOLS instead of competing with them for space.
-    private var filterRow: some View {
-        HStack(spacing: 6) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 5) {
-                    ForEach(presentSections) { section in
-                        sectionTab(section)
-                    }
-                }
-                .padding(.vertical, 1)
-                .scrollTargetLayout()
-            }
-            .scrollTargetBehavior(.viewAligned)
-            .gvHorizontalEdgeFade()
-
+            .accessibilityLabel("Render stack")
+            .accessibilityValue(showStack ? "open" : "closed")
             GVDeckChip(
                 label: "TOOLS",
                 symbol: "slider.horizontal.3",
                 active: showTools,
                 tint: .white,
-                height: 30,
+                height: 27,
                 id: "tools"
             ) {
                 withAnimation(GVMotion.micro) { showTools.toggle() }
             }
             .accessibilityValue(showTools ? "open" : "closed")
+            GVDeckChip(label: "", symbol: "xmark", height: 27, id: "close") {
+                onClose()
+            }
         }
-    }
-
-    private func sectionTab(_ section: ParamSection) -> some View {
-        let selected = sectionFilter == section
-        return Button {
-            withAnimation(GVMotion.scan) { sectionFilter = section }
-        } label: {
-            Text(section == .all ? "ALL" : section.label)
-                .gvMono(GVMetrics.textSmall, .black)
-                .tracking(0.9)
-                .foregroundStyle(selected ? Color.white : GVTheme.bone.opacity(0.72))
-                .shadow(color: selected ? .white.opacity(0.45) : .clear, radius: 3)
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(selected ? Color.white.opacity(0.15) : Color(white: 0.155))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(
-                                    selected ? Color.white.opacity(0.85) : Color.white.opacity(0.09),
-                                    lineWidth: selected ? 1.1 : 0.8
-                                )
-                        )
-                        .shadow(color: selected ? .white.opacity(0.25) : .clear, radius: 5)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(GVPressStyle())
-        .accessibilityIdentifier("workspace.chip.filter.\(section.rawValue)")
-        .accessibilityValue(selected ? "on" : "off")
     }
 
     // MARK: - Tools drawer
@@ -265,71 +267,33 @@ struct WorkspaceEffectParameterDeck: View {
 
     // MARK: - Parameters
 
-    /// Full-width tuner rows instead of a cramped rail of mini sliders: every
-    /// parameter gets the whole line, so labels are legible and drags have
-    /// travel. The list scrolls vertically; sections filter it above.
+    /// One bank of dials on a single row: each parameter is its own column —
+    /// value over knob over label. An effect never carries more than four
+    /// parameters, so the whole bank fits across the deck and the popup stays
+    /// two rows tall instead of unrolling into a list.
     private var sliderRow: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 2) {
-                ForEach(filteredSpecs) { spec in
-                    GVParamRow(
-                        label: spec.label,
-                        value: spec.value,
-                        defaultValue: spec.defaultValue,
-                        range: spec.range,
-                        format: spec.format,
-                        fine: fineMode
-                    )
-                    .accessibilityIdentifier("workspace.param.\(spec.id.lowercased())")
-                }
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(allSpecs) { spec in
+                GVParamRow(
+                    label: spec.label,
+                    value: spec.value,
+                    defaultValue: spec.defaultValue,
+                    range: spec.range,
+                    format: spec.format,
+                    fine: fineMode
+                )
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("workspace.param.\(spec.id.lowercased())")
             }
-            .padding(.vertical, 2)
         }
-        .frame(height: min(CGFloat(filteredSpecs.count) * 46 + 6, 232))
-        .animation(GVMotion.scan, value: sectionFilter)
+        .padding(.vertical, 2)
     }
 
     // MARK: - Parameter model
 
-    private enum ParamSection: String, CaseIterable, Identifiable {
-        case all
-        case core
-        case motion
-        case space
-        case decay
-        case colorTexture = "coltex"
-        case advanced
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .all: "ALL"
-            case .core: "CORE"
-            case .motion: "MOTION"
-            case .space: "SPACE"
-            case .decay: "DECAY"
-            case .colorTexture: "COLOR"
-            case .advanced: "ADV"
-            }
-        }
-
-        init(name: String) {
-            switch name {
-            case "Motion": self = .motion
-            case "Space": self = .space
-            case "Decay / Feedback": self = .decay
-            case "Color / Texture": self = .colorTexture
-            case "Advanced": self = .advanced
-            default: self = .core
-            }
-        }
-    }
-
     private struct ParamSpec: Identifiable {
         let id: String
         let label: String
-        let section: ParamSection
         let value: Binding<Double>
         let defaultValue: Double
         let range: ClosedRange<Double>
@@ -341,21 +305,21 @@ struct WorkspaceEffectParameterDeck: View {
         switch effect {
         case .rgbSplit:
             specs.append(ParamSpec(
-                id: "OFFSET", label: "OFFSET", section: .core,
+                id: "OFFSET", label: "OFFSET",
                 value: $rgbSplitParameters.amount,
                 defaultValue: RGBSplitEffectParameters.activeDefaults.amount,
                 range: 0...0.08,
                 format: { String(format: "%.1f%%", $0 * 100) }
             ))
             specs.append(ParamSpec(
-                id: "ANGLE", label: "ANGLE", section: .motion,
+                id: "ANGLE", label: "ANGLE",
                 value: $rgbSplitParameters.angleDegrees,
                 defaultValue: RGBSplitEffectParameters.activeDefaults.angleDegrees,
                 range: -180...180,
                 format: { "\(Int($0.rounded()))\u{00B0}" }
             ))
             specs.append(ParamSpec(
-                id: "MIX", label: "MIX", section: .advanced,
+                id: "MIX", label: "MIX",
                 value: $rgbSplitParameters.mix,
                 defaultValue: RGBSplitEffectParameters.activeDefaults.mix,
                 range: 0...1,
@@ -373,7 +337,6 @@ struct WorkspaceEffectParameterDeck: View {
                 let label = labels[index]
                 specs.append(ParamSpec(
                     id: label, label: label,
-                    section: ParamSection(name: sectionFor(label: label)),
                     value: cameraParameterBinding(channel.1),
                     defaultValue: defaults[keyPath: channel.1],
                     range: 0...1,
@@ -381,7 +344,7 @@ struct WorkspaceEffectParameterDeck: View {
                 ))
             }
             specs.append(ParamSpec(
-                id: "BLEND", label: "BLEND", section: .advanced,
+                id: "BLEND", label: "BLEND",
                 value: cameraParameterBinding(\.blend),
                 defaultValue: defaults.blend,
                 range: 0...1,
@@ -391,85 +354,61 @@ struct WorkspaceEffectParameterDeck: View {
         return specs
     }
 
-    private var filteredSpecs: [ParamSpec] {
-        allSpecs.filter { spec in
-            sectionFilter == .all || spec.section == sectionFilter
-        }
-    }
-
-    private var presentSections: [ParamSection] {
-        var seen: Set<ParamSection> = []
-        let ordered: [ParamSection] = [.all] + allSpecs.map(\.section).filter { $0 != .all }
-        return ordered.filter { seen.insert($0).inserted }
-    }
-
     private var isEffectEnabled: Bool {
         switch effect {
         case .rgbSplit: return rgbSplitParameters.isEnabled
-        default: return effectStack[effect].isEnabled
+        default: return currentParameters.isEnabled
         }
     }
 
     private func toggleEffectEnabled() {
-        let enabled = !isEffectEnabled
-        switch effect {
-        case .rgbSplit: rgbSplitParameters.isEnabled = enabled
-        default: effectStack.setEnabled(enabled, for: effect)
-        }
+        setEnabled(!isEffectEnabled)
     }
 
     private func setEnabled(_ enabled: Bool) {
         switch effect {
-        case .rgbSplit: rgbSplitParameters.isEnabled = enabled
-        default: effectStack.setEnabled(enabled, for: effect)
+        case .rgbSplit:
+            rgbSplitParameters.isEnabled = enabled
+        default:
+            if let editedSlot, effectStack.slot(editedSlot) != nil {
+                effectStack.setEnabled(enabled, slot: editedSlot)
+            } else {
+                effectStack.setEnabled(enabled, for: effect)
+            }
         }
     }
 
     private func cameraParameterBinding(_ keyPath: WritableKeyPath<CameraEffectParameters, Double>) -> Binding<Double> {
         Binding(
-            get: { effectStack[effect][keyPath: keyPath] },
+            get: { currentParameters[keyPath: keyPath] },
             set: { newValue in
-                var parameters = effectStack[effect]
+                var parameters = currentParameters
                 parameters[keyPath: keyPath] = newValue
-                effectStack[effect] = parameters
+                write(parameters)
             }
         )
     }
 
-    private func percentage(_ value: Double) -> String {
-        "\(Int((value * 100).rounded()))%"
+    private var currentParameters: CameraEffectParameters {
+        if let editedSlot, let parameters = effectStack[slot: editedSlot] {
+            return parameters
+        }
+        return effectStack[effect]
     }
 
-    /// Same classifier the old grouped inspector used, so no parameter moves
-    /// families in the switch to filter chips.
-    private func sectionFor(label: String) -> String {
-        let lower = label.lowercased()
-        if lower.contains("speed") || lower.contains("flow") || lower.contains("drift") || lower.contains("roll")
-            || lower.contains("spin") || lower.contains("motion") || lower.contains("angle")
-            || lower.contains("rotation") || lower.contains("vx") || lower.contains("vy") {
-            return "Motion"
+    /// Writes to the focused slot when there is one, and falls back to the
+    /// effect-keyed subscript when the effect has not been placed yet — that
+    /// path is what creates the slot in the first place.
+    private func write(_ parameters: CameraEffectParameters) {
+        if let editedSlot, effectStack.slot(editedSlot) != nil {
+            effectStack[slot: editedSlot] = parameters
+        } else {
+            effectStack[effect] = parameters
         }
-        if lower.contains("space") || lower.contains("size") || lower.contains("radius") || lower.contains("width")
-            || lower.contains("height") || lower.contains("inset") || lower.contains("length")
-            || lower.contains("span") || lower.contains("distance") || lower.contains("offset")
-            || lower.contains("scale") || lower.contains("density") || lower.contains("frequency") {
-            return "Space"
-        }
-        if lower.contains("decay") || lower.contains("feedback") || lower.contains("hold")
-            || lower.contains("history") || lower.contains("trail") {
-            return "Decay / Feedback"
-        }
-        if lower.contains("color") || lower.contains("texture") || lower.contains("noise")
-            || lower.contains("grain") || lower.contains("hue") || lower.contains("sat")
-            || lower.contains("luma") {
-            return "Color / Texture"
-        }
-        if lower.contains("mix") || lower.contains("blend") || lower.contains("opacity")
-            || lower.contains("gate") || lower.contains("thresh") || lower.contains("bias")
-            || lower.contains("ref") {
-            return "Advanced"
-        }
-        return "Core"
+    }
+
+    private func percentage(_ value: Double) -> String {
+        "\(Int((value * 100).rounded()))%"
     }
 
     // MARK: - Tools
@@ -479,7 +418,11 @@ struct WorkspaceEffectParameterDeck: View {
         case .rgbSplit:
             rgbSplitParameters = .activeDefaults
         default:
-            effectStack.reset(effect)
+            if let editedSlot, effectStack.slot(editedSlot) != nil {
+                effectStack.reset(slot: editedSlot)
+            } else {
+                effectStack.reset(effect)
+            }
         }
     }
 
@@ -538,10 +481,15 @@ struct WorkspaceEffectParameterDeck: View {
 
 // MARK: - Session-wide clipboard and A/B storage
 
-/// One parameter as a full-width row: label and live value on the reading
-/// line, a wide drag track beneath. Same interaction contract as the old rail
-/// sliders — relative dragging, FINE quarter-speed, default detent notch,
-/// double-tap reset, haptic ticks per 10% — with room to actually aim.
+/// One parameter as a single dial column: live value on top in fixed-width
+/// digits, the knob beneath it, its name under that. Columns share one row,
+/// so four parameters cost the height of one.
+///
+/// The gesture is relative, not positional — touch the dial (a generous hit
+/// target around the 46pt circle), hold, and slide the finger left or right.
+/// Where the finger lands does not matter; travel is what drives the value.
+/// FINE quarter-speed, default detent notch, double-tap reset and haptic
+/// ticks per 10% all carry over from the row sliders this replaced.
 private struct GVParamRow: View {
     let label: String
     @Binding var value: Double
@@ -553,10 +501,24 @@ private struct GVParamRow: View {
     @State private var dragStart: Double?
     @State private var isDragging = false
     @State private var lastTickBucket: Int = -1
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var wasAboveDefault: Bool?
+    /// Live precision divisor, so the readout can say what the finger is
+    /// currently buying without the caller having to recompute the curve.
+    @State private var precision: Double = 1
 
     @MainActor private static let tickGenerator = UIImpactFeedbackGenerator(style: .soft)
+    @MainActor private static let detentGenerator = UIImpactFeedbackGenerator(style: .rigid)
+
+    /// Horizontal travel that carries the value across its whole range.
+    private static let travel: CGFloat = 200
+
+    /// Vertical distance, in points, that buys one further step of precision.
+    ///
+    /// Pulling away from the dial while dragging is the hardware convention
+    /// for a fine adjust, and it is continuous — the operator does not have to
+    /// decide up front whether this edit needs the FINE toggle, which is the
+    /// one thing a mode switch always gets wrong.
+    private static let precisionSpan: CGFloat = 70
 
     private var fraction: Double {
         let span = range.upperBound - range.lowerBound
@@ -564,107 +526,51 @@ private struct GVParamRow: View {
         return min(max((value - range.lowerBound) / span, 0), 1)
     }
 
+    /// The value, or the value and the precision divisor once the finger has
+    /// pulled far enough away for it to matter. Showing it is what makes the
+    /// gesture discoverable — otherwise a drag that suddenly moves less reads
+    /// as a dropped touch.
+    private var readout: String {
+        guard isDragging, precision >= 1.6 else { return format(value) }
+        return "\(format(value)) \u{00F7}\(Int(precision.rounded()))"
+    }
+
     private var isAtDefault: Bool {
         abs(value - defaultValue) < (range.upperBound - range.lowerBound) * 0.004
     }
 
+    /// The dial reads from 135° (7 o'clock) clockwise through 405° — a 270°
+    /// sweep with open mouths at the bottom, like every hardware knob.
+    private var pointerAngle: Double {
+        -135 + fraction * 270
+    }
+
     var body: some View {
         VStack(spacing: 5) {
-            HStack(spacing: 8) {
-                Text(label)
-                    .gvMono(GVMetrics.textSmall, .bold)
-                    .tracking(0.9)
-                    .foregroundStyle(isDragging ? Color.white : GVTheme.bone.opacity(0.85))
-                    .shadow(color: isDragging ? .white.opacity(0.5) : .clear, radius: 3)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+            Text(readout)
+                .gvMono(GVMetrics.textSmall, .black)
+                .tracking(0.3)
+                .monospacedDigit()
+                .foregroundStyle(isDragging ? Color.white : GVTheme.bone.opacity(0.72))
+                .shadow(color: isDragging ? .white.opacity(0.4) : .clear, radius: 3)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
 
-                Spacer(minLength: 8)
+            knob
 
-                Text(format(value))
-                    .gvMono(GVMetrics.textSmall, .black)
-                    .tracking(0.5)
-                    .foregroundStyle(isDragging ? Color.white : GVTheme.bone.opacity(0.62))
-                    .shadow(color: isDragging ? .white.opacity(0.45) : .clear, radius: 3)
-            }
-
-            GeometryReader { geometry in
-                let width = geometry.size.width
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(Color(white: 0.13))
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.8)
-                        )
-
-                    // Default detent: shows where double-tap lands.
-                    Rectangle()
-                        .fill(isAtDefault ? Color.white.opacity(0.95) : Color.white.opacity(0.28))
-                        .frame(width: 1.4, height: 9)
-                        .offset(x: 6 + (width - 14) * fractionForDefault)
-
-                    Capsule(style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.white.opacity(0.95), Color.white.opacity(0.55)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: max(6, width * fraction))
-                        .shadow(
-                            color: .white.opacity(isDragging ? 0.6 : 0.22),
-                            radius: isDragging ? 5 : 2
-                        )
-
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: 13, height: 13)
-                        .shadow(
-                            color: .white.opacity(isDragging ? 0.95 : 0.42),
-                            radius: isDragging ? 7 : 3
-                        )
-                        .offset(x: (width - 13) * fraction)
-                }
-                .frame(height: 16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .gesture(dragGesture(width: width))
-            }
-            .frame(height: 18)
+            Text(label)
+                .gvMono(GVMetrics.textMicro, .bold)
+                .tracking(0.6)
+                .foregroundStyle(isDragging ? Color.white.opacity(0.9) : GVTheme.ash)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .padding(.horizontal, 2)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isDragging ? Color.white.opacity(0.05) : Color.clear)
         )
-        // Floating readout above the knob while the finger is down.
-        .overlay(alignment: .top) {
-            if isDragging {
-                Text(format(value))
-                    .gvMono(GVMetrics.textMicro, .black)
-                    .tracking(0.4)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color(white: 0.11).opacity(0.96))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.8)
-                            )
-                            .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
-                            .shadow(color: .white.opacity(0.22), radius: 6)
-                    )
-                    .fixedSize()
-                    .offset(y: -24)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
-                    .allowsHitTesting(false)
-            }
-        }
         .onTapGesture(count: 2) {
             value = defaultValue
         }
@@ -683,23 +589,80 @@ private struct GVParamRow: View {
         }
     }
 
-    private var fractionForDefault: Double {
-        let span = range.upperBound - range.lowerBound
-        guard span > 0 else { return 0 }
-        return min(max((defaultValue - range.lowerBound) / span, 0), 1)
+    // MARK: - Dial
+
+    private var knob: some View {
+        ZStack {
+            // Body.
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [Color(white: isDragging ? 0.24 : 0.18), Color(white: 0.10)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(Circle().strokeBorder(Color.white.opacity(isDragging ? 0.38 : 0.14), lineWidth: 1))
+
+            // Level arc, sweeping clockwise from the 135° origin.
+            Circle()
+                .trim(from: 0, to: max(fraction * 0.75, fraction > 0 ? 0.005 : 0))
+                .stroke(
+                    Color.white.opacity(0.92),
+                    style: StrokeStyle(lineWidth: 2.4, lineCap: .round)
+                )
+                .rotationEffect(.degrees(135))
+
+            // Default detent notch, at the angle double-tap restores.
+            Rectangle()
+                .fill(Color.white.opacity(isAtDefault ? 0.85 : 0.22))
+                .frame(width: 1.2, height: 5)
+                .offset(y: -20)
+                .rotationEffect(.degrees(defaultDetentAngle))
+
+            // Pointer.
+            Rectangle()
+                .fill(Color.white)
+                .frame(width: 1.6, height: 11)
+                .offset(y: -10)
+                .rotationEffect(.degrees(pointerAngle))
+                .shadow(color: .white.opacity(isDragging ? 0.6 : 0.25), radius: isDragging ? 3 : 1.5)
+        }
+        .frame(width: 44, height: 44)
+        // The hit target extends well past the drawn dial so the thumb lands
+        // on it without aiming.
+        .frame(width: 64, height: 56)
+        .contentShape(Rectangle())
+        .gesture(dragGesture)
     }
 
-    private func dragGesture(width: CGFloat) -> some Gesture {
+    private var defaultDetentAngle: Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return -135 }
+        let defaultFraction = min(max((defaultValue - range.lowerBound) / span, 0), 1)
+        return -135 + defaultFraction * 270
+    }
+
+    private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { gesture in
                 if !isDragging {
                     Self.tickGenerator.prepare()
+                    Self.detentGenerator.prepare()
+                    wasAboveDefault = value >= defaultValue
                 }
                 isDragging = true
                 let start = dragStart ?? value
                 if dragStart == nil { dragStart = value }
                 let span = range.upperBound - range.lowerBound
-                let sensitivity = span / (width * (fine ? 4 : 1))
+
+                // Vertical distance from the dial divides the travel. Capped
+                // at sixteen so a stray flick down the screen cannot make the
+                // control feel dead.
+                let pulled = abs(gesture.translation.height)
+                let divisor = min(1 + Double(pulled / Self.precisionSpan) * 3, 16)
+                precision = divisor * (fine ? 4 : 1)
+                let sensitivity = span / (Double(Self.travel) * precision)
                 let moved = Double(gesture.translation.width) * sensitivity
                 value = min(max(start + moved, range.lowerBound), range.upperBound)
 
@@ -708,11 +671,20 @@ private struct GVParamRow: View {
                     lastTickBucket = bucket
                     Self.tickGenerator.impactOccurred(intensity: 0.32)
                 }
+                // A firmer tick exactly on the default, so the detent drawn on
+                // the dial can be found without looking at it.
+                let above = value >= defaultValue
+                if let previous = wasAboveDefault, previous != above {
+                    Self.detentGenerator.impactOccurred(intensity: 0.62)
+                }
+                wasAboveDefault = above
             }
             .onEnded { _ in
                 isDragging = false
                 dragStart = nil
                 lastTickBucket = -1
+                wasAboveDefault = nil
+                precision = 1
             }
     }
 }

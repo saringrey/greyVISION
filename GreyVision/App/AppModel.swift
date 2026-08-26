@@ -18,6 +18,10 @@ final class AppModel: ObservableObject {
     let objects: ARObjectRuntime
     let audio: AudioReactiveRuntime
     let blobs: BlobTrackingRuntime
+    /// Live link that publishes the processed frame to the Mac virtual
+    /// camera. Owned here so it outlives any one view and can keep streaming
+    /// while the operator moves around the workspace.
+    let broadcast = GVBroadcastRuntime()
     let preferences = GVPreferences()
     let isUITesting: Bool
     private var engineTask: Task<Void, Never>?

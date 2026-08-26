@@ -21,6 +21,9 @@ struct GVCameraEffectUniforms {
     float4 touchImpact;    // xy = impact position, z = age seconds, w = present
     float4 audioDynamics;  // x = peak, y = transient onset, z = sustain, w = silence
     float4 blobs[4];       // up to 4 tracked fields: xy = normalized center, z = size, w = present
+    // Sixteen log-spaced FFT bands, 40 Hz to 14 kHz, each 0...1, packed four
+    // to a vector. Zero when the analyser is off. Read with gvSpectrumBand.
+    float4 spectrum[4];
     // Frame-to-frame world reprojection. Maps a ray in this frame to where it
     // sat in the previous one. Identity unless a world-anchored mode is armed.
     float3x3 worldReprojection;
@@ -48,6 +51,28 @@ constexpr sampler gvCameraLinearSampler(
 // the motion field long before the flow kernels are defined.
 static inline float2 gvCameraSampleVector(texture2d<half, access::sample> texture, float2 uv) {
     return float2(texture.sample(gvCameraLinearSampler, clamp(uv, 0.0, 1.0)).rg);
+}
+
+// MARK: - Spectrum access
+//
+// The sixteen bands arrive packed four to a float4 because Metal argument
+// buffers cannot carry a bare float[16] without padding every element out to
+// sixteen bytes. These two helpers hide the packing so an effect reads bands
+// by index, and reads *between* bands by position, without unpacking anything.
+
+static inline float gvSpectrumBand(constant float4 *spectrum, int index) {
+    const int clamped = clamp(index, 0, 15);
+    return spectrum[clamped >> 2][clamped & 3];
+}
+
+/// Continuous read across the spectrum: `position` 0 is the lowest band and 1
+/// the highest, interpolating between neighbours so a bar chart or a ring can
+/// be drawn at any resolution without stepping.
+static inline float gvSpectrumAt(constant float4 *spectrum, float position) {
+    const float scaled = clamp(position, 0.0, 1.0) * 15.0;
+    const int low = int(floor(scaled));
+    const float blend = scaled - float(low);
+    return mix(gvSpectrumBand(spectrum, low), gvSpectrumBand(spectrum, low + 1), blend);
 }
 
 // MARK: - Temporal engine
@@ -357,6 +382,7 @@ static bool gvIsColourOnlyMode(uint mode) {
         case 73: // gradient map
         case 74: // false colour
         case 91: // spectral tint
+        case 97: // blue-noise dither
             return true;
         default:
             return false;
@@ -460,6 +486,55 @@ float3 gvChromaSplit(
         gvCameraSample(texture, uv).g,
         gvCameraSample(texture, uv - direction).b
     );
+}
+
+
+// MARK: - Glyph and scope helpers
+//
+// Used by the ASCII mosaic and by the four measurement scopes. Declared here
+// rather than inside the kernel because Metal has no local functions and the
+// scopes each need the same panel maths.
+
+/// One pixel of a 5x5 bitmap glyph, indexed by ink level 0 (blank) to 8 (solid).
+///
+/// A real font atlas would be a texture and another binding; nine hand-drawn
+/// bitmaps cost twenty-five bits each and cover the density ramp that an ASCII
+/// renderer actually needs.
+static inline float gvAsciiGlyph(int level, int2 cell) {
+    if (cell.x < 0 || cell.x > 4 || cell.y < 0 || cell.y > 4) {
+        return 0.0;
+    }
+    const uint glyphs[9] = {
+        0x0000000u, 0x0020000u, 0x0020080u, 0x0003800u, 0x00701c0u,
+        0x0023880u, 0x0053940u, 0x0afabeau, 0x1fdd77fu
+    };
+    const uint bits = glyphs[clamp(level, 0, 8)];
+    return float((bits >> uint(cell.y * 5 + cell.x)) & 1u);
+}
+
+/// Where a pixel sits inside a scope panel, and whether it is inside at all.
+///
+/// `panel` is (originX, originY, width, height) in normalised frame space.
+/// Returns local coordinates 0...1 within the panel; `inside` is false when
+/// the pixel is elsewhere, which is what lets a scope cost nothing over the
+/// nine tenths of the frame it does not draw on.
+struct GVScopePanel {
+    float2 local;
+    bool inside;
+};
+
+static inline GVScopePanel gvScopePanel(float2 uv, float4 panel) {
+    GVScopePanel result;
+    result.local = (uv - panel.xy) / max(panel.zw, float2(0.0001));
+    result.inside = all(result.local >= 0.0) && all(result.local <= 1.0);
+    return result;
+}
+
+/// Rec.709 chroma coordinates, scaled so full saturation lands near unit
+/// radius. This is what a vectorscope plots.
+static inline float2 gvChromaCoordinate(float3 color) {
+    const float luma = gvCameraLuma(color);
+    return float2((color.b - luma) * 0.565, (color.r - luma) * 0.713) * 1.6;
 }
 
 kernel void gvCameraStyleEffect(
@@ -1564,7 +1639,6 @@ kernel void gvCameraStyleEffect(
     }
     case 86: { // Audio tunnel - spectrum drives a zooming corridor
         const float2 centered = uv - 0.5;
-        const float radius = max(length(centered), 0.0001);
         const float pull = (uniforms.audio.y * 0.6 + uniforms.audio.z * 0.4) * mix(0.0, 0.5, controls.x);
         const float angle = uniforms.audio.w * mix(0.0, 2.0, controls.y) + time * 0.2;
         const float2 warped = gvCameraRotate(centered * (1.0 - pull), angle);
@@ -1622,6 +1696,291 @@ kernel void gvCameraStyleEffect(
             uniforms.audioDynamics.w * 0.6;
         tinted = mix(float3(gvCameraLuma(tinted)), tinted, saturation);
         result = mix(base, tinted, controls.z);
+        break;
+    }
+    case 92: { // Kuwahara - edge-preserving painterly quantisation
+        // Four overlapping quadrants are averaged; the one with the lowest
+        // variance wins. Because the winning region never straddles an edge,
+        // flat areas flatten into brush strokes while edges stay hard - which
+        // is the difference between this and a blur.
+        //
+        // The loop count is fixed at 4x4x4 and the *spacing* is what the
+        // radius control moves. A growing loop would make the cost of this
+        // effect a function of a slider, which the frame budget cannot plan
+        // around.
+        const float2 spread = texel * mix(0.7, 3.6, controls.x);
+        float3 bestMean = base;
+        float bestScore = 1e9;
+        for (int quadrant = 0; quadrant < 4; quadrant++) {
+            const float2 quadrantSign = float2(
+                (quadrant & 1) != 0 ? 1.0 : -1.0,
+                (quadrant & 2) != 0 ? 1.0 : -1.0
+            );
+            float3 sum = float3(0.0);
+            float3 sumSquares = float3(0.0);
+            for (int y = 0; y < 4; y++) {
+                for (int x = 0; x < 4; x++) {
+                    const float3 tap = gvCameraSample(
+                        inputTexture,
+                        uv + float2(float(x), float(y)) * quadrantSign * spread
+                    );
+                    sum += tap;
+                    sumSquares += tap * tap;
+                }
+            }
+            const float3 mean = sum * 0.0625;
+            const float3 variance = sumSquares * 0.0625 - mean * mean;
+            const float score = variance.r + variance.g + variance.b;
+            if (score < bestScore) {
+                bestScore = score;
+                bestMean = mean;
+            }
+        }
+        // Averaging drains contrast; this puts the stroke back.
+        const float3 painted = saturate((bestMean - 0.5) * (1.0 + controls.y * 1.1) + 0.5);
+        result = mix(base, painted, controls.z);
+        break;
+    }
+    case 93: { // ASCII mosaic - luminance rendered as a character grid
+        const float cellSize = mix(6.0, 34.0, controls.x);
+        const float2 cellOrigin = floor(float2(position) / cellSize) * cellSize;
+        const float2 cellUV = (cellOrigin + cellSize * 0.5) / size;
+        const float3 cellColor = gvCameraSample(inputTexture, cellUV);
+        // Gamma on the ramp, so the glyph ladder spends its levels where the
+        // eye reads density rather than bunching them all in the highlights.
+        const float density = pow(saturate(gvCameraLuma(cellColor)), mix(1.6, 0.6, controls.y));
+        const int level = int(round(density * 8.0));
+        const int2 glyphCell = int2(floor((float2(position) - cellOrigin) / cellSize * 5.0));
+        const float ink = gvAsciiGlyph(level, glyphCell);
+        // Terminal green when desaturated, the sampled colour when not, so the
+        // same effect covers both the console look and a colour mosaic.
+        // COLOUR crossfades between the console green and the sampled hue. It
+        // must not also set presence: BLEND is the mix control on every other
+        // effect, and having one slider mean both makes a full-colour mosaic
+        // impossible to get at full strength.
+        const float3 terminal = float3(0.62, 1.0, 0.72);
+        const float3 glyphColor = mix(terminal, cellColor / max(gvCameraLuma(cellColor), 0.08), controls.z);
+        result = glyphColor * ink * (0.35 + density * 0.9);
+        break;
+    }
+    case 94: { // Frosted glass - per-cell refraction plus diffusion
+        const float scale = mix(8.0, 120.0, controls.y);
+        const float2 cell = floor(uv * scale) / scale;
+        const float2 jitter = float2(
+            gvCameraHash(cell * 37.0),
+            gvCameraHash(cell * 91.0 + 13.0)
+        ) - 0.5;
+        const float roughness = mix(0.002, 0.055, controls.x);
+        const float3 frosted = gvBlur(
+            inputTexture,
+            uv + jitter * roughness,
+            texel * mix(0.6, 3.2, controls.x)
+        );
+        result = mix(base, frosted, controls.z);
+        break;
+    }
+    case 95: { // DCT ringing - lossy codec block artefacts
+        // Not a real transform. It reproduces what a viewer actually sees from
+        // one: a block DC term, a coarsely quantised residual on top of it,
+        // and mosquito ringing crowding the block boundary. Sits with the
+        // datamosh family because it is the same failure at a different stage.
+        const float blockSize = mix(4.0, 26.0, controls.y);
+        const float2 blockOrigin = floor(float2(position) / blockSize) * blockSize;
+        float3 dc = float3(0.0);
+        for (int y = 0; y < 4; y++) {
+            for (int x = 0; x < 4; x++) {
+                const float2 tapUV =
+                    (blockOrigin + (float2(float(x), float(y)) + 0.5) * blockSize * 0.25) / size;
+                dc += gvCameraSample(inputTexture, tapUV);
+            }
+        }
+        dc *= 0.0625;
+        const float levels = mix(26.0, 2.0, controls.x);
+        const float3 residual = floor((base - dc) * levels + 0.5) / levels;
+        const float2 blockPhase = fract(float2(position) / blockSize) - 0.5;
+        const float edge = smoothstep(0.30, 0.5, max(abs(blockPhase.x), abs(blockPhase.y)));
+        const float ring = sin(length(residual) * 42.0 + time * 3.1) * edge * controls.x * 0.24;
+        result = mix(base, saturate(dc + residual + ring), controls.z);
+        break;
+    }
+    case 96: { // Domain warp - fbm displaced by its own fbm
+        const float scale = mix(1.4, 9.0, controls.y);
+        const float2 drift = float2(time * 0.07, time * -0.05);
+        const float2 inner = float2(
+            gvFbm(uv * scale + drift),
+            gvFbm(uv * scale + drift + 5.2)
+        );
+        const float2 outer = float2(
+            gvFbm(uv * scale + inner * 2.4 + 1.7),
+            gvFbm(uv * scale + inner * 2.4 + 9.3)
+        );
+        const float amount = mix(0.004, 0.14, controls.x);
+        result = gvCameraSample(inputTexture, uv + (outer - 0.5) * amount);
+        result = mix(base, result, controls.z);
+        break;
+    }
+    case 97: { // Blue-noise dither - palette quantisation on a spatial ramp
+        // Interleaved gradient noise rather than a Bayer matrix: it has no
+        // repeating grid, so the quantisation error scatters instead of
+        // printing the 4x4 tile that ordered dithering leaves behind.
+        const float pixelScale = mix(1.0, 5.0, controls.y);
+        const float2 grid = floor(float2(position) / pixelScale);
+        const float noise = fract(52.9829189 * fract(dot(grid, float2(0.06711056, 0.00583715))));
+        const float levels = max(floor(mix(9.0, 2.0, controls.x)), 2.0);
+        const float3 dithered = floor(base * (levels - 1.0) + noise) / (levels - 1.0);
+        result = mix(base, saturate(dithered), controls.z);
+        break;
+    }
+    case 98: { // Spectrum bars - sixteen live FFT bands drawn over the frame
+        const float bars = floor(mix(8.0, 32.0, controls.y));
+        const float column = floor(uv.x * bars);
+        const float band = gvSpectrumAt(uniforms.spectrum, (column + 0.5) / bars);
+        const float height = band * mix(0.25, 0.92, controls.x);
+        const float gutter = smoothstep(0.0, 0.10, fract(uv.x * bars));
+        const float lit = step(1.0 - uv.y, height) * gutter;
+        // Cap line, so a bar reads as a level and not as a block of paint.
+        const float cap = smoothstep(0.020, 0.0, abs((1.0 - uv.y) - height)) * gutter;
+        const float3 low = float3(0.42, 0.86, 1.0);
+        const float3 high = float3(1.0, 0.36, 0.52);
+        const float3 barColor = mix(low, high, column / max(bars - 1.0, 1.0));
+        const float3 drawn = base * (1.0 - lit * 0.55) + barColor * (lit * 0.55 + cap * 0.9);
+        result = mix(base, drawn, controls.z);
+        break;
+    }
+    case 99: { // Radial spectrum - the same bands wrapped into a ring
+        const float2 centered = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float radius = length(centered);
+        const float angle = fract(atan2(centered.y, centered.x) / 6.2831853 + 0.5);
+        // Mirrored so the ring reads symmetrically instead of tearing at the
+        // seam where the highest band meets the lowest.
+        const float folded = angle < 0.5 ? angle * 2.0 : (1.0 - angle) * 2.0;
+        const float band = gvSpectrumAt(uniforms.spectrum, folded);
+        const float inner = mix(0.10, 0.30, controls.y);
+        const float reach = inner + band * mix(0.06, 0.34, controls.x);
+        const float ring = smoothstep(reach, reach - 0.012, radius) * step(inner, radius);
+        const float rim = smoothstep(0.010, 0.0, abs(radius - reach));
+        const float3 ringColor = mix(float3(0.35, 0.95, 1.0), float3(1.0, 0.42, 0.30), band);
+        const float3 drawn = base * (1.0 - ring * 0.45) + ringColor * (ring * 0.45 + rim);
+        result = mix(base, drawn, controls.z);
+        break;
+    }
+    case 100: { // Lissajous scope - audio drawn as an oscilloscope trace
+        const float2 centered = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float gain = mix(0.12, 0.42, controls.x);
+        const float ratio = mix(1.0, 5.0, controls.y);
+        // The curve is driven by the live bands, so its shape follows the
+        // material rather than animating on a fixed clock.
+        const float lowBand = gvSpectrumAt(uniforms.spectrum, 0.12);
+        const float highBand = gvSpectrumAt(uniforms.spectrum, 0.78);
+        float nearest = 1e9;
+        for (int index = 0; index < 48; index++) {
+            const float t = float(index) / 48.0 * 6.2831853;
+            const float2 point = float2(
+                sin(t * ratio + time * 1.3 + lowBand * 6.0),
+                sin(t + time * 0.9 + highBand * 6.0)
+            ) * gain * (0.45 + uniforms.audio.x * 1.4);
+            nearest = min(nearest, distance(centered, point));
+        }
+        const float trace = smoothstep(0.006, 0.0, nearest);
+        const float glow = smoothstep(0.045, 0.0, nearest) * 0.35;
+        const float3 phosphor = float3(0.55, 1.0, 0.72);
+        result = mix(base, base * 0.35 + phosphor * (trace + glow), controls.z);
+        break;
+    }
+    case 101: { // Vectorscope - chroma of the frame plotted on a colour wheel
+        // A real broadcast scope, gated to its own panel so the cost is paid
+        // over a tenth of the frame instead of all of it.
+        const float span = mix(0.20, 0.42, controls.y);
+        const GVScopePanel panel = gvScopePanel(uv, float4(1.0 - span - 0.03, 0.03, span, span));
+        if (!panel.inside) {
+            result = base;
+            break;
+        }
+        const float2 target = (panel.local - 0.5) * 2.0;
+        const float targetRadius = length(target);
+        if (targetRadius > 1.0) {
+            result = mix(base, base * 0.25, controls.z);
+            break;
+        }
+        // The frame is sampled at 64 points on an R2 low-discrepancy sequence
+        // rather than at hashed positions: sin-hash clusters badly at low
+        // counts and a scope that misses whole regions of the frame is
+        // reporting something untrue. The set is shifted eight times a second
+        // so the plot integrates over the image instead of measuring the same
+        // sixty-four pixels forever - slow enough not to read as flicker.
+        const float2 alpha = float2(0.7548776662, 0.5698402909);
+        const float sweep = floor(time * 8.0) * 0.0173;
+        float energy = 0.0;
+        for (int index = 0; index < 64; index++) {
+            const float2 site = fract(alpha * float(index) + sweep);
+            const float3 tap = gvCameraSample(inputTexture, site);
+            const float2 chroma = gvChromaCoordinate(tap);
+            energy += smoothstep(0.09, 0.0, distance(chroma, target));
+        }
+        const float plot = saturate(energy * mix(0.10, 0.45, controls.x));
+        // Graticule: the unit circle and the four axes a colourist reads.
+        const float circle = smoothstep(0.020, 0.0, abs(targetRadius - 1.0));
+        const float axes = smoothstep(0.010, 0.0, min(abs(target.x), abs(target.y)));
+        const float3 wheel = gvCameraHSVToRGB(float3(
+            fract(atan2(target.y, target.x) / 6.2831853),
+            1.0,
+            1.0
+        ));
+        const float3 drawn = float3(0.04) + wheel * plot + float3(0.30) * max(circle, axes * 0.45);
+        result = mix(base, drawn, controls.z);
+        break;
+    }
+    case 102: { // Waveform monitor - luma of each column plotted as a trace
+        const float height = mix(0.16, 0.40, controls.y);
+        const GVScopePanel panel = gvScopePanel(uv, float4(0.0, 1.0 - height, 1.0, height));
+        if (!panel.inside) {
+            result = base;
+            break;
+        }
+        const float target = 1.0 - panel.local.y;
+        float energy = 0.0;
+        for (int index = 0; index < 32; index++) {
+            const float sampleY = (float(index) + 0.5) / 32.0;
+            const float luma = gvCameraLuma(gvCameraSample(inputTexture, float2(panel.local.x, sampleY)));
+            energy += smoothstep(0.035, 0.0, abs(luma - target));
+        }
+        const float trace = saturate(energy * mix(0.06, 0.30, controls.x));
+        // IRE graticule at 0 / 50 / 100, which is what the trace is measured
+        // against; without it the panel is a shape rather than an instrument.
+        const float grid = smoothstep(0.006, 0.0, min(min(target, abs(target - 0.5)), abs(target - 1.0)));
+        const float3 drawn = float3(0.02, 0.03, 0.03) +
+            float3(0.42, 1.0, 0.62) * trace +
+            float3(0.22, 0.26, 0.24) * grid;
+        result = mix(base, drawn, controls.z);
+        break;
+    }
+    case 103: { // RGB parade - three waveform panels, one per channel
+        const float height = mix(0.16, 0.40, controls.y);
+        const GVScopePanel panel = gvScopePanel(uv, float4(0.0, 1.0 - height, 1.0, height));
+        if (!panel.inside) {
+            result = base;
+            break;
+        }
+        const int lane = clamp(int(panel.local.x * 3.0), 0, 2);
+        const float laneX = fract(panel.local.x * 3.0);
+        const float target = 1.0 - panel.local.y;
+        float energy = 0.0;
+        for (int index = 0; index < 32; index++) {
+            const float sampleY = (float(index) + 0.5) / 32.0;
+            const float3 tap = gvCameraSample(inputTexture, float2(laneX, sampleY));
+            const float channel = lane == 0 ? tap.r : (lane == 1 ? tap.g : tap.b);
+            energy += smoothstep(0.035, 0.0, abs(channel - target));
+        }
+        const float trace = saturate(energy * mix(0.06, 0.30, controls.x));
+        const float3 laneColor = lane == 0
+            ? float3(1.0, 0.28, 0.28)
+            : (lane == 1 ? float3(0.30, 1.0, 0.40) : float3(0.36, 0.52, 1.0));
+        const float divider = smoothstep(0.008, 0.0, min(laneX, 1.0 - laneX));
+        const float grid = smoothstep(0.006, 0.0, min(min(target, abs(target - 0.5)), abs(target - 1.0)));
+        const float3 drawn = float3(0.02) +
+            laneColor * trace +
+            float3(0.20) * max(grid, divider * 0.8);
+        result = mix(base, drawn, controls.z);
         break;
     }
     default:
@@ -1820,40 +2179,43 @@ kernel void gvCameraStyleEffect(
 	        //     sourceUV = uv - motionVector * strength
 	        //
 	        // Because the vector comes from the persistent field, it outlives
-	        // the frame that produced it. That is the whole effect — motion
+	        // the frame that produced it. That is the whole effect - motion
 	        // detaches from the image and keeps dragging content after the
 	        // thing that moved has gone. A hash-driven block offset, which is
 	        // what this used to be, cannot do that: it has no idea which way
 	        // anything was travelling.
 	        const float gain = mix(0.4, 6.0, controls.x);
-	        const float2 displacement = flow * gain;
 
-	        // Reference age. Higher settings reach further back, so heavy
-	        // datamosh reconstructs the frame from genuinely stale imagery
-	        // rather than from the frame before it.
-	        const float age = controls.y;
-	        float3 reference;
-	        if (age < 0.34) {
-	            reference = gvCameraSample(historyTexture, uv - displacement);
-	        } else if (age < 0.67) {
-	            reference = gvCameraSample(tap1, uv - displacement);
-	        } else {
-	            reference = gvCameraSample(tap2, uv - displacement * 1.4);
-	        }
+	        // Reference age in SECONDS, read from the timestamped ring.
+	        //
+	        // This used to pick between three fixed taps, which meant the same
+	        // slider setting reached back four times further at 120fps than at
+	        // 30fps - the exact failure the ring was built to remove. Asking
+	        // for a duration makes the effect behave the same on every device.
+	        const float age = mix(0.03, 1.6, controls.y);
 
 	        // Macroblock quantisation of the vector. Codec datamoshing moves
 	        // blocks, not pixels, and snapping the displacement to a grid is
-	        // what gives the smear its characteristic tiling.
+	        // what gives the smear its characteristic tiling. Only the vector
+	        // is quantised - the sample position keeps its sub-pixel offset, so
+	        // the blocks slide rather than snapping between whole cells.
 	        const float blockSize = mix(1.0, 40.0, controls.z);
-	        if (blockSize > 1.5) {
+	        float2 displacement = flow * gain;
+	        if (blockSize > 1.5 && flowReady) {
 	            const float2 block = floor(float2(position) / blockSize) * blockSize;
 	            const float2 blockUV = (block + blockSize * 0.5) / size;
-	            const float2 blockFlow = flowReady
-	                ? gvCameraSampleVector(flowField, blockUV) * gain
-	                : float2(0.0);
-	            reference = age < 0.34
-	                ? gvCameraSample(historyTexture, uv - blockFlow)
-	                : gvCameraSample(tap1, uv - blockFlow);
+	            displacement = gvCameraSampleVector(flowField, blockUV) * gain;
+	        }
+
+	        float3 reference = gvTemporalSample(
+	            temporalRing, ringTimestamps, ringInfo, uv - displacement, age, current
+	        );
+	        // Residual: the block carries a fraction of the difference between
+	        // where it was told to look and where it actually sits. Without it
+	        // a heavily quantised field reads as flat tiles of colour.
+	        if (blockSize > 1.5) {
+	            const float3 residual = gvCameraSample(historyTexture, uv - displacement * 0.5) - reference;
+	            reference += residual * controls.z * 0.35;
 	        }
 
 	        // Fresh-frame injection. Where the scene is still, live pixels come
@@ -1865,7 +2227,7 @@ kernel void gvCameraStyleEffect(
 	        const float corruption = holdActive
 	            ? 1.0
 	            : max(motionWeight, controls.x * 0.35);
-	        result = mix(current, reference, saturate(corruption));
+	        result = mix(current, saturate(reference), saturate(corruption));
 	        break;
 	    }
 	    case 5: { // Sort
@@ -2438,6 +2800,170 @@ kernel void gvCameraStyleEffect(
 	        const float phase = fract(time * mix(0.05, 0.9, cycle));
 	        const float2 driven = resurrected * (0.4 + phase * 1.2);
 	        result = gvCameraSample(inputTexture, uv - driven);
+	        break;
+	    }
+	    case 37: { // World feedback - trails that stay with the room
+	        // The reprojection homography maps this frame's ray to where the
+	        // same ray sat in the previous frame. Sampling the accumulation
+	        // through it stops the buffer being screen-space: turning the phone
+	        // slides the trail off the edge of the frame instead of dragging it
+	        // along, so what was painted on a wall stays on that wall.
+	        //
+	        // This mode and TIME GRAFFITI were shipped with no shader arm at
+	        // all - `uniforms.mode.x` fell straight through to `default` and
+	        // the effect was a passthrough. The matrix was already being
+	        // uploaded every frame with nothing reading it.
+	        const float3 ray = float3(uv - 0.5, 1.0);
+	        const float3 reprojected = uniforms.worldReprojection * ray;
+	        const float2 anchoredUV = reprojected.xy / max(abs(reprojected.z), 1e-4) + 0.5;
+	        const float3 anchored = gvCameraSample(historyTexture, anchoredUV);
+	        // Blur is applied to the anchored read, not the live frame, so the
+	        // softening accumulates with the trail rather than veiling the
+	        // scene.
+	        const float3 softened = mix(
+	            anchored,
+	            gvBlur(historyTexture, anchoredUV, texel * mix(0.6, 3.4, controls.z)),
+	            controls.z
+	        );
+	        const float decay = mix(0.62, 0.995, controls.y);
+	        result = max(current, softened * decay * mix(0.55, 1.15, controls.x));
+	        break;
+	    }
+	    case 38: { // Time graffiti - painting held time onto the room
+	        // The brush does not deposit the live frame. It deposits a slice
+	        // pulled out of the ring at a chosen age, into a buffer that is
+	        // world-anchored - so the mark is a piece of the past pinned to a
+	        // physical surface, and it stays there when the phone moves.
+	        const float3 ray = float3(uv - 0.5, 1.0);
+	        const float3 reprojected = uniforms.worldReprojection * ray;
+	        const float2 anchoredUV = reprojected.xy / max(abs(reprojected.z), 1e-4) + 0.5;
+	        const float fade = mix(0.90, 0.9995, controls.z);
+	        float3 canvas = gvCameraSample(historyTexture, anchoredUV) * fade;
+
+	        const float radius = mix(0.04, 0.32, controls.x);
+	        const float age = mix(0.15, 2.6, controls.y);
+	        if (uniforms.touch.w > 0.5) {
+	            const float brush = 1.0 -
+	                smoothstep(radius * 0.5, radius, distance(uv, uniforms.touch.xy));
+	            const float3 held = gvTemporalSample(
+	                temporalRing, ringTimestamps, ringInfo, uv, age, current
+	            );
+	            canvas = mix(canvas, held, saturate(brush));
+	        }
+	        // A tap stamps a ring, so the surface can be marked without a drag.
+	        if (uniforms.touchImpact.w > 0.5) {
+	            const float stamp = 1.0 -
+	                smoothstep(radius * 0.35, radius * 0.8, distance(uv, uniforms.touchImpact.xy));
+	            const float3 held = gvTemporalSample(
+	                temporalRing, ringTimestamps, ringInfo, uv, age, current
+	            );
+	            canvas = mix(canvas, held, saturate(stamp * exp(-uniforms.touchImpact.z * 1.6)));
+	        }
+	        result = max(current * 0.80, canvas);
+	        break;
+	    }
+	    case 39: { // Liquid mosh - iterated advection along the motion field
+	        // DATAMOSH reprojects once. This walks the trajectory: every step
+	        // moves further back along the flow *and* further back through the
+	        // ring, so a pixel is rebuilt from the whole path its content
+	        // travelled rather than from one displaced tap. That integration is
+	        // what reads as liquid instead of as a block smear, and it is why
+	        // this can no longer share mode 4 with the other two moshes.
+	        const float gain = mix(0.25, 2.2, controls.x);
+	        const float viscosity = mix(0.35, 0.97, controls.y);
+	        const float span = mix(0.02, 0.24, controls.y);
+	        float2 trace = uv;
+	        float3 accumulated = float3(0.0);
+	        float weightSum = 0.0;
+	        for (int index = 0; index < 6; index++) {
+	            const float2 localFlow = flowReady
+	                ? gvCameraSampleVector(flowField, trace)
+	                : float2(0.0);
+	            trace -= localFlow * gain;
+	            const float weight = pow(viscosity, float(index));
+	            accumulated += gvTemporalSample(
+	                temporalRing, ringTimestamps, ringInfo,
+	                trace, float(index + 1) * span, current
+	            ) * weight;
+	            weightSum += weight;
+	        }
+	        const float3 liquid = accumulated / max(weightSum, 1e-4);
+	        // Still regions repair; moving ones keep melting.
+	        const float motionWeight = holdActive
+	            ? 1.0
+	            : saturate(flowMagnitude * mix(70.0, 10.0, controls.x));
+	        result = mix(current, liquid, saturate(max(motionWeight, controls.z * 0.6)));
+	        break;
+	    }
+	    case 40: { // Heavy mosh - the reference frame never refreshes
+	        // The difference from DATAMOSH is not a larger number, it is that no
+	        // fresh pixel is ever injected. A decoder that has lost its I-frame
+	        // keeps applying motion vectors to a reference nothing is
+	        // correcting, so the image is rebuilt entirely out of stale content
+	        // and drifts further from the scene the longer it runs.
+	        const float gain = mix(2.0, 16.0, controls.x);
+	        const float blockSize = max(mix(4.0, 64.0, controls.z), 2.0);
+	        const float2 block = floor(float2(position) / blockSize) * blockSize;
+	        const float2 blockUV = (block + blockSize * 0.5) / size;
+	        const float2 blockFlow = flowReady
+	            ? gvCameraSampleVector(flowField, blockUV) * gain
+	            : float2(0.0);
+	        const float age = mix(0.25, 3.2, controls.y);
+	        float3 reference = gvTemporalSample(
+	            temporalRing, ringTimestamps, ringInfo, uv - blockFlow, age, current
+	        );
+	        // Residual bleed: a block inherits part of its neighbour's error,
+	        // which is the chroma smearing that makes heavy mosh look wet.
+	        const float3 neighbour = gvCameraSample(tap3, uv - blockFlow * 1.6);
+	        reference = mix(reference, neighbour, saturate(length(blockFlow) * 6.0) * 0.45);
+	        result = reference;
+	        break;
+	    }
+	    case 41: { // Mosh brush - motion painted by the finger
+	        // Replaces a paint controller that was written, never wired to
+	        // anything, and would have needed its own vector texture to work.
+	        // The touch uniform already carries position and speed every frame,
+	        // so the brush is the same idea with none of the plumbing: drag and
+	        // the stroke deposits displacement, which drags history with it.
+	        const float reach = mix(0.06, 0.44, controls.y);
+	        const float push = mix(0.02, 0.26, controls.x);
+	        float2 painted = float2(0.0);
+	        if (uniforms.touch.w > 0.5) {
+	            const float2 toFinger = uv - uniforms.touch.xy;
+	            const float span = length(toFinger);
+	            const float falloff = 1.0 - smoothstep(reach * 0.35, reach, span);
+	            const float2 direction = span > 1e-4 ? toFinger / span : float2(0.0);
+	            painted = direction * saturate(uniforms.touch.z) * falloff * push;
+	        }
+	        if (uniforms.touchImpact.w > 0.5) {
+	            const float2 toImpact = uv - uniforms.touchImpact.xy;
+	            const float span = max(length(toImpact), 1e-4);
+	            const float ring = exp(-abs(span - uniforms.touchImpact.z * 0.8) * 12.0) *
+	                exp(-uniforms.touchImpact.z * 2.2);
+	            painted += (toImpact / span) * ring * push * 1.5;
+	        }
+	        const float3 dragged = gvTemporalSample(
+	            temporalRing, ringTimestamps, ringInfo,
+	            uv - painted, mix(0.05, 1.2, controls.z), current
+	        );
+	        result = mix(current, dragged, saturate(length(painted) * 22.0));
+	        break;
+	    }
+	    case 42: { // Luma time map - brightness chooses how far back a pixel reaches
+	        // Every other temporal mode reads history at one age for the whole
+	        // frame. Here the age is per pixel, so a single image is assembled
+	        // out of many different moments at once: highlights can sit in the
+	        // present while shadows are seconds behind, or the reverse.
+	        //
+	        // `gvTemporalAge` is the shared curve for exactly this mapping. It
+	        // was written, documented and then left with no caller.
+	        const float depth = mix(0.05, 3.0, controls.x);
+	        const float bias = controls.y;
+	        const float contrast = mix(0.6, 5.0, controls.z);
+	        const float age = gvTemporalAge(gvCameraLuma(current), depth, bias, contrast);
+	        result = gvTemporalSample(
+	            temporalRing, ringTimestamps, ringInfo, uv, age, current
+	        );
 	        break;
 	    }
 	    default:

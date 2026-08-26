@@ -13,6 +13,7 @@ struct GreyVisionApp: App {
                 .environmentObject(appModel.objects)
                 .environmentObject(appModel.audio)
                 .environmentObject(appModel.blobs)
+                .environmentObject(appModel.broadcast)
                 .environmentObject(appModel.preferences)
         }
     }

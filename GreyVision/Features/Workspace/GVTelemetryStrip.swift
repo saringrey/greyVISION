@@ -26,9 +26,12 @@ struct GVTelemetryStrip: View {
     /// Reports what just happened with exposure, so the workspace can say it
     /// where notices are said.
     let onExposureNotice: (String) -> Void
+    /// Shared cadence anchor — see `GVAdaptiveScrim.tickStart`. One aligned
+    /// 4 Hz beat drives the status line and both scrims together.
+    let tickStart: Date
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: reduceMotion ? 1.0 : 0.25)) { _ in
+        TimelineView(.periodic(from: tickStart, by: reduceMotion ? 1.0 : 0.25)) { _ in
             let snapshot = cameraRuntime.snapshot
             let exposure = cameraRuntime.deviceTelemetryMailbox.latest
             let shed = statsMailbox.latest.shedEffects

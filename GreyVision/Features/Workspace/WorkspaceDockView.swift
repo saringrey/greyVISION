@@ -22,10 +22,6 @@ struct WorkspaceDockView: View {
     /// under them; the decks carry numbers.
     let statsMailbox: CameraRenderStatsMailbox
     let onHideChrome: () -> Void
-    /// Capture actions moved into the dock: recording and photo live beside
-    /// where effects are chosen, instead of floating over the frame.
-    let onCapturePhoto: () -> Void
-    let onToggleRecording: () -> Void
 
     @Binding var presetsPresented: Bool
 
@@ -69,6 +65,7 @@ struct WorkspaceDockView: View {
                     isFavorite: preferences.isFavorite(selectedEffect.rawValue),
                     onFavoriteToggled: { preferences.toggleFavorite(selectedEffect.rawValue) },
                     onHideChrome: onHideChrome,
+                    onSelectEffect: { self.selectedEffect = $0 },
                     onClose: { self.selectedEffect = nil }
                 )
                 .gvAdaptivePlate(statsMailbox)
@@ -96,13 +93,20 @@ struct WorkspaceDockView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if let selectedCategory {
+            // Search was built — field, matcher, result rail, accessibility
+            // identifiers — and then never placed in the body. With 149
+            // effects across twenty rails, "find the one I mean" is the only
+            // navigation that scales, so it is mounted here and takes the
+            // rail slot while it is open.
+            if isSearching {
+                searchField
+                searchRail
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let selectedCategory {
                 actionRail(for: selectedCategory)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            activeStackStrip
-            captureRow
             categoryRail
         }
         .padding(.top, 6)
@@ -133,6 +137,7 @@ struct WorkspaceDockView: View {
         .animation(GVMotion.panel, value: selectedCategory)
         .animation(GVMotion.panel, value: selectedEffect)
         .animation(GVMotion.panel, value: selectedDepthEffect)
+        .animation(GVMotion.panel, value: isSearching)
         .onChange(of: dismissSelectionSignal) { _, _ in
             // A preview tap CLOSES THE EDITOR and nothing else. It used to
             // also power the effect down, which made an ordinary focus
@@ -248,221 +253,10 @@ struct WorkspaceDockView: View {
         .accessibilityIdentifier("workspace.effects.search")
     }
 
-    /// The live composition, one chip per contributing slot: power, reorder,
-    /// remove, and tap-to-edit. Always visible while anything renders, so
-    /// "what is on" has a permanent address instead of living only in the
-    /// browser.
-    @ViewBuilder
-    private var activeStackStrip: some View {
-        let slots = effectStack.orderedSlots
-        let rgbOn = rgbSplitParameters.isEnabled
-        if !slots.isEmpty || rgbOn {
-            VStack(spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("STACK")
-                        .gvMono(GVMetrics.textMicro, .black)
-                        .tracking(1.2)
-                        .foregroundStyle(GVTheme.ash)
-                    Text("\(slots.count + (rgbOn ? 1 : 0)) LIVE")
-                        .gvMono(GVMetrics.textMicro, .black)
-                        .tracking(0.8)
-                        .foregroundStyle(.white.opacity(0.85))
-                        .shadow(color: .white.opacity(0.35), radius: 3)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, GVMetrics.screenInset)
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
-                        if rgbOn {
-                            stackChip(
-                                title: "RGB",
-                                isOn: true,
-                                onPower: { rgbSplitParameters.isEnabled = false },
-                                onMove: nil,
-                                onRemove: { rgbSplitParameters.isEnabled = false }
-                            ) {
-                                selectedEffect = .rgbSplit
-                            }
-                        }
-                        ForEach(slots) { slot in
-                            let index = slots.firstIndex(where: { $0.id == slot.id }) ?? 0
-                            stackChip(
-                                title: slot.effect.label,
-                                isOn: slot.parameters.isEnabled,
-                                onPower: { effectStack.setEnabled(!slot.parameters.isEnabled, slot: slot.id) },
-                                onMove: { delta in
-                                    let target = min(max(index + delta, 0), slots.count)
-                                    guard target != index else { return }
-                                    effectStack.move(fromOffsets: IndexSet(integer: index), toOffset: target)
-                                },
-                                onDuplicate: { _ = effectStack.duplicate(slot.id) },
-                                onRemove: { effectStack.remove(slot.id) }
-                            ) {
-                                selectedDepthEffect = nil
-                                selectedEffect = slot.effect
-                            }
-                        }
-                    }
-                    .padding(.horizontal, GVMetrics.screenInset - 4)
-                }
-                .gvHorizontalEdgeFade()
-            }
-            .padding(.top, 2)
-        }
-    }
-
-    private func stackChip(
-        title: String,
-        isOn: Bool,
-        onPower: @escaping () -> Void,
-        onMove: ((Int) -> Void)?,
-        onDuplicate: (() -> Void)? = nil,
-        onRemove: @escaping () -> Void,
-        onSelect: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 4) {
-            Button(action: onPower) {
-                Image(systemName: isOn ? "power" : "power.dotted")
-                    .font(.system(size: GVMetrics.textMicro + 2, weight: .bold))
-                    .foregroundStyle(isOn ? Color.white : GVTheme.ash)
-                    .shadow(color: isOn ? .white.opacity(0.55) : .clear, radius: 3)
-                    .frame(width: 20, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(GVPressStyle(scale: 0.9))
-            .accessibilityLabel("\(title) power")
-
-            Button(action: onSelect) {
-                Text(title)
-                    .gvMono(GVMetrics.textMicro, .black)
-                    .tracking(0.7)
-                    .foregroundStyle(isOn ? Color.white.opacity(0.92) : GVTheme.bone.opacity(0.55))
-                    .lineLimit(1)
-                    .frame(maxWidth: 96)
-            }
-            .buttonStyle(GVPressStyle())
-            .accessibilityLabel("Edit \(title)")
-
-            if let onMove {
-                Button { onMove(-1) } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 8, weight: .black))
-                        .foregroundStyle(GVTheme.bone.opacity(0.55))
-                        .frame(width: 14, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(GVPressStyle(scale: 0.85))
-                .accessibilityLabel("Move \(title) earlier")
-
-                Button { onMove(1) } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .black))
-                        .foregroundStyle(GVTheme.bone.opacity(0.55))
-                        .frame(width: 14, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(GVPressStyle(scale: 0.85))
-                .accessibilityLabel("Move \(title) later")
-            }
-
-            if let onDuplicate {
-                Button(action: onDuplicate) {
-                    Image(systemName: "plus.square.on.square")
-                        .font(.system(size: 8, weight: .black))
-                        .foregroundStyle(GVTheme.bone.opacity(0.55))
-                        .frame(width: 16, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(GVPressStyle(scale: 0.85))
-                .accessibilityLabel("Duplicate \(title)")
-            }
-
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .black))
-                    .foregroundStyle(GVTheme.record.opacity(0.8))
-                    .frame(width: 16, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(GVPressStyle(scale: 0.85))
-            .accessibilityLabel("Remove \(title)")
-        }
-        .padding(.horizontal, 5)
-        .frame(height: 26)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color(white: 0.105))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(
-                            isOn ? Color.white.opacity(0.22) : Color.white.opacity(0.08),
-                            lineWidth: 1
-                        )
-                )
-        )
-    }
-
-    /// Capture pair inside the dock. Record carries its state in the glyph
-    /// and border together; photo is a plain instrument button.
-    private var captureRow: some View {
-        HStack(spacing: 7) {
-            Spacer(minLength: 0)
-
-            Button {
-                onCapturePhoto()
-            } label: {
-                Image(systemName: "camera.viewfinder")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(GVTheme.bone.opacity(0.9))
-                    .frame(width: 34, height: 32)
-                    .background(
-                        GVChamferedPlate(cut: 6)
-                            .fill(Color(white: 0.105).opacity(0.92))
-                    )
-                    .overlay(
-                        GVChamferedPlate(cut: 6)
-                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
-                    )
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(GVPressStyle())
-            .accessibilityLabel("Capture photo")
-            .accessibilityIdentifier("workspace.capture.photo")
-
-            let recording = cameraRuntime.isRecording
-            Button {
-                onToggleRecording()
-            } label: {
-                Image(systemName: recording ? "stop.fill" : "record.circle")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(recording ? GVTheme.record : GVTheme.bone.opacity(0.9))
-                    .shadow(color: recording ? GVTheme.record.opacity(0.6) : .clear, radius: 4)
-                    .frame(width: 34, height: 32)
-                    .background(
-                        GVChamferedPlate(cut: 6)
-                            .fill(recording ? GVTheme.record.opacity(0.14) : Color(white: 0.105).opacity(0.92))
-                    )
-                    .overlay(
-                        GVChamferedPlate(cut: 6)
-                            .strokeBorder(
-                                recording ? GVTheme.record.opacity(0.75) : Color.white.opacity(0.16),
-                                lineWidth: 1
-                            )
-                    )
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(GVPressStyle())
-            .animation(GVMotion.micro, value: cameraRuntime.isRecording)
-            .accessibilityLabel(recording ? "Stop recording" : "Record video")
-            .accessibilityIdentifier("workspace.record.toggle")
-        }
-        .padding(.horizontal, GVMetrics.screenInset)
-    }
-
     private var categoryRail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                searchButton
                 // Favourites is the only shelf glyph left of the families —
                 // presets and the active/recents shelves moved out to keep
                 // this rail scannable.
@@ -484,6 +278,49 @@ struct WorkspaceDockView: View {
         .accessibilityIdentifier("workspace.categories")
     }
 
+    /// Opens search in the rail slot. Deliberately styled as a category pill
+    /// rather than as a field: the field only appears once search is on, so
+    /// the collapsed state costs one glyph of rail instead of a whole row.
+    private var searchButton: some View {
+        Button {
+            decay.fire(.effectActivated)
+            withAnimation(GVMotion.panel) {
+                isSearching.toggle()
+                if isSearching {
+                    selectedCategory = nil
+                } else {
+                    searchText = ""
+                }
+            }
+            searchFocused = isSearching
+        } label: {
+            Image(systemName: isSearching ? "xmark" : "magnifyingglass")
+                .font(.system(size: GVMetrics.textBody, weight: .black))
+                .foregroundStyle(isSearching ? Color.white : GVTheme.bone)
+                .shadow(color: isSearching ? .white.opacity(0.5) : .clear, radius: 4)
+                .padding(.horizontal, 11)
+                .frame(height: GVMetrics.controlHeight)
+                .background {
+                    if isSearching {
+                        GVChamferedPlate()
+                            .fill(Color.white.opacity(0.13))
+                            .overlay(GVChamferedPlate().stroke(Color.white.opacity(0.95), lineWidth: 1.35))
+                            .shadow(color: .white.opacity(0.4), radius: 10)
+                    } else {
+                        GVChamferedPlate()
+                            .fill(dockCharcoalElevated)
+                            .overlay(GVChamferedPlate().stroke(Color.white.opacity(0.07), lineWidth: 0.9))
+                            .shadow(color: .black.opacity(0.48), radius: 5, y: 2)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle())
+        .accessibilityLabel("Search effects")
+        .accessibilityValue(isSearching ? "open" : "closed")
+        .accessibilityIdentifier("workspace.search.toggle")
+    }
+
     private func categoryButton(_ category: WorkspaceDockCategory, populated: Bool = true) -> some View {
         let selected = selectedCategory == category
         return Button {
@@ -500,6 +337,7 @@ struct WorkspaceDockView: View {
                     disableAllEffects()
                     appModel.deactivateDepthMode()
                 } else {
+                    isSearching = false
                     selectedCategory = category
                     if category != .favorites {
                         selectedEffect = nil
@@ -607,6 +445,8 @@ struct WorkspaceDockView: View {
             experimentalCards
         case .audio:
             audioCards
+        case .scope:
+            scopeCards
         case .lidar:
             lidarCards
         case .objects:
@@ -655,6 +495,10 @@ struct WorkspaceDockView: View {
 
     private var audioCards: some View {
         effectCards(WorkspaceAdjustableEffect.audioCategoryEffects)
+    }
+
+    private var scopeCards: some View {
+        effectCards(WorkspaceAdjustableEffect.scopeCategoryEffects)
     }
 
     /// Every effect currently contributing pixels: RGB split plus each live
@@ -1124,6 +968,10 @@ private enum WorkspaceDockCategory: String, CaseIterable, Identifiable {
     case glitch
     case experimental
     case audio
+    /// Measurement instruments. Kept apart from AUDIO because a scope reports
+    /// on the signal rather than changing it, and a rail that mixes the two
+    /// stops answering either question.
+    case scope
     case optics
     case analog
     case geometry

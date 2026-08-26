@@ -142,6 +142,34 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case audioDisplace
     case audioPosterize
     case spectralTint
+    // Three complete style kernels that had no Swift case at all. Modes 7, 8
+    // and 15 were implemented in the shader and unreachable from the app, and
+    // the gap they left in the mode numbering is what made the registry's
+    // contiguity assertion impossible to satisfy.
+    case kaleidoscope
+    case mirror
+    case lensWarp
+    // RENDER. Reconstruction filters rather than damage: each one rebuilds the
+    // frame out of a different primitive.
+    case kuwahara
+    case asciiMosaic
+    case frostedGlass
+    case dctBlocks
+    case domainWarp
+    case blueNoiseDither
+    // SCOPE. Measurement instruments, not filters. Three read the live FFT and
+    // three read the frame itself; all six draw a reading over the image the
+    // way a broadcast monitor does.
+    case spectrumBars
+    case radialSpectrum
+    case lissajous
+    case vectorscope
+    case waveformMonitor
+    case rgbParade
+    /// Finger-painted motion corruption. Reads the touch uniform directly.
+    case moshBrush
+    /// Per-pixel history age driven by brightness.
+    case timeMap
     /// Full Eulerian fluid solve. Runs its own multi-pass stage.
     case fluid
 
@@ -241,13 +269,33 @@ extension WorkspaceAdjustableEffect {
         .audioGrain,
         .audioDisplace,
         .audioPosterize,
-        .spectralTint
+        .spectralTint,
+        .kaleidoscope,
+        .mirror,
+        .lensWarp,
+        .kuwahara,
+        .asciiMosaic,
+        .frostedGlass,
+        .dctBlocks,
+        .domainWarp,
+        .blueNoiseDither,
+        // The scopes render last on purpose: an instrument measures what the
+        // chain produced, so anything placed after one would be measuring a
+        // frame the reading no longer describes.
+        .spectrumBars,
+        .radialSpectrum,
+        .lissajous,
+        .vectorscope,
+        .waveformMonitor,
+        .rgbParade
     ]
 
     static let temporalRenderOrder: [WorkspaceAdjustableEffect] = [
         .datamosh,
         .liquidMosh,
         .heavyMosh,
+        .moshBrush,
+        .timeMap,
         .sort,
         .depthSort,
         .objectSort,
@@ -304,6 +352,7 @@ extension WorkspaceAdjustableEffect {
         .datamosh,
         .liquidMosh,
         .heavyMosh,
+        .moshBrush,
         .sort,
         .depthSort,
         .objectSort,
@@ -332,8 +381,12 @@ extension WorkspaceAdjustableEffect {
         .edge,
         .emboss,
         .sharpen,
-        .hatch
-        // Moved out of EXPERIMENTAL: same family as dither/halftone.
+        .hatch,
+        // Same family as dither and halftone: every one of these rebuilds the
+        // frame out of a repeated primitive.
+        .asciiMosaic,
+        .blueNoiseDither,
+        .kuwahara
     ]
 
     static let feedbackCategoryEffects: [WorkspaceAdjustableEffect] = [
@@ -403,6 +456,19 @@ extension WorkspaceAdjustableEffect {
         .spectralTint
     ]
 
+    /// Measurement instruments. Three read the live spectrum, three read the
+    /// frame. They are grouped apart from the audio filters because what they
+    /// do is different in kind: a filter changes the image, a scope reports on
+    /// it, and mixing the two makes the rail unreadable.
+    static let scopeCategoryEffects: [WorkspaceAdjustableEffect] = [
+        .waveformMonitor,
+        .rgbParade,
+        .vectorscope,
+        .spectrumBars,
+        .radialSpectrum,
+        .lissajous
+    ]
+
     static let opticsCategoryEffects: [WorkspaceAdjustableEffect] = [
         .chromaticAberration,
         .anamorphicFlare,
@@ -415,8 +481,10 @@ extension WorkspaceAdjustableEffect {
         .barrelWarp,
         .softFocus,
         .vignette,
-        .prismStreak
+        .prismStreak,
         // Moved out of EXPERIMENTAL: this is a lens artefact.
+        .frostedGlass,
+        .lensWarp
     ]
 
     static let analogCategoryEffects: [WorkspaceAdjustableEffect] = [
@@ -444,7 +512,9 @@ extension WorkspaceAdjustableEffect {
         .spiralWarp,
         .shearStack,
         .lensArray,
-        .fold
+        .fold,
+        .kaleidoscope,
+        .mirror
     ]
 
     static let fieldCategoryEffects: [WorkspaceAdjustableEffect] = [
@@ -458,8 +528,9 @@ extension WorkspaceAdjustableEffect {
         .falseColor,
         .edgeGlow,
         .reactionBands,
-        .voronoi
+        .voronoi,
         // Moved out of EXPERIMENTAL: sits beside worleyCracks.
+        .domainWarp
     ]
 
     /// Signal, sensor and buffer failure. Distinct from GLITCH, which is
@@ -477,7 +548,8 @@ extension WorkspaceAdjustableEffect {
         .spectralDepth,
         .vectorNecromancy,
         .worldFeedback,
-        .timeGraffiti
+        .timeGraffiti,
+        .timeMap
     ]
 
     static let damageCategoryEffects: [WorkspaceAdjustableEffect] = [
@@ -485,7 +557,10 @@ extension WorkspaceAdjustableEffect {
         .bufferUnderrun,
         .packetLoss,
         .chromaFailure,
-        .sensorSmear
+        .sensorSmear,
+        // Compression failure rather than transport failure, but the same
+        // chain and the same family of artefact.
+        .dctBlocks
     ]
 
     static let decayCategoryEffects: [WorkspaceAdjustableEffect] = [
@@ -505,7 +580,11 @@ extension WorkspaceAdjustableEffect {
     /// Anything that reads the live spectrum must be able to turn the
     /// microphone on, otherwise the effect renders against a silent uniform.
     var requiresAudioAnalysis: Bool {
+        // The spectrum scopes are not in the AUDIO family - they live in
+        // SCOPE - but they read the same FFT, and a scope that draws a flat
+        // line because nothing armed the microphone reads as broken.
         WorkspaceAdjustableEffect.audioCategoryEffects.contains(self)
+            || [.spectrumBars, .radialSpectrum, .lissajous].contains(self)
     }
 
     static let curatedCategoryEffectGroups: [[WorkspaceAdjustableEffect]] = [
@@ -523,6 +602,7 @@ extension WorkspaceAdjustableEffect {
         decayCategoryEffects,
         damageCategoryEffects,
         sarinCategoryEffects,
+        scopeCategoryEffects,
     ]
 
     static var repeatedCuratedCategoryEffects: Set<WorkspaceAdjustableEffect> {
@@ -591,6 +671,20 @@ extension WorkspaceAdjustableEffect {
         case .phosphor: "PHOSPHOR"
         case .voronoi: "VORONOI"
         case .hologram: "HOLOGRAM"
+        case .asciiMosaic: "ASCII"
+        case .blueNoiseDither: "BLUE NOISE"
+        case .frostedGlass: "FROSTED GLASS"
+        case .dctBlocks: "DCT RINGING"
+        case .domainWarp: "DOMAIN WARP"
+        case .lensWarp: "LENS WARP"
+        case .spectrumBars: "SPECTRUM"
+        case .radialSpectrum: "RADIAL SPECTRUM"
+        case .lissajous: "LISSAJOUS"
+        case .vectorscope: "VECTORSCOPE"
+        case .waveformMonitor: "WAVEFORM"
+        case .rgbParade: "RGB PARADE"
+        case .moshBrush: "MOSH BRUSH"
+        case .timeMap: "TIME MAP"
         default: rawValue.uppercased()
         }
     }
@@ -729,6 +823,23 @@ extension WorkspaceAdjustableEffect {
         case .audioPosterize: "AUDIO POSTERIZE"
         case .spectralTint: "SPECTRAL TINT"
         case .fluid: "FLUID"
+        case .kaleidoscope: "RADIAL SEGMENT FOLD"
+        case .mirror: "AXIS REFLECTION"
+        case .lensWarp: "RADIAL LENS PROFILE"
+        case .kuwahara: "PAINTERLY EDGE-PRESERVE"
+        case .asciiMosaic: "GLYPH DENSITY GRID"
+        case .frostedGlass: "CELL REFRACTION"
+        case .dctBlocks: "CODEC BLOCK RINGING"
+        case .domainWarp: "FBM WARPED BY FBM"
+        case .blueNoiseDither: "SCATTERED QUANTISE"
+        case .spectrumBars: "16-BAND FFT BARS"
+        case .radialSpectrum: "FFT WRAPPED TO A RING"
+        case .lissajous: "AUDIO SCOPE TRACE"
+        case .vectorscope: "CHROMA ON A COLOUR WHEEL"
+        case .waveformMonitor: "LUMA PER COLUMN"
+        case .rgbParade: "R / G / B WAVEFORMS"
+        case .moshBrush: "FINGER-PAINTED MOTION"
+        case .timeMap: "BRIGHTNESS PICKS THE MOMENT"
         }
     }
 
@@ -823,6 +934,21 @@ extension WorkspaceAdjustableEffect {
         case .audioDisplace: 89
         case .audioPosterize: 90
         case .spectralTint: 91
+        case .kaleidoscope: 7
+        case .mirror: 8
+        case .lensWarp: 15
+        case .kuwahara: 92
+        case .asciiMosaic: 93
+        case .frostedGlass: 94
+        case .dctBlocks: 95
+        case .domainWarp: 96
+        case .blueNoiseDither: 97
+        case .spectrumBars: 98
+        case .radialSpectrum: 99
+        case .lissajous: 100
+        case .vectorscope: 101
+        case .waveformMonitor: 102
+        case .rgbParade: 103
         case .fluid: nil
         case .rgbSplit, .datamosh, .liquidMosh, .heavyMosh, .sort, .depthSort, .objectSort,
              .radialSort, .temporalPixelSort, .pointCloudSmear, .depthFeedback, .freezeBrush,
@@ -832,7 +958,7 @@ extension WorkspaceAdjustableEffect {
              .frameTear, .bufferUnderrun, .packetLoss, .chromaFailure, .sensorSmear,
              .causalSmear, .realityCavitation, .timeFracture, .antiCamera,
              .memoryBurnIn, .spectralDepth, .vectorNecromancy,
-             .worldFeedback, .timeGraffiti,
+             .worldFeedback, .timeGraffiti, .moshBrush, .timeMap,
              .feedback, .trails, .echo, .freeze:
             nil
         }
@@ -844,7 +970,15 @@ extension WorkspaceAdjustableEffect {
         case .trails: 1
         case .echo: 2
         case .freeze: 3
-        case .datamosh, .liquidMosh, .heavyMosh: 4
+        // Three separate kernels. They shared mode 4 and differed only by
+        // their default slider values, which made two thirds of the DATAMOSH
+        // rail a relabelling of one effect - and broke the registry's
+        // one-effect-one-mode invariant.
+        case .datamosh: 4
+        case .liquidMosh: 39
+        case .heavyMosh: 40
+        case .moshBrush: 41
+        case .timeMap: 42
         case .sort: 5
         case .depthSort: 6
         case .objectSort: 7
@@ -885,7 +1019,11 @@ extension WorkspaceAdjustableEffect {
 
     var parameterLabels: [String] {
         switch self {
-        case .datamosh, .liquidMosh, .heavyMosh: ["FLOW", "REF AGE", "BLOCK"]
+        case .datamosh: ["FLOW", "REF AGE", "BLOCK"]
+        case .liquidMosh: ["FLOW", "VISCOSITY", "FLOOR"]
+        case .heavyMosh: ["FLOW", "REF AGE", "BLOCK"]
+        case .moshBrush: ["PUSH", "REACH", "DRAG"]
+        case .timeMap: ["DEPTH", "BIAS", "CONTRAST"]
         case .sort: ["SPAN", "BIAS", "MIX"]
         case .depthSort: ["DEPTH", "GATE", "SMEAR"]
         case .objectSort: ["EDGE", "GATE", "MIX"]
@@ -1014,6 +1152,21 @@ extension WorkspaceAdjustableEffect {
         case .audioPosterize: ["COLLAPSE", "LEVELS", "MIX"]
         case .spectralTint: ["GAIN", "SATURATION", "MIX"]
         case .fluid: ["DRAG", "PERSIST", "SWIRL"]
+        case .kaleidoscope: ["SEGMENTS", "SPIN", "ZOOM"]
+        case .mirror: ["ANGLE", "OFFSET", "MIX"]
+        case .lensWarp: ["CURVE", "RADIUS", "SCALE"]
+        case .kuwahara: ["RADIUS", "CONTRAST", "MIX"]
+        case .asciiMosaic: ["CELL", "GAMMA", "COLOUR"]
+        case .frostedGlass: ["ROUGH", "SCALE", "MIX"]
+        case .dctBlocks: ["QUALITY", "BLOCK", "MIX"]
+        case .domainWarp: ["AMOUNT", "SCALE", "MIX"]
+        case .blueNoiseDither: ["LEVELS", "PIXEL", "MIX"]
+        case .spectrumBars: ["HEIGHT", "BARS", "MIX"]
+        case .radialSpectrum: ["REACH", "INNER", "MIX"]
+        case .lissajous: ["GAIN", "RATIO", "MIX"]
+        case .vectorscope: ["GAIN", "SIZE", "MIX"]
+        case .waveformMonitor: ["GAIN", "HEIGHT", "MIX"]
+        case .rgbParade: ["GAIN", "HEIGHT", "MIX"]
         default: []
         }
     }
@@ -1150,7 +1303,26 @@ extension WorkspaceAdjustableEffect {
         case .audioDisplace: SIMD3(0.58, 0.52, 0.86)
         case .audioPosterize: SIMD3(0.60, 0.46, 0.86)
         case .spectralTint: SIMD3(0.56, 0.50, 0.88)
+        case .moshBrush: SIMD3(0.55, 0.34, 0.42)
+        case .timeMap: SIMD3(0.45, 0.50, 0.55)
         case .fluid: SIMD3(0.55, 0.62, 0.50)
+        case .kaleidoscope: SIMD3(0.34, 0.50, 0.52)
+        case .mirror: SIMD3(0.50, 0.50, 0.92)
+        case .lensWarp: SIMD3(0.66, 0.54, 0.50)
+        case .kuwahara: SIMD3(0.46, 0.42, 0.86)
+        case .asciiMosaic: SIMD3(0.34, 0.52, 0.28)
+        case .frostedGlass: SIMD3(0.42, 0.48, 0.80)
+        case .dctBlocks: SIMD3(0.58, 0.34, 0.88)
+        case .domainWarp: SIMD3(0.40, 0.46, 0.82)
+        case .blueNoiseDither: SIMD3(0.52, 0.20, 0.86)
+        // Scopes default to a strong mix: a measurement drawn at 40% is not a
+        // reading, it is a ghost.
+        case .spectrumBars: SIMD3(0.58, 0.45, 0.92)
+        case .radialSpectrum: SIMD3(0.55, 0.35, 0.90)
+        case .lissajous: SIMD3(0.52, 0.30, 0.88)
+        case .vectorscope: SIMD3(0.46, 0.50, 0.95)
+        case .waveformMonitor: SIMD3(0.50, 0.42, 0.95)
+        case .rgbParade: SIMD3(0.50, 0.42, 0.95)
         default: .zero
         }
         return CameraEffectParameters(primary: values.x, secondary: values.y, tertiary: values.z)
@@ -1162,12 +1334,25 @@ extension WorkspaceAdjustableEffect {
     /// more than the single-sample ones.
     var estimatedCost: Double {
         switch self {
-        case .phosphor, .voronoi, .hologram, .hatch, .water, .touchWarp, .crt, .dataBend:
+        case .phosphor, .voronoi, .hologram, .hatch, .water, .touchWarp, .crt, .dataBend,
+             .frostedGlass, .dctBlocks, .domainWarp:
             1.4
+        // Sixty-four taps per pixel over the whole frame. It is the most
+        // expensive style kernel in the set and the budget must know that
+        // before it starts dropping cheaper effects to pay for it.
+        case .kuwahara:
+            3.2
+        // The scopes gate to their own panel, so the tap count is paid over a
+        // fraction of the frame rather than all of it.
+        case .vectorscope, .waveformMonitor, .rgbParade:
+            1.8
+        case .liquidMosh:
+            2.4
         case .datamosh, .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort,
              .pointCloudSmear, .depthFeedback, .freezeBrush, .sortBrush, .feedbackTunnel,
              .lumaExtrusion, .opticalFlowLiquid, .rollingTime, .frameHoldSmear, .pixelGravity,
              .pixelShift, .slitScan, .motionBloom, .audioBloom, .audioKick, .prismStreak,
+             .heavyMosh, .moshBrush, .timeMap,
              .vectorWarp, .feedback, .trails, .echo,
              .frameTear, .bufferUnderrun, .packetLoss, .chromaFailure, .sensorSmear,
              .causalSmear, .realityCavitation, .timeFracture, .antiCamera,
@@ -1181,7 +1366,8 @@ extension WorkspaceAdjustableEffect {
 
     var freezesHistoryOnHold: Bool {
         switch self {
-        case .datamosh, .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort,
+        case .datamosh, .liquidMosh, .heavyMosh, .moshBrush,
+             .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort,
              .pointCloudSmear, .depthFeedback, .freezeBrush, .sortBrush, .feedbackTunnel,
              .lumaExtrusion, .opticalFlowLiquid, .rollingTime, .frameHoldSmear, .pixelGravity,
              .pixelShift:
@@ -1254,6 +1440,43 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
 
     /// Every slot, in the order they will be applied.
     var orderedSlots: [Slot] { slots }
+
+    /// Reads and writes one specific slot.
+    ///
+    /// The effect-keyed subscript above always resolves to the *first* slot
+    /// carrying that effect, which is correct for "the parameters for this
+    /// effect" and wrong the moment a slot is duplicated: both copies would
+    /// edit as one and `duplicate` would produce two identical nodes with no
+    /// way to separate them. Addressing by slot identity is what makes the
+    /// same effect twice, with different settings, actually reachable.
+    subscript(slot id: Slot.ID) -> CameraEffectParameters? {
+        get { slots.first { $0.id == id }?.parameters }
+        set {
+            guard let newValue, let index = slots.firstIndex(where: { $0.id == id }) else { return }
+            slots[index].parameters = newValue.sanitized
+        }
+    }
+
+    func slot(_ id: Slot.ID) -> Slot? {
+        slots.first { $0.id == id }
+    }
+
+    /// One-based render position of a slot, for display.
+    func renderPosition(of id: Slot.ID) -> Int? {
+        slots.firstIndex { $0.id == id }.map { $0 + 1 }
+    }
+
+    /// The first slot carrying an effect, if it is placed at all.
+    func firstSlotID(for effect: WorkspaceAdjustableEffect) -> Slot.ID? {
+        slots.first { $0.effect == effect }?.id
+    }
+
+    mutating func reset(slot id: Slot.ID) {
+        guard let index = slots.firstIndex(where: { $0.id == id }) else { return }
+        var parameters = slots[index].effect.defaultCameraParameters
+        parameters.isEnabled = slots[index].parameters.isEnabled
+        slots[index].parameters = parameters
+    }
 
     var activeEffects: [(WorkspaceAdjustableEffect, CameraEffectParameters)] {
         slots.compactMap { slot in

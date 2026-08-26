@@ -43,6 +43,19 @@ struct WorkspaceView: View {
     /// the dock's own availability notice, and the deck tool-row flash.
     @StateObject private var toasts = GVToastBox()
 
+    /// Shared cadence anchor for every 4 Hz telemetry consumer (status line,
+    /// both scrims). One start instant means their periodic timers fire in
+    /// lockstep instead of four phase-shifted invalidations per second.
+    @State private var telemetryTickStart = Date.now
+
+    // MARK: Dynamic Type scaling
+    // Fixed frames break at accessibility sizes; these track the user's text
+    // setting so the chips grow with the type they carry.
+    @ScaledMetric(relativeTo: .caption2) private var settingsChipWidth: CGFloat = 52
+    @ScaledMetric(relativeTo: .caption2) private var settingsChipHeight: CGFloat = 54
+    @ScaledMetric(relativeTo: .body) private var capturePairWidth: CGFloat = 46
+    @ScaledMetric(relativeTo: .body) private var capturePairHeight: CGFloat = 42
+
     /// Radial hold instrument. `radialOrigin` doubles as the presented flag.
     @State private var radialOrigin: CGPoint?
     @State private var radialCurrent: CGPoint = .zero
@@ -64,11 +77,17 @@ struct WorkspaceView: View {
     @State private var coachPresented = false
     @State private var sessionRestored = false
 
+    /// One read for every mid-take surface in this file. The writer state in
+    /// `CameraRuntime` is the single source of truth; naming it once here
+    /// keeps the HUD, the capture pair, and the deck collapse from drifting
+    /// into different definitions of "recording".
+    private var isTakeLive: Bool { cameraRuntime.isRecording }
+
     /// The effect browser is away when chrome is hidden, when it has been
     /// collapsed on its own, or during a take unless the operator has just
     /// tapped the preview to bring it back.
     private var isDeckCollapsed: Bool {
-        isChromeHidden || isFXCollapsed || (cameraRuntime.isRecording && !hud.isChromeRevealed)
+        isChromeHidden || isFXCollapsed || (isTakeLive && !hud.isChromeRevealed)
     }
 
     /// Screen recording that keeps the instrument in frame. The render-target
@@ -80,7 +99,6 @@ struct WorkspaceView: View {
     @State private var undoStack: [CompositionSnapshot] = []
     @State private var redoStack: [CompositionSnapshot] = []
     @State private var lastCommitted: CompositionSnapshot?
-    @State private var sessionSaveTask: Task<Void, Never>?
     @State private var bypassStash: CompositionSnapshot?
 
     private func currentSnapshot() -> CompositionSnapshot {
@@ -96,7 +114,6 @@ struct WorkspaceView: View {
         }
         redoStack.removeAll()
         lastCommitted = snapshot
-        scheduleSessionSave()
     }
 
     private func undo() {
@@ -123,16 +140,6 @@ struct WorkspaceView: View {
         effectStack = snapshot.stack
         rgbSplitParameters = snapshot.rgb
         lastCommitted = snapshot
-        scheduleSessionSave()
-    }
-
-    private func scheduleSessionSave() {
-        sessionSaveTask?.cancel()
-        sessionSaveTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(0.8))
-            guard !Task.isCancelled else { return }
-            presetStore.writeLastSession(setup: appModel.setup, rgb: rgbSplitParameters, stack: effectStack)
-        }
     }
 
     var body: some View {
@@ -159,7 +166,7 @@ struct WorkspaceView: View {
                         // clearing the selection: during recording the most
                         // likely intent is "show me the controls again", and
                         // wiping the live effect would be destructive.
-                        if cameraRuntime.isRecording, !hud.isChromeRevealed {
+                        if isTakeLive, !hud.isChromeRevealed {
                             withAnimation(GVMotion.deck) { hud.revealChrome() }
                             return
                         }
@@ -191,7 +198,7 @@ struct WorkspaceView: View {
                 // The mid-take effect summary. The recording header itself
                 // lives in the top row's own slot below, so it lands exactly
                 // where the wordmark it replaces was.
-                if cameraRuntime.isRecording, isDeckCollapsed {
+                if isTakeLive, isDeckCollapsed {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
                         recordingHUD(for: geometry).summary
@@ -221,11 +228,17 @@ struct WorkspaceView: View {
                 VStack(spacing: 0) {
                     GVAdaptiveScrim(
                         edge: .top,
-                        height: max(geometry.safeAreaInsets.top, 12) + 118,
-                        statsMailbox: renderStats
+                        height: max(geometry.safeAreaInsets.top, 12) + 148,
+                        statsMailbox: renderStats,
+                        tickStart: telemetryTickStart
                     )
                     Spacer(minLength: 0)
-                    GVAdaptiveScrim(edge: .bottom, height: 250, statsMailbox: renderStats)
+                    GVAdaptiveScrim(
+                        edge: .bottom,
+                        height: 310,
+                        statsMailbox: renderStats,
+                        tickStart: telemetryTickStart
+                    )
                 }
                 .overlay(alignment: .leading) {
                     // Side scrims: the vertical HUD and the level rails sit on
@@ -257,7 +270,7 @@ struct WorkspaceView: View {
                         // screen. Nothing is removed — a tap on the preview
                         // brings the full interface straight back. Both live in
                         // this one slot so the swap does not move the row.
-                        if cameraRuntime.isRecording, isDeckCollapsed {
+                        if isTakeLive, isDeckCollapsed {
                             recordingHUD(for: geometry)
                         } else {
                             topPanel(for: geometry)
@@ -283,20 +296,29 @@ struct WorkspaceView: View {
 
                     Spacer(minLength: 8)
 
+                    // One line above the dock: the FX collapse toggle on the
+                    // left, the detached capture pair on the right. Photo and
+                    // record live outside the dock because mid-take the dock
+                    // collapses with the rest of the chrome, and a stop
+                    // control that disappears with the UI it controls is not
+                    // a control. Visibility is per-control so a running take
+                    // keeps its stop switch even when everything else hides.
                     HStack(spacing: GVMetrics.gapTight) {
                         chromeToggle
+                            .opacity(isChromeHidden ? 0 : 1)
+                            .allowsHitTesting(!isChromeHidden)
 
                         Spacer(minLength: 0)
 
-                        // Record and photo now live inside the effect dock,
-                        // beside where effects are chosen.
+                        detachedCaptureControls
+                            .opacity(isChromeHidden && !isTakeLive ? 0 : 1)
+                            .allowsHitTesting(!(isChromeHidden && !isTakeLive))
                     }
                     .padding(.horizontal, GVMetrics.gapWide)
                     .padding(.top, GVMetrics.stepRelated)
-                    .padding(.bottom, GVMetrics.gapTight)
-                    .opacity(isChromeHidden ? 0 : 1)
-                    // Invisible chrome must not keep eating taps.
-                    .allowsHitTesting(!isChromeHidden)
+                    .padding(.bottom, 6)
+                    .animation(GVMotion.deck, value: isChromeHidden)
+
                     // The single notice channel. Anchored just above the dock
                     // so feedback lands beside where the hands already are,
                     // instead of three unrelated places at once.
@@ -316,19 +338,6 @@ struct WorkspaceView: View {
                         dismissSelectionSignal: $dismissSelectionSignal,
                         statsMailbox: renderStats,
                         onHideChrome: { withAnimation(GVMotion.panel) { isChromeHidden = true } },
-                        onCapturePhoto: {
-                            capture.takeScreenshot(cameraRuntime: cameraRuntime)
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        },
-                        onToggleRecording: {
-                            let wasRecording = cameraRuntime.isRecording
-                            capture.toggleRecording(cameraRuntime: cameraRuntime)
-                            if wasRecording {
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            } else {
-                                UINotificationFeedbackGenerator().notificationOccurred(.success)
-                            }
-                        },
                         presetsPresented: $presetsPresented
                     )
                     .padding(.horizontal, 6)
@@ -341,6 +350,15 @@ struct WorkspaceView: View {
                     .clipped()
                     .animation(GVMotion.deck, value: isDeckCollapsed)
                 }
+                .frame(width: geometry.size.width)
+                // One motion clock for the whole mid-take transition. When
+                // recording flips, every dependent surface — HUD swap, deck
+                // collapse, capture-pair state — animates together instead of
+                // each part running its own timing.
+                .animation(
+                    GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion),
+                    value: cameraRuntime.isRecording
+                )
                 .ignoresSafeArea(edges: [.top, .bottom])
                 // HIDE UI restore layer. When the eye icon sends chrome away,
                 // this transparent sheet owns every tap: one touch anywhere
@@ -382,7 +400,6 @@ struct WorkspaceView: View {
                         .transition(.scale(scale: 0.9, anchor: .topLeading).combined(with: .opacity))
                         .zIndex(30)
                 }
-
                 if isQuickTakePresented, let capture = cameraRuntime.lastCapture {
                     QuickTakeViewerSheet(capture: capture, isPresented: $isQuickTakePresented)
                         .transition(.scale(scale: 0.95).combined(with: .opacity))
@@ -474,13 +491,9 @@ struct WorkspaceView: View {
             levelMotion.start()
             if !sessionRestored {
                 sessionRestored = true
-                let restored = presetStore.restoreLastSession(
-                    to: &appModel.setup,
-                    rgb: &rgbSplitParameters,
-                    stack: &effectStack
-                )
+                // Sessions are not carried across launches: every start is a
+                // clean instrument. The baseline snapshot still seeds undo.
                 lastCommitted = CompositionSnapshot(stack: effectStack, rgb: rgbSplitParameters)
-                if restored { showTopNotice("SESSION // LAST LOOK RESTORED") }
                 if !preferences.coachSeen { coachPresented = true }
             }
         }
@@ -620,6 +633,69 @@ struct WorkspaceView: View {
         effectStack.activeEffects.count + (rgbSplitParameters.isEnabled ? 1 : 0)
     }
 
+    /// Photo + record, detached from the dock. Record carries its state in
+    /// glyph and border together; photo is a plain instrument button. Visible
+    /// whenever chrome shows — and during a take even when it does not, since
+    /// stop must outlive the interface it belongs to.
+    private var detachedCaptureControls: some View {
+        let recording = isTakeLive
+
+        return HStack(spacing: 9) {
+            Button {
+                capture.takeScreenshot(cameraRuntime: cameraRuntime)
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            } label: {
+                Image(systemName: "camera.viewfinder")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(GVTheme.bone.opacity(0.9))
+                    .frame(width: capturePairWidth, height: capturePairHeight)
+                    .background(
+                        GVChamferedPlate(cut: 7)
+                            .fill(Color(white: 0.105).opacity(0.92))
+                    )
+                    .overlay(
+                        GVChamferedPlate(cut: 7)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(GVPressStyle())
+            .accessibilityLabel("Capture photo")
+            .accessibilityIdentifier("workspace.capture.photo")
+
+            Button {
+                let wasRecording = recording
+                capture.toggleRecording(cameraRuntime: cameraRuntime)
+                if wasRecording {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } else {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+            } label: {
+                Image(systemName: recording ? "stop.fill" : "record.circle")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(recording ? GVTheme.record : GVTheme.bone.opacity(0.9))
+                    .shadow(color: recording ? GVTheme.record.opacity(0.6) : .clear, radius: 4)
+                    .frame(width: capturePairWidth, height: capturePairHeight)
+                    .background(
+                        GVChamferedPlate(cut: 7)
+                            .fill(recording ? GVTheme.record.opacity(0.14) : Color(white: 0.105).opacity(0.92))
+                    )
+                    .overlay(
+                        GVChamferedPlate(cut: 7)
+                            .strokeBorder(
+                                recording ? GVTheme.record.opacity(0.8) : Color.white.opacity(0.18),
+                                lineWidth: 1
+                            )
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(GVPressStyle())
+            .accessibilityLabel(recording ? "Stop recording" : "Record video")
+            .accessibilityIdentifier("workspace.record.toggle")
+        }
+    }
+
     /// Collapses the bottom menus, and brings them back. Doubles as a live
     /// status readout: the count of rendering effects glows while any are
     /// armed, so stack state is glanceable without opening anything.
@@ -716,18 +792,29 @@ private extension WorkspaceView {
                     .frame(width: islandReserve)
                     .accessibilityHidden(true)
 
-                // Two purposeful controls, centred in the right shoulder:
-                // the camera deck and system settings. Developer tools stay
-                // reachable through the settings deck's DEV switch instead of
-                // claiming a permanent slot here.
-                HStack(spacing: 7) {
-                    shellChip(symbol: "camera.aperture", id: "camera",
-                              active: activeTopDeck == .camera) { toggleTopDeck(.camera) }
+                // Mid-take the right shoulder stops being a menu: the camera
+                // and settings chips give way to the running timecode, so
+                // take state reads from across the room whether or not the
+                // operator has summoned the interface back.
+                if isTakeLive {
+                    HStack(spacing: GVMetrics.stepRelated) {
+                        recordingTimecode
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                } else {
+                    HStack(spacing: 7) {
+                        shellChip(symbol: "camera.aperture", id: "camera",
+                                  active: activeTopDeck == .camera) { toggleTopDeck(.camera) }
 
-                    shellChip(symbol: "slider.horizontal.3", id: "settings",
-                              active: activeTopDeck == .settings) { toggleTopDeck(.settings) }
+                        shellChip(
+                            symbol: "slider.horizontal.3",
+                            id: "settings",
+                            active: activeTopDeck == .settings,
+                            usesCharcoalPlate: true
+                        ) { toggleTopDeck(.settings) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .frame(maxWidth: .infinity, alignment: .center)
             }
             .padding(.horizontal, horizontalInset)
             .frame(height: panelHeight)
@@ -737,7 +824,8 @@ private extension WorkspaceView {
 
             GVTelemetryStrip(
                 statsMailbox: renderStats,
-                onExposureNotice: showTopNotice
+                onExposureNotice: showTopNotice,
+                tickStart: telemetryTickStart
             )
             .padding(.horizontal, horizontalInset)
 
@@ -752,10 +840,16 @@ private extension WorkspaceView {
         .gvDecay(decay)
     }
 
-    /// Top-shell control. Styled after the grey//VISION wordmark beside it:
-    /// white type on nothing — no plate — with a single lit rule underneath
-    /// carrying the active state.
-    func shellChip(symbol: String, id: String, active: Bool, action: @escaping () -> Void) -> some View {
+    /// Top-shell control. The settings trigger receives the same compact
+    /// charcoal plate used by the workspace dock; camera navigation remains a
+    /// lightweight shell glyph.
+    func shellChip(
+        symbol: String,
+        id: String,
+        active: Bool,
+        usesCharcoalPlate: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         let glyph: Color = active ? Color.white : GVTheme.bone.opacity(0.62)
 
         return Button {
@@ -767,8 +861,19 @@ private extension WorkspaceView {
                 .shadow(color: .black.opacity(0.85), radius: 2, y: 1)
                 .shadow(color: active ? Color.white.opacity(0.55) : .clear, radius: 4)
                 .frame(width: 40, height: 40)
-                // Column of type over a rule, not a plate. Selection lights
-                // the rule and the glyph; nothing is enclosed.
+                .background {
+                    if usesCharcoalPlate {
+                        GVChamferedPlate(cut: 7)
+                            .fill(Color(red: 0.135, green: 0.135, blue: 0.143))
+                            .overlay {
+                                GVChamferedPlate(cut: 7)
+                                    .strokeBorder(Color.white.opacity(active ? 0.18 : 0.08), lineWidth: 1)
+                            }
+                            .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
+                    }
+                }
+                // Selection lights the lower rule and glyph; the charcoal
+                // plate keeps the settings entry in the dock's material family.
                 .overlay(alignment: .bottom) {
                     Rectangle()
                         .fill(active ? Color.white : Color.white.opacity(0.16))
@@ -788,13 +893,39 @@ private extension WorkspaceView {
         activeTopDeck = activeTopDeck == deck ? nil : deck
     }
 
+    /// The mid-take clock that replaces the top-right chips. Same register as
+    /// the recording HUD's header: lit pip, monospaced digits, nothing else.
+    private var recordingTimecode: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
+            let total = cameraRuntime.recordingStartedAt.map { total in
+                Int(timeline.date.timeIntervalSince(total))
+            } ?? 0
+
+            HStack(spacing: GVMetrics.stepRelated) {
+                Circle()
+                    .fill(GVTheme.record)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: GVTheme.record.opacity(0.8), radius: 5)
+
+                Text(String(format: "%02d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60))
+                    .gvFont(.control)
+                    .monospacedDigit()
+                    .foregroundStyle(GVTheme.bone)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .fixedSize()
+            .accessibilityElement(children: .combine)
+        }
+    }
+
     @ViewBuilder
     private func topControlDeck(_ deck: WorkspaceTopDeck, geometry: GeometryProxy) -> some View {
         switch deck {
         case .camera:
             cameraControlDeck(geometry: geometry)
         case .settings:
-            captureSettingsDeck
+            captureSettingsDeck(availableWidth: max(0, geometry.size.width - 20))
         }
     }
 
@@ -839,10 +970,27 @@ private extension WorkspaceView {
                     .padding(13)
                 }
             } else {
-                CameraControlsView()
+                // The controls are laid out at their natural design width and
+                // the deck scrolls sideways when the viewport is narrower —
+                // the same containment as the settings deck. Without this a
+                // compact width compressed the row past its minimum and the
+                // outermost controls were severed by the panel edge.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    CameraControlsView()
+                        .frame(width: 340)
+                        .padding(.horizontal, 10)
+                }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             }
         }
-        .frame(width: deckWidth, height: alternateMode ? nil : 318, alignment: .center)
+        .frame(
+            width: deckWidth,
+            // Landscape guard: the chrome VStack does not scroll, so on short
+            // viewports the fixed deck height would crowd out the capture
+            // row and dock below it.
+            height: alternateMode ? nil : min(318, geometry.size.height * 0.5),
+            alignment: .center
+        )
         .frame(maxWidth: 620, alignment: .center)
         .accessibilityIdentifier("workspace.camera.deck")
     }
@@ -851,87 +999,94 @@ private extension WorkspaceView {
     /// Kept to what is necessary and purposeful: the creative reset, the two
     /// recording-relevant switches, the effect-family gate, the developer
     /// gate, and help. Ambience toggles and stubs live elsewhere or nowhere.
-    var captureSettingsDeck: some View {
-        GVAnimatedGlassPanel(cornerRadius: 14, fillOpacity: 0, isTransparent: true) {
-            HStack(spacing: 7) {
-                captureActionButton(symbol: "eraser", label: "Clear FX", tint: GVTheme.violet) {
-                    clearEffects()
-                }
-                .accessibilityIdentifier("workspace.clear-effects")
-
-                captureActionButton(
-                    symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
-                    label: "Audio",
-                    tint: audioRuntime.isEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                ) {
-                    Task { @MainActor in
-                        await audioRuntime.toggle()
-                        showTopNotice(audioNotice)
+    func captureSettingsDeck(availableWidth: CGFloat) -> some View {
+        GVAnimatedGlassPanel(
+            cornerRadius: 14,
+            tint: Color(red: 0.078, green: 0.078, blue: 0.085),
+            fillOpacity: 0.42
+        ) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    captureActionButton(symbol: "eraser", label: "Clear FX", tint: GVTheme.violet) {
+                        clearEffects()
                     }
-                }
-                .accessibilityIdentifier("workspace.audio")
+                    .accessibilityIdentifier("workspace.clear-effects")
 
-                captureActionButton(
-                    symbol: preferences.watermarkEnabled ? "video.badge.checkmark" : "video.slash",
-                    label: "Burn HUD",
-                    tint: preferences.watermarkEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                ) {
-                    preferences.watermarkEnabled.toggle()
-                    showTopNotice(preferences.watermarkEnabled ? "RECORDING // BURN HUD" : "RECORDING // CLEAN")
-                }
-                .accessibilityIdentifier("workspace.watermark")
-
-                captureActionButton(
-                    symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
-                    label: "Experimental",
-                    tint: preferences.experimentalEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                ) {
-                    preferences.experimentalEnabled.toggle()
-                    showTopNotice(preferences.experimentalEnabled ? "EXPERIMENTAL // ON" : "EXPERIMENTAL // OFF")
-                }
-                .accessibilityIdentifier("workspace.experimental")
-
-                captureActionButton(
-                    symbol: preferences.startupAnimationEnabled ? "sparkles" : "forward.end.fill",
-                    label: "Startup",
-                    tint: preferences.startupAnimationEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                ) {
-                    preferences.startupAnimationEnabled.toggle()
-                    showTopNotice(
-                        preferences.startupAnimationEnabled
-                            ? "STARTUP // FULL CEREMONY"
-                            : "STARTUP // FAST ENTRY"
-                    )
-                }
-                .accessibilityIdentifier("workspace.startup")
-
-                captureActionButton(
-                    symbol: "wrench.and.screwdriver",
-                    label: preferences.developerEnabled ? "Dev ON" : "Dev OFF",
-                    tint: preferences.developerEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                ) {
-                    preferences.developerEnabled.toggle()
-                    showTopNotice(preferences.developerEnabled ? "DEV // TOOLS REVEALED" : "DEV // TOOLS HIDDEN")
-                }
-                .accessibilityIdentifier("workspace.devmode")
-
-                if preferences.developerEnabled {
-                    captureActionButton(symbol: "arrow.clockwise", label: "Restart", tint: GVTheme.acid) {
-                        appModel.restartEngine()
-                        showTopNotice("CAMERA PIPELINE // RESTARTING")
+                    captureActionButton(
+                        symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
+                        label: "Audio",
+                        tint: audioRuntime.isEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                    ) {
+                        Task { @MainActor in
+                            await audioRuntime.toggle()
+                            showTopNotice(audioNotice)
+                        }
                     }
-                    .accessibilityIdentifier("workspace.restart")
-                }
+                    .accessibilityIdentifier("workspace.audio")
 
-                captureActionButton(symbol: "questionmark.circle", label: "Help", tint: GVTheme.violet) {
-                    coachPresented = true
+                    captureActionButton(
+                        symbol: preferences.watermarkEnabled ? "video.badge.checkmark" : "video.slash",
+                        label: "Burn HUD",
+                        tint: preferences.watermarkEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                    ) {
+                        preferences.watermarkEnabled.toggle()
+                        showTopNotice(preferences.watermarkEnabled ? "RECORDING // BURN HUD" : "RECORDING // CLEAN")
+                    }
+                    .accessibilityIdentifier("workspace.watermark")
+
+                    captureActionButton(
+                        symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
+                        label: "Experimental",
+                        tint: preferences.experimentalEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                    ) {
+                        preferences.experimentalEnabled.toggle()
+                        showTopNotice(preferences.experimentalEnabled ? "EXPERIMENTAL // ON" : "EXPERIMENTAL // OFF")
+                    }
+                    .accessibilityIdentifier("workspace.experimental")
+
+                    captureActionButton(
+                        symbol: preferences.startupAnimationEnabled ? "sparkles" : "forward.end.fill",
+                        label: "Startup",
+                        tint: preferences.startupAnimationEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                    ) {
+                        preferences.startupAnimationEnabled.toggle()
+                        showTopNotice(
+                            preferences.startupAnimationEnabled
+                                ? "STARTUP // FULL CEREMONY"
+                                : "STARTUP // FAST ENTRY"
+                        )
+                    }
+                    .accessibilityIdentifier("workspace.startup")
+
+                    captureActionButton(
+                        symbol: "wrench.and.screwdriver",
+                        label: preferences.developerEnabled ? "Dev ON" : "Dev OFF",
+                        tint: preferences.developerEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+                    ) {
+                        preferences.developerEnabled.toggle()
+                        showTopNotice(preferences.developerEnabled ? "DEV // TOOLS REVEALED" : "DEV // TOOLS HIDDEN")
+                    }
+                    .accessibilityIdentifier("workspace.devmode")
+
+                    if preferences.developerEnabled {
+                        captureActionButton(symbol: "arrow.clockwise", label: "Restart", tint: GVTheme.acid) {
+                            appModel.restartEngine()
+                            showTopNotice("CAMERA PIPELINE // RESTARTING")
+                        }
+                        .accessibilityIdentifier("workspace.restart")
+                    }
+
+                    captureActionButton(symbol: "questionmark.circle", label: "Help", tint: GVTheme.violet) {
+                        coachPresented = true
+                    }
+                    .accessibilityIdentifier("workspace.help")
                 }
-                .accessibilityIdentifier("workspace.help")
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         }
-        .frame(maxWidth: 620, alignment: .center)
+        .frame(width: min(620, availableWidth), alignment: .center)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.settings.deck")
         .onChange(of: cameraRuntime.screenshotMessage) { _, message in
@@ -976,16 +1131,16 @@ private extension WorkspaceView {
                     .minimumScaleFactor(0.7)
             }
             .foregroundStyle(tint)
-            .frame(width: 52, height: 54)
+            .frame(width: settingsChipWidth, height: settingsChipHeight)
             .background(
                 GVChamferedPlate(cut: 8)
-                    .fill(Color(white: 0.105).opacity(0.92))
+                    .fill(Color(red: 0.175, green: 0.175, blue: 0.183))
             )
             .overlay(
                 GVChamferedPlate(cut: 8)
-                    .strokeBorder(tint.opacity(0.30), lineWidth: 1)
+                    .strokeBorder(tint.opacity(0.16), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
+            .shadow(color: .black.opacity(0.48), radius: 4, y: 2)
         }
         .buttonStyle(GVPressStyle())
         .accessibilityLabel(label)

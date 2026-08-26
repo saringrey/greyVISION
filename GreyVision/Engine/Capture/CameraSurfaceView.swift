@@ -9,6 +9,7 @@ struct CameraSurfaceView: View {
     @EnvironmentObject private var objectsRuntime: ARObjectRuntime
     @EnvironmentObject private var audioRuntime: AudioReactiveRuntime
     @EnvironmentObject private var blobRuntime: BlobTrackingRuntime
+    @EnvironmentObject private var broadcastRuntime: GVBroadcastRuntime
     @ObservedObject var fracture: SignalFractureController
     let onSigil: @MainActor (String) -> Void
     let sigilsEnabled: Bool
@@ -60,6 +61,9 @@ struct CameraSurfaceView: View {
                     blobFields: packedBlobFields(blobRuntime.blobs),
                     scanlineParameters: ScanlineEffectParameters(),
                     fracture: fracture,
+                    // Handed over only while the link is armed, so an idle
+                    // link costs the render loop nothing at all.
+                    broadcast: broadcastRuntime.isArmed ? broadcastRuntime.frameSink : nil,
                     statsMailbox: statsMailbox,
                     onPreviewTap: onPreviewTap,
                     onFocus: cameraRuntime.focus,

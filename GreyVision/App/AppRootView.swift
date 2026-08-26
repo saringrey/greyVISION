@@ -72,5 +72,6 @@ struct AppRootView: View {
         .environmentObject(model.objects)
         .environmentObject(model.audio)
         .environmentObject(model.blobs)
+        .environmentObject(model.broadcast)
         .environmentObject(model.preferences)
 }

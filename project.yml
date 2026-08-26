@@ -64,6 +64,12 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: grey//VISION uses the camera to render live visual effects.
+        # Required to advertise the Mac link over Bonjour. Without both keys
+        # NWListener fails at .ready with a permission error rather than at
+        # build time, so their absence looks like a networking bug.
+        NSLocalNetworkUsageDescription: grey//VISION streams the processed camera image to the greyVISION virtual camera on your Mac over your local network.
+        NSBonjourServices:
+          - _greyvision._tcp
         NSMicrophoneUsageDescription: grey//VISION uses microphone audio for recording and audio-reactive modulation when you enable it.
         NSPhotoLibraryAddUsageDescription: grey//VISION saves captures to Photos only when you ask it to.
         NSPhotoLibraryUsageDescription: grey//VISION saves captures to Photos only when you ask it to.

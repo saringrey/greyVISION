@@ -433,6 +433,7 @@ enum GVCameraLabels {
     static func lens(_ snapshot: CameraRuntimeSnapshot) -> String {
         let raw = snapshot.deviceType.uppercased()
         if raw.contains("ULTRAWIDE") { return "ULTRA WIDE" }
+        if raw.contains("DUALWIDE") { return "DUAL WIDE" }
         if raw.contains("TELEPHOTO") { return "TELE" }
         if raw.contains("WIDE") { return "WIDE" }
         if raw.contains("TRUEDEPTH") { return "TRUEDEPTH" }

@@ -38,9 +38,6 @@ final class GVCaptureCoordinator: ObservableObject {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey) }
     }
 
-    /// True for EITHER path, so the interface can never disagree with itself.
-    @Published private(set) var isRecording = false
-
     /// Elapsed seconds for the active HUD take. The renderer path surfaces its
     /// own timecode through the recording HUD.
     @Published private(set) var hudElapsed: TimeInterval = 0
@@ -63,8 +60,8 @@ final class GVCaptureCoordinator: ObservableObject {
         mode = GVCaptureMode(rawValue: raw ?? "") ?? .clean
     }
 
-    func setMode(_ newMode: GVCaptureMode) {
-        guard !isRecording else {
+    func setMode(_ newMode: GVCaptureMode, cameraRuntime: CameraRuntime) {
+        guard !isTakeLive(cameraRuntime) else {
             statusMessage = "CAPTURE // MODE LOCKED WHILE RECORDING"
             return
         }
@@ -73,8 +70,18 @@ final class GVCaptureCoordinator: ObservableObject {
 
     /// Toggles whichever take applies. Safe from any surface: calling while a
     /// take is live STOPS it instead of starting a second one.
+    ///
+    /// The decision reads the runtime's live state — including a start that
+    /// is still pending on the writer mailbox. Copying `isRecording` at tap
+    /// time was always false, because the renderer latches the writer a frame
+    /// or two later; that made every start report "writer unavailable" and
+    /// left this coordinator one tap behind the truth.
+    private func isTakeLive(_ cameraRuntime: CameraRuntime) -> Bool {
+        cameraRuntime.isRecording || cameraRuntime.recordingMailbox.isStartPending
+    }
+
     func toggleRecording(cameraRuntime: CameraRuntime) {
-        if isRecording {
+        if isTakeLive(cameraRuntime) {
             stop(cameraRuntime: cameraRuntime)
         } else {
             start(cameraRuntime: cameraRuntime)
@@ -82,19 +89,17 @@ final class GVCaptureCoordinator: ObservableObject {
     }
 
     func start(cameraRuntime: CameraRuntime) {
-        guard !isRecording else {
+        guard !isTakeLive(cameraRuntime) else {
             statusMessage = "CAPTURE // ALREADY RECORDING"
             return
         }
         cameraRuntime.toggleRecording()
-        isRecording = cameraRuntime.isRecording
-        statusMessage = isRecording ? "REC // CLEAN RENDER" : "REC // WRITER UNAVAILABLE"
+        statusMessage = "REC // CLEAN RENDER"
     }
 
     func stop(cameraRuntime: CameraRuntime) {
-        guard isRecording else { return }
+        guard isTakeLive(cameraRuntime) else { return }
         cameraRuntime.toggleRecording()
-        isRecording = cameraRuntime.isRecording
     }
 
     /// One screenshot entry point. CLEAN grabs the render target; HUD grabs

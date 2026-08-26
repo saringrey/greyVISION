@@ -24,8 +24,14 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_greyvision._tcp</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>grey//VISION uses the camera to render live visual effects.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>grey//VISION streams the processed camera image to the greyVISION virtual camera on your Mac over your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>grey//VISION uses microphone audio for recording and audio-reactive modulation when you enable it.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

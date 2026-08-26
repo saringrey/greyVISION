@@ -235,6 +235,13 @@ struct CameraStyleEffectUniforms {
     var blob1: SIMD4<Float>
     var blob2: SIMD4<Float>
     var blob3: SIMD4<Float>
+    /// Sixteen log-spaced FFT bands packed four to a vector. Zero while the
+    /// analyser is off, which is what makes a scope draw a flat line rather
+    /// than garbage when nothing is listening.
+    var spectrum0: SIMD4<Float>
+    var spectrum1: SIMD4<Float>
+    var spectrum2: SIMD4<Float>
+    var spectrum3: SIMD4<Float>
     /// Frame-to-frame world reprojection. Identity unless a world-anchored
     /// mode is active and device attitude has primed.
     var worldReprojection: simd_float3x3
@@ -309,6 +316,8 @@ struct CameraMetalSurface: UIViewRepresentable {
     let blobFields: [SIMD4<Float>]
     let scanlineParameters: ScanlineEffectParameters
     let fracture: SignalFractureController
+    /// Live link to the Mac virtual camera, or nil when it is not armed.
+    let broadcast: GVBroadcastEngine?
     let statsMailbox: CameraRenderStatsMailbox
     let onPreviewTap: @MainActor @Sendable () -> Void
     let onFocus: @MainActor (CGPoint) -> Void
@@ -364,6 +373,7 @@ struct CameraMetalSurface: UIViewRepresentable {
 
     func updateUIView(_ view: CameraMetalView, context: Context) {
         view.sigilsEnabled = sigilsEnabled
+        context.coordinator.renderer?.setBroadcastEngine(broadcast)
         context.coordinator.renderer?.update(
             rgbSplitParameters: rgbSplitParameters,
             effectStack: effectStack,
@@ -389,6 +399,7 @@ struct CameraMetalSurface: UIViewRepresentable {
         view.onFracture = nil
         coordinator.fracture.reset()
         coordinator.statsMailbox.clear()
+        coordinator.renderer?.setBroadcastEngine(nil)
         coordinator.renderer?.shutdown()
         coordinator.renderer = nil
     }
@@ -842,12 +853,16 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private var temporalHoldActive = false
     private var audio = SIMD4<Float>.zero
     private var audioDynamics = SIMD4<Float>.zero
+    private var audioSpectrum: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero)
     private var blobFields: [SIMD4<Float>] = []
     private var scanlineParameters = ScanlineEffectParameters()
     private var screenScale: Float = 3
     private var syntheticTarget: MTLTexture?
     private var temporalLumaTarget: MTLTexture?
     
+    /// Live link to the Mac virtual camera. Nil unless the operator armed it.
+    private var broadcastEngine: GVBroadcastEngine?
+    private let broadcastPool = GVBroadcastFramePool()
     private var recordingSession: GVRealtimeRecordingSession?
     private var recordingStartTime: TimeInterval?
     private var hasFailedSession = false
@@ -983,6 +998,13 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             let audioGain = min(max(audioIntensity, 0), 1)
             audio = audioSnapshot.metalBands * audioGain
             audioDynamics = audioSnapshot.metalDynamics * audioGain
+            let bands = audioSnapshot.metalSpectrum
+            audioSpectrum = (
+                bands.0 * audioGain,
+                bands.1 * audioGain,
+                bands.2 * audioGain,
+                bands.3 * audioGain
+            )
             self.blobFields = blobFields
             self.scanlineParameters = scanlineParameters
             self.screenScale = screenScale
@@ -992,6 +1014,19 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     func setTemporalHoldActive(_ isActive: Bool) {
         settingsLock.withLock {
             temporalHoldActive = isActive
+        }
+    }
+
+    /// Attaches or detaches the Mac link.
+    ///
+    /// Not part of `update(...)` because it changes once when the operator
+    /// arms the link, not sixty times a second with the rest of the settings.
+    func setBroadcastEngine(_ engine: GVBroadcastEngine?) {
+        settingsLock.withLock {
+            broadcastEngine = engine
+            if engine == nil {
+                broadcastPool.flush()
+            }
         }
     }
 
@@ -1384,10 +1419,28 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             stopRecording()
         }
 
+        // The link copies the same finished frame the recorder would, from the
+        // same texture, through the same copy kernel. It gets its own buffer
+        // because the two consumers read on different clocks — the recorder
+        // when the writer is ready, the encoder immediately.
+        var broadcastLease: CameraBroadcastLease?
+        if let lease = makeBroadcastLease(texture: presentedTexture) {
+            if let encoder = commandBuffer.makeComputeCommandEncoder() {
+                encoder.label = "greyVISION Broadcast Copy"
+                encoder.setComputePipelineState(historyTapPipeline)
+                encoder.setTexture(presentedTexture, index: 0)
+                encoder.setTexture(lease.texture, index: 1)
+                dispatch(encoder, pipeline: historyTapPipeline, texture: lease.texture)
+                encoder.endEncoding()
+                broadcastLease = lease
+            }
+        }
+
         let bandSlot = encodeBandLuma(source: presentedTexture, commandBuffer: commandBuffer)
 
         let retainedLease = frameLease
         let retainedRecordLease = recordLease
+        let retainedBroadcastLease = broadcastLease
         let retainedScreenshotLease = screenshotLease
         commandBuffer.present(drawable)
         commandBuffer.addCompletedHandler { [weak self] buffer in
@@ -1398,6 +1451,13 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             self?.recordCompletion(buffer)
             if let screenshot = retainedScreenshotLease {
                 self?.finalizeScreenshot(screenshot)
+            }
+            // Submitted from the completion handler, not from the encode
+            // above: the pixels do not exist until the GPU has finished with
+            // them, and handing VideoToolbox a buffer the copy has not written
+            // yet encodes the previous frame's contents.
+            if let broadcast = retainedBroadcastLease {
+                broadcast.engine.submit(broadcast.pixelBuffer, hostTime: recordTimestamp)
             }
             guard let pixelBuffer = retainedRecordLease?.pixelBuffer else { return }
             retainedRecordLease?.session.append(pixelBuffer, timestamp: recordTimestamp)
@@ -1503,6 +1563,32 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let cacheLease: CVMetalTexture
         let texture: MTLTexture
         let pixelBuffer: CVPixelBuffer
+    }
+
+    /// Same lease discipline as recording: the texture-cache lease and the
+    /// pixel buffer must both outlive the command buffer that writes them.
+    private struct CameraBroadcastLease: @unchecked Sendable {
+        let engine: GVBroadcastEngine
+        let cacheLease: CVMetalTexture
+        let texture: MTLTexture
+        let pixelBuffer: CVPixelBuffer
+    }
+
+    /// Prepares a pooled pixel buffer for the link, or nil when nothing is
+    /// attached or the pool is exhausted because the encoder is behind.
+    private func makeBroadcastLease(texture source: MTLTexture) -> CameraBroadcastLease? {
+        guard let engine = settingsLock.withLock({ broadcastEngine }), engine.isConnected,
+              let pixelBuffer = broadcastPool.buffer(width: source.width, height: source.height),
+              let textures = makeRecordingTexture(pixelBuffer: pixelBuffer)
+        else {
+            return nil
+        }
+        return CameraBroadcastLease(
+            engine: engine,
+            cacheLease: textures.0,
+            texture: textures.1,
+            pixelBuffer: pixelBuffer
+        )
     }
 
     /// Prepares a recording pool pixel buffer for the finished effect frame,
@@ -2336,6 +2422,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             blob1: blobs.count > 1 ? blobs[1] : .zero,
             blob2: blobs.count > 2 ? blobs[2] : .zero,
             blob3: blobs.count > 3 ? blobs[3] : .zero,
+            spectrum0: audioSpectrum.0,
+            spectrum1: audioSpectrum.1,
+            spectrum2: audioSpectrum.2,
+            spectrum3: audioSpectrum.3,
             // Style passes are stateless per frame and never accumulate, so
             // there is nothing for a world anchor to hold on to.
             worldReprojection: matrix_identity_float3x3
@@ -2408,6 +2498,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             blob1: blobs.count > 1 ? blobs[1] : .zero,
             blob2: blobs.count > 2 ? blobs[2] : .zero,
             blob3: blobs.count > 3 ? blobs[3] : .zero,
+            spectrum0: audioSpectrum.0,
+            spectrum1: audioSpectrum.1,
+            spectrum2: audioSpectrum.2,
+            spectrum3: audioSpectrum.3,
             worldReprojection: worldMatrix
         )
         encoder.label = "greyVISION Temporal \(effect.label)"

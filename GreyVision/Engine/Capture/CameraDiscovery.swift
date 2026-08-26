@@ -42,30 +42,65 @@ enum CameraDiscovery {
         )
     }
 
-    static func device(
-        configuration: CaptureConfiguration,
-        capabilities: CameraCapabilities
-    ) throws -> AVCaptureDevice {
-        let available = devices().filter { $0.position == configuration.position.avPosition }
-        if let preferredID = configuration.preferredDeviceID {
-            if let preferred = available.first(where: { $0.uniqueID == preferredID }) {
-                return preferred
-            }
+    /// An opaque stand-in for a discovered device: just enough identity for
+    /// selection, none of the hardware. Exists so the priority rules below
+    /// are a pure function and unit-testable without an AVCaptureDevice.
+    struct DeviceCandidate: Equatable {
+        let uniqueID: String
+        let deviceTypeRawValue: String
+    }
+
+    /// Pure selection over candidates. Preferred ID wins if it matches
+    /// anything; otherwise device-type priority applies; otherwise the first
+    /// candidate. Selection never crosses position — candidates are expected
+    /// to be pre-filtered to one position.
+    static func selectCandidate(
+        from candidates: [DeviceCandidate],
+        position: CapturePosition,
+        preferredDeviceID: String?
+    ) -> DeviceCandidate? {
+        if let preferredID = preferredDeviceID,
+           let preferred = candidates.first(where: { $0.uniqueID == preferredID }) {
+            return preferred
         }
 
         // Dual-wide first on the rear: the 0.5–1x virtual device is the
         // native field of view at rest, and zoom continues smoothly into
         // the triple's longer reach.
-        let priority: [AVCaptureDevice.DeviceType] = configuration.position == .rear
-            ? [.builtInDualWideCamera, .builtInTripleCamera, .builtInDualCamera, .builtInWideAngleCamera]
-            : [.builtInTrueDepthCamera, .builtInWideAngleCamera]
+        let priority: [String] = position == .rear
+            ? [
+                AVCaptureDevice.DeviceType.builtInDualWideCamera.rawValue,
+                AVCaptureDevice.DeviceType.builtInTripleCamera.rawValue,
+                AVCaptureDevice.DeviceType.builtInDualCamera.rawValue,
+                AVCaptureDevice.DeviceType.builtInWideAngleCamera.rawValue
+            ]
+            : [
+                AVCaptureDevice.DeviceType.builtInTrueDepthCamera.rawValue,
+                AVCaptureDevice.DeviceType.builtInWideAngleCamera.rawValue
+            ]
         for type in priority {
-            if let match = available.first(where: { $0.deviceType == type }) {
+            if let match = candidates.first(where: { $0.deviceTypeRawValue == type }) {
                 return match
             }
         }
-        if let fallback = available.first {
-            return fallback
+        return candidates.first
+    }
+
+    static func device(
+        configuration: CaptureConfiguration,
+        capabilities: CameraCapabilities
+    ) throws -> AVCaptureDevice {
+        let available = devices().filter { $0.position == configuration.position.avPosition }
+        let chosen = selectCandidate(
+            from: available.map {
+                DeviceCandidate(uniqueID: $0.uniqueID, deviceTypeRawValue: $0.deviceType.rawValue)
+            },
+            position: configuration.position,
+            preferredDeviceID: configuration.preferredDeviceID
+        )
+        if let chosen,
+           let match = available.first(where: { $0.uniqueID == chosen.uniqueID }) {
+            return match
         }
 
         let reason = capabilities.discoveryReason ?? "No camera exists for the selected position."

@@ -1126,7 +1126,8 @@ private struct SplashCaptureDock: View {
                             label: codec.rawValue,
                             detail: codec.availabilityNote,
                             selected: setup.videoCodec == codec,
-                            enabled: codec.isOperatingSystemAvailable
+                            enabled: codec.isOperatingSystemAvailable,
+                            scale: 0.9
                         ) {
                             setup.videoCodec = codec
                         }
@@ -1314,6 +1315,7 @@ private struct SplashCaptureDock: View {
         selected: Bool,
         enabled: Bool,
         collapsesMenu: Bool = false,
+        scale: CGFloat = 1,
         action: @escaping () -> Void
     ) -> some View {
         Button {
@@ -1356,7 +1358,7 @@ private struct SplashCaptureDock: View {
                 )
                 .lineLimit(1)
             }
-            .frame(width: 176, height: 88)
+            .frame(width: 176 * scale, height: 88 * scale)
             // Same plate language as the workspace effect rail: chamfered
             // charcoal, hairline structure, and one glowing white accent that
             // only the committed option earns.
