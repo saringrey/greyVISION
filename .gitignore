@@ -4,3 +4,6 @@ DerivedData/
 .DS_Store
 xcuserdata/
 *.xcworkspace
+.orkestra/
+__pycache__/
+*.pyc
