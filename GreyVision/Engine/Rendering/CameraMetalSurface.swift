@@ -359,7 +359,7 @@ struct CameraMetalSurface: UIViewRepresentable {
             runtime.renderQuality,
             isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
         ).maximumFramesPerSecond)
-        coordinator.renderer?.setRenderQuality(runtime.renderQuality)
+        context.coordinator.renderer?.setRenderQuality(runtime.renderQuality)
         view.isPaused = runtime.snapshot.state != .running
     }
 

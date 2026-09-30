@@ -30,7 +30,11 @@ struct CompositionSnapshot: Equatable, Sendable {
         self.rgb = rgb
         var hasher = Hasher()
         hasher.combine(stack.revision)
-        hasher.combine(rgb)
+        // Fold in key rgb fields explicitly to avoid requiring Hashable conformance
+        hasher.combine(rgb.isEnabled)
+        hasher.combine(rgb.amount)
+        hasher.combine(rgb.angleDegrees)
+        hasher.combine(rgb.mix)
         self.identity = UInt64(hasher.finalize())
     }
 }
