@@ -3,66 +3,54 @@ import SwiftUI
 /// Parameter deck for one effect.
 ///
 /// One flat register: a compact header row (power, favourite, stack arming,
-/// hide-chrome, TOOLS, close) over a short list of full-width tuner rows.
-/// An effect carries only a handful of parameters, so the old section tabs —
-/// ALL / CORE / SPACE / ADV — were navigation for furniture and are gone.
+/// render stack, random, close) over a short list of full-width
+/// tuner rows. An effect carries only a handful of parameters, so the old
+/// section tabs — ALL / CORE / SPACE / ADV — were navigation for furniture
+/// and are gone.
 ///
-/// The occasional actions (reset, randomize, clipboard, A/B store/recall,
-/// fine mode) live behind TOOLS: one tap opens it, one tap fires an action
-/// and the drawer closes itself, returning the operator straight to the rails.
+/// RANDOM is the one operation that earns a permanent chip on the header:
+/// re-roll the parameters to a fresh starting point, then keep tuning. The
+/// rest of what used to live behind TOOLS (reset, clipboard, A/B, fine
+/// mode) was six buttons competing for a thumb — most of it is reachable
+/// from the deck's own gestures (double-tap a parameter to reset, hold for
+/// fine), and the rest is in the stack strip.
 ///
 /// STACK opens the render chain itself — see `WorkspaceEffectStackStrip`. The
 /// model underneath has always been an ordered list of identified slots; until
-/// that strip existed, none of the ordering, duplication or removal it
-/// supports could be reached from the app.
+/// that strip existed, none of the ordering or removal it supports could be
+/// reached from the app.
 struct WorkspaceEffectParameterDeck: View {
     let effect: WorkspaceAdjustableEffect
-    @Binding var rgbSplitParameters: RGBSplitEffectParameters
-    @Binding var effectStack: CameraEffectStackParameters
-    let isStackArmed: Bool
-    let onStackChanged: (Bool) -> Void
+    @ObservedObject var editor: EffectEditingSession
     let isFavorite: Bool
     let onFavoriteToggled: () -> Void
-    let onHideChrome: () -> Void
     let onSelectEffect: (WorkspaceAdjustableEffect) -> Void
     let onClose: () -> Void
 
     @EnvironmentObject private var toasts: GVToastBox
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var fineMode = false
-    @State private var showTools = false
     @State private var showStack = false
     /// Which stack slot this deck is editing. Nil means "the first slot for
     /// this effect", which is what every call site meant before slots could
     /// be duplicated.
-    @State private var focusedSlot: CameraEffectStackParameters.Slot.ID?
-
     var body: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: GVMetrics.gap) {
             headerRow
+            sliderRow
+            utilityFooter
 
             if showStack {
                 WorkspaceEffectStackStrip(
-                    effectStack: $effectStack,
-                    rgbSplitParameters: $rgbSplitParameters,
+                    editor: editor,
                     editing: effect,
-                    focusedSlot: $focusedSlot,
                     onSelect: onSelectEffect
                 )
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
-
-            if showTools {
-                toolsPanel
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
-            sliderRow
         }
         .gvCompactDeckPlate()
-        .animation(GVMotion.micro, value: fineMode)
-        .animation(GVMotion.micro, value: showTools)
-        .animation(GVMotion.panel, value: showStack)
+        .animation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion), value: showStack)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.parameters.\(effect.rawValue)")
     }
@@ -77,202 +65,81 @@ struct WorkspaceEffectParameterDeck: View {
     /// would otherwise be un-editable and DUP would produce a copy nothing
     /// could tell apart.
     private var editedSlot: CameraEffectStackParameters.Slot.ID? {
-        if let focusedSlot,
-           let slot = effectStack.slot(focusedSlot),
+        if let focusedSlot = editor.focusedSlot,
+           let slot = editor.effectStack.slot(focusedSlot),
            slot.effect == effect
         {
             return focusedSlot
         }
-        return effectStack.firstSlotID(for: effect)
+        return editor.effectStack.firstSlotID(for: effect)
     }
 
     /// Where this effect sits in the render chain, or nil when it is not
     /// placed. Shown in the header because "which of these runs first" is the
     /// question a stacked chain raises immediately and nothing answered.
     private var renderPosition: Int? {
-        editedSlot.flatMap { effectStack.renderPosition(of: $0) }
+        editedSlot.flatMap { editor.effectStack.renderPosition(of: $0) }
     }
 
     private var headerRow: some View {
         HStack(spacing: 6) {
-            GVTerminalText(
-                text: renderPosition.map { "FX.\(String(format: "%02d", $0)) // \(effect.label)" }
-                    ?? "FX.PARAM // \(effect.label)",
-                size: GVMetrics.textBody,
-                weight: .black,
-                tracking: 1.1,
-                alignment: .leading,
-                intensity: 1.15
-            )
+            if EffectCatalog.variants(for: effect).count > 1 {
+                Menu {
+                    ForEach(EffectCatalog.variants(for: effect)) { variant in
+                        Button {
+                            editor.changeVariant(to: variant)
+                        } label: {
+                            Label(variant.label, systemImage: variant == effect ? "checkmark" : "circle")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        effectTitle
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: GVMetrics.textMicro, weight: .bold))
+                    }
+                    .foregroundStyle(GVTheme.bone)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("\(EffectCatalog.canonical(effect).label) variant")
+                .accessibilityValue(effect.label)
+                .accessibilityIdentifier("workspace.effect.variant")
+            } else {
+                effectTitle
+            }
 
             Spacer(minLength: 8)
 
-            GVDeckChip(label: "", symbol: "power", active: isEffectEnabled, tint: .white, height: 27, id: "power") {
+            GVDeckChip(label: "", symbol: "power", accessibilityLabel: isEffectEnabled ? "Disable effect" : "Enable effect", active: isEffectEnabled, tint: .white, height: 27, id: "power") {
                 toggleEffectEnabled()
             }
-            GVDeckChip(
-                label: "",
-                symbol: isFavorite ? "star.fill" : "star",
-                active: isFavorite,
-                tint: .white,
-                height: 27,
-                id: "favorite"
-            ) {
-                onFavoriteToggled()
-            }
-            // Was an ambiguous icon called STACK. The behaviour is arming
-            // ADD-TO-STACK for the next selection, so it says that.
-            GVDeckChip(label: isStackArmed ? "ADD\u{2713}" : "ADD", active: isStackArmed, tint: .white, height: 27, id: "addmode") {
-                onStackChanged(!isStackArmed)
-            }
-            GVDeckChip(label: "", symbol: "eye.slash", height: 27, id: "hidechrome") {
-                onHideChrome()
-            }
-            GVDeckChip(
-                label: "",
-                symbol: "square.3.layers.3d",
-                active: showStack,
-                tint: .white,
-                height: 27,
-                id: "stack"
-            ) {
-                withAnimation(GVMotion.panel) { showStack.toggle() }
-            }
-            .accessibilityLabel("Render stack")
-            .accessibilityValue(showStack ? "open" : "closed")
-            GVDeckChip(
-                label: "TOOLS",
-                symbol: "slider.horizontal.3",
-                active: showTools,
-                tint: .white,
-                height: 27,
-                id: "tools"
-            ) {
-                withAnimation(GVMotion.micro) { showTools.toggle() }
-            }
-            .accessibilityValue(showTools ? "open" : "closed")
-            GVDeckChip(label: "", symbol: "xmark", height: 27, id: "close") {
+            GVDeckChip(label: "", symbol: "xmark", accessibilityLabel: "Close effect parameters", height: 27, id: "close") {
                 onClose()
             }
         }
     }
 
-    // MARK: - Tools drawer
-
-    private var toolsPanel: some View {
-        VStack(spacing: 6) {
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4),
-                spacing: 6
-            ) {
-                toolButton("RESET", id: "reset") {
-                    reset()
-                    toasts.show("FX // \(effect.label) RESET TO DEFAULTS")
-                }
-                toolButton("RANDOM", id: "random") {
-                    randomize()
-                    toasts.show("FX // \(effect.label) RANDOMIZED")
-                }
-                toolButton("COPY", id: "copy") {
-                    copySettings()
-                }
-                toolButton("PASTE", id: "paste", dimmed: !EffectClipboard.hasContent) {
-                    pasteSettings()
-                }
-                toolButton("ST.A", id: "storea") {
-                    storeSnapshot(.a)
-                    toasts.show("FX // STORED SLOT A")
-                }
-                toolButton("ST.B", id: "storeb") {
-                    storeSnapshot(.b)
-                    toasts.show("FX // STORED SLOT B")
-                }
-                toolButton("A", id: "recalla", dimmed: !ABSlots.has(effect.rawValue, .a)) {
-                    recallSnapshot(.a)
-                }
-                toolButton("B", id: "recallb", dimmed: !ABSlots.has(effect.rawValue, .b)) {
-                    recallSnapshot(.b)
-                }
-            }
-
-            Button {
-                fineMode.toggle()
-                toasts.show(fineMode ? "DRAG // FINE 0.25X" : "DRAG // COARSE")
-            } label: {
-                HStack {
-                    Text("FINE DRAG")
-                        .gvMono(GVMetrics.textSmall, .black)
-                        .tracking(1.0)
-                    Spacer(minLength: 0)
-                    Text(fineMode ? "0.25\u{00D7} ON" : "\u{00D7}1.00 OFF")
-                        .gvMono(GVMetrics.textSmall, .bold)
-                        .tracking(0.8)
-                        .foregroundStyle(fineMode ? Color.white : GVTheme.bone.opacity(0.55))
-                }
-                .foregroundStyle(fineMode ? Color.white : GVTheme.bone.opacity(0.78))
-                .shadow(color: fineMode ? .white.opacity(0.45) : .clear, radius: 3)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(fineMode ? Color.white.opacity(0.13) : Color(white: 0.135))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(
-                                    fineMode ? Color.white.opacity(0.85) : Color.white.opacity(0.09),
-                                    lineWidth: fineMode ? 1.1 : 0.8
-                                )
-                        )
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(GVPressStyle())
-            .accessibilityIdentifier("workspace.chip.fine")
-            .accessibilityValue(fineMode ? "on" : "off")
-        }
-        .padding(.top, 1)
-    }
-
-    /// Fires the action, then closes the drawer so the thumb lands back on
-    /// the rails it came here to drive. FINE is the exception — it stays
-    /// open because its state is the point.
-    private func toolButton(_ label: String, id: String, dimmed: Bool = false, action: @escaping () -> Void) -> some View {
-        Button {
-            action()
-            withAnimation(GVMotion.micro) { showTools = false }
-        } label: {
-            Text(label)
-                .gvMono(GVMetrics.textSmall, .black)
-                .tracking(0.8)
+    private var effectTitle: some View {
+        HStack(spacing: 6) {
+            Text(effect.label)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(GVTheme.bone)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .foregroundStyle(Color.white.opacity(dimmed ? 0.30 : 0.85))
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.white.opacity(0.05))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(Color.white.opacity(dimmed ? 0.04 : 0.12), lineWidth: 0.8)
-                        )
-                )
-                .contentShape(Rectangle())
+            if let position = renderPosition {
+                Text("· Effect \(position)")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(GVTheme.ash)
+            }
         }
-        .buttonStyle(GVPressStyle())
-        .disabled(dimmed)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier("workspace.chip.\(id)")
     }
 
     // MARK: - Parameters
 
-    /// One bank of dials on a single row: each parameter is its own column —
-    /// value over knob over label. An effect never carries more than four
-    /// parameters, so the whole bank fits across the deck and the popup stays
-    /// two rows tall instead of unrolling into a list.
+    /// Every adjustable value stays in this single, compact pane. Effects have
+    /// no more than four parameters, so paging would hide a control the
+    /// operator needs while tuning.
     private var sliderRow: some View {
-        HStack(alignment: .top, spacing: 0) {
+        HStack(alignment: .top, spacing: 2) {
             ForEach(allSpecs) { spec in
                 GVParamRow(
                     label: spec.label,
@@ -280,13 +147,54 @@ struct WorkspaceEffectParameterDeck: View {
                     defaultValue: spec.defaultValue,
                     range: spec.range,
                     format: spec.format,
-                    fine: fineMode
+                    onEditingChanged: { editing in
+                        if editing {
+                            editor.beginContinuousEdit()
+                        } else {
+                            editor.endContinuousEdit()
+                        }
+                    }
                 )
                 .frame(maxWidth: .infinity)
-                .accessibilityIdentifier("workspace.param.\(spec.id.lowercased())")
             }
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 2)
+    }
+
+    private var utilityFooter: some View {
+        VStack(spacing: 3) {
+            if effect.isSpectrumOverlay {
+                Text("Drag preview to place · Pinch to resize")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(GVTheme.ash)
+                    .accessibilityLabel("Drag preview to place spectrum overlay. Pinch preview to resize.")
+            }
+            HStack(spacing: 6) {
+                GVDeckChip(
+                    label: "",
+                    symbol: isFavorite ? "star.fill" : "star",
+                    accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
+                    active: isFavorite,
+                    tint: .white,
+                    height: 27,
+                    id: "favorite"
+                ) { onFavoriteToggled() }
+                GVDeckChip(label: editor.isStackArmed ? "Add ✓" : "Add", active: editor.isStackArmed, tint: .white, height: 27, id: "addmode") {
+                    editor.setStackArmed(!editor.isStackArmed)
+                }
+                GVDeckChip(label: "Stack", symbol: "square.3.layers.3d", active: showStack, tint: .white, height: 27, id: "stack") {
+                    withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
+                        showStack.toggle()
+                    }
+                }
+                GVDeckChip(label: "Shuffle", symbol: "die.face.5", tint: .white, height: 27, id: "random") {
+                    randomize()
+                    toasts.show("\(effect.label) randomized")
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 2)
     }
 
     // MARK: - Parameter model
@@ -306,57 +214,51 @@ struct WorkspaceEffectParameterDeck: View {
         case .rgbSplit:
             specs.append(ParamSpec(
                 id: "OFFSET", label: "OFFSET",
-                value: $rgbSplitParameters.amount,
+                value: Binding(
+                    get: { editor.rgbSplitParameters.amount },
+                    set: { editor.rgbSplitParameters.amount = $0 }
+                ),
                 defaultValue: RGBSplitEffectParameters.activeDefaults.amount,
-                range: 0...0.08,
+                range: 0 ... 0.08,
                 format: { String(format: "%.1f%%", $0 * 100) }
             ))
             specs.append(ParamSpec(
                 id: "ANGLE", label: "ANGLE",
-                value: $rgbSplitParameters.angleDegrees,
+                value: Binding(
+                    get: { editor.rgbSplitParameters.angleDegrees },
+                    set: { editor.rgbSplitParameters.angleDegrees = $0 }
+                ),
                 defaultValue: RGBSplitEffectParameters.activeDefaults.angleDegrees,
-                range: -180...180,
+                range: -180 ... 180,
                 format: { "\(Int($0.rounded()))\u{00B0}" }
             ))
             specs.append(ParamSpec(
                 id: "MIX", label: "MIX",
-                value: $rgbSplitParameters.mix,
+                value: Binding(
+                    get: { editor.rgbSplitParameters.mix },
+                    set: { editor.rgbSplitParameters.mix = $0 }
+                ),
                 defaultValue: RGBSplitEffectParameters.activeDefaults.mix,
-                range: 0...1,
+                range: 0 ... 1,
                 format: percentage
             ))
         default:
-            let labels = effect.parameterLabels
-            let defaults = effect.defaultCameraParameters
-            let channels: [(String, WritableKeyPath<CameraEffectParameters, Double>)] = [
-                ("primary", \.primary),
-                ("secondary", \.secondary),
-                ("tertiary", \.tertiary)
-            ]
-            for (index, channel) in channels.enumerated() where index < labels.count {
-                let label = labels[index]
+            for control in EffectCatalog.controls(for: effect) {
                 specs.append(ParamSpec(
-                    id: label, label: label,
-                    value: cameraParameterBinding(channel.1),
-                    defaultValue: defaults[keyPath: channel.1],
-                    range: 0...1,
+                    id: control.label, label: control.label,
+                    value: cameraParameterBinding(control.keyPath),
+                    defaultValue: control.defaultValue,
+                    range: control.range,
                     format: percentage
                 ))
             }
-            specs.append(ParamSpec(
-                id: "BLEND", label: "BLEND",
-                value: cameraParameterBinding(\.blend),
-                defaultValue: defaults.blend,
-                range: 0...1,
-                format: percentage
-            ))
         }
         return specs
     }
 
     private var isEffectEnabled: Bool {
         switch effect {
-        case .rgbSplit: return rgbSplitParameters.isEnabled
+        case .rgbSplit: return editor.rgbSplitParameters.isEnabled
         default: return currentParameters.isEnabled
         }
     }
@@ -368,12 +270,12 @@ struct WorkspaceEffectParameterDeck: View {
     private func setEnabled(_ enabled: Bool) {
         switch effect {
         case .rgbSplit:
-            rgbSplitParameters.isEnabled = enabled
+            editor.rgbSplitParameters.isEnabled = enabled
         default:
-            if let editedSlot, effectStack.slot(editedSlot) != nil {
-                effectStack.setEnabled(enabled, slot: editedSlot)
+            if let editedSlot, editor.effectStack.slot(editedSlot) != nil {
+                editor.effectStack.setEnabled(enabled, slot: editedSlot)
             } else {
-                effectStack.setEnabled(enabled, for: effect)
+                editor.effectStack.setEnabled(enabled, for: effect)
             }
         }
     }
@@ -390,20 +292,20 @@ struct WorkspaceEffectParameterDeck: View {
     }
 
     private var currentParameters: CameraEffectParameters {
-        if let editedSlot, let parameters = effectStack[slot: editedSlot] {
+        if let editedSlot, let parameters = editor.effectStack[slot: editedSlot] {
             return parameters
         }
-        return effectStack[effect]
+        return editor.effectStack[effect]
     }
 
     /// Writes to the focused slot when there is one, and falls back to the
     /// effect-keyed subscript when the effect has not been placed yet — that
     /// path is what creates the slot in the first place.
     private func write(_ parameters: CameraEffectParameters) {
-        if let editedSlot, effectStack.slot(editedSlot) != nil {
-            effectStack[slot: editedSlot] = parameters
+        if let editedSlot, editor.effectStack.slot(editedSlot) != nil {
+            editor.effectStack[slot: editedSlot] = parameters
         } else {
-            effectStack[effect] = parameters
+            editor.effectStack[effect] = parameters
         }
     }
 
@@ -411,20 +313,7 @@ struct WorkspaceEffectParameterDeck: View {
         "\(Int((value * 100).rounded()))%"
     }
 
-    // MARK: - Tools
-
-    private func reset() {
-        switch effect {
-        case .rgbSplit:
-            rgbSplitParameters = .activeDefaults
-        default:
-            if let editedSlot, effectStack.slot(editedSlot) != nil {
-                effectStack.reset(slot: editedSlot)
-            } else {
-                effectStack.reset(effect)
-            }
-        }
-    }
+    // MARK: - Random
 
     private func randomize() {
         for spec in allSpecs {
@@ -434,48 +323,9 @@ struct WorkspaceEffectParameterDeck: View {
             if spec.id == "BLEND" || spec.label == "MIX" {
                 lower = max(lower, 0.3)
             }
-            spec.value.wrappedValue = Double.random(in: lower...spec.range.upperBound)
+            spec.value.wrappedValue = Double.random(in: lower ... spec.range.upperBound)
         }
         setEnabled(true)
-    }
-
-    private func currentValues() -> [Double] {
-        allSpecs.map { $0.value.wrappedValue }
-    }
-
-    private func applyValues(_ values: [Double]) {
-        let specs = allSpecs
-        for (index, spec) in specs.enumerated() where index < values.count {
-            spec.value.wrappedValue = min(max(values[index], spec.range.lowerBound), spec.range.upperBound)
-        }
-        setEnabled(true)
-    }
-
-    private func copySettings() {
-        EffectClipboard.store(values: currentValues(), source: effect.rawValue)
-        toasts.show("COPIED // \(effect.label)")
-    }
-
-    private func pasteSettings() {
-        guard let payload = EffectClipboard.payload else {
-            toasts.show("CLIPBOARD EMPTY")
-            return
-        }
-        applyValues(payload.values)
-        toasts.show("PASTED // FROM \(payload.source.uppercased())")
-    }
-
-    private func storeSnapshot(_ slot: GVSnapshotSlot) {
-        ABSlots.store(values: currentValues(), effect: effect.rawValue, slot: slot)
-    }
-
-    private func recallSnapshot(_ slot: GVSnapshotSlot) {
-        guard let values = ABSlots.values(effect: effect.rawValue, slot: slot) else {
-            toasts.show("SLOT \(slot == .a ? "A" : "B") EMPTY")
-            return
-        }
-        applyValues(values)
-        toasts.show("RECALLED \(slot == .a ? "A" : "B")")
     }
 }
 
@@ -490,27 +340,46 @@ struct WorkspaceEffectParameterDeck: View {
 /// Where the finger lands does not matter; travel is what drives the value.
 /// FINE quarter-speed, default detent notch, double-tap reset and haptic
 /// ticks per 10% all carry over from the row sliders this replaced.
-private struct GVParamRow: View {
+struct GVParamRow: View {
     let label: String
     @Binding var value: Double
     let defaultValue: Double
     let range: ClosedRange<Double>
     let format: (Double) -> String
-    var fine: Bool = false
+    /// Fires once when a drag starts and once when it ends, so the caller can
+    /// bracket the whole scrub as a single undo step instead of recording one
+    /// per frame.
+    var onEditingChanged: ((Bool) -> Void)?
 
     @State private var dragStart: Double?
     @State private var isDragging = false
     @State private var lastTickBucket: Int = -1
     @State private var wasAboveDefault: Bool?
+    /// Distance the finger has travelled since the last tick. Haptics are
+    /// driven by this rather than by value buckets, so a long-range dial
+    /// no longer fires ten times for a nudge and a small-range dial is not
+    /// silent.
+    @State private var distanceSinceLastTick: CGFloat = 0
+    @State private var tickInstant: Date?
+    @State private var lastDragTranslation: CGFloat = 0
     /// Live precision divisor, so the readout can say what the finger is
     /// currently buying without the caller having to recompute the curve.
     @State private var precision: Double = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @MainActor private static let tickGenerator = UIImpactFeedbackGenerator(style: .soft)
     @MainActor private static let detentGenerator = UIImpactFeedbackGenerator(style: .rigid)
 
     /// Horizontal travel that carries the value across its whole range.
     private static let travel: CGFloat = 200
+
+    /// Finger travel, in points, that earns one tick.
+    ///
+    /// Small enough to feel continuous on a normal drag, large enough that a
+    /// jittery finger does not produce a buzz.
+    private static let tickTravelPoints: CGFloat = 14
+    /// Floor on the gap between two ticks, in seconds.
+    private static let tickInterval: TimeInterval = 0.028
 
     /// Vertical distance, in points, that buys one further step of precision.
     ///
@@ -546,39 +415,41 @@ private struct GVParamRow: View {
     }
 
     var body: some View {
-        VStack(spacing: 5) {
+        VStack(spacing: 2) {
             Text(readout)
-                .gvMono(GVMetrics.textSmall, .black)
-                .tracking(0.3)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .monospacedDigit()
-                .foregroundStyle(isDragging ? Color.white : GVTheme.bone.opacity(0.72))
-                .shadow(color: isDragging ? .white.opacity(0.4) : .clear, radius: 3)
+                .foregroundStyle(isDragging ? Color.white : GVTheme.bone.opacity(0.8))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
 
             knob
 
-            Text(label)
-                .gvMono(GVMetrics.textMicro, .bold)
-                .tracking(0.6)
+            Text(label.capitalized)
+                .font(.system(size: 11, weight: .regular))
                 .foregroundStyle(isDragging ? Color.white.opacity(0.9) : GVTheme.ash)
                 .lineLimit(1)
-                .minimumScaleFactor(0.65)
+                .minimumScaleFactor(0.8)
                 .padding(.horizontal, 2)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 1)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isDragging ? Color.white.opacity(0.05) : Color.clear)
         )
         .onTapGesture(count: 2) {
             value = defaultValue
+            GVInteractionHaptics.commit()
         }
-        .animation(GVMotion.micro, value: isDragging)
+        .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: isDragging)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityValue(format(value))
-        .accessibilityAddTraits(defaultValue == value ? [] : [.updatesFrequently])
+        .accessibilityAddTraits(isAtDefault ? [] : [.updatesFrequently])
+        .accessibilityAction(named: "Reset to default") {
+            value = defaultValue
+            GVInteractionHaptics.commit()
+        }
         .accessibilityAdjustableAction { direction in
             let step = (range.upperBound - range.lowerBound) * 0.05
             switch direction {
@@ -616,22 +487,22 @@ private struct GVParamRow: View {
             // Default detent notch, at the angle double-tap restores.
             Rectangle()
                 .fill(Color.white.opacity(isAtDefault ? 0.85 : 0.22))
-                .frame(width: 1.2, height: 5)
-                .offset(y: -20)
+                .frame(width: 1.2, height: 4)
+                .offset(y: -16)
                 .rotationEffect(.degrees(defaultDetentAngle))
 
             // Pointer.
             Rectangle()
                 .fill(Color.white)
-                .frame(width: 1.6, height: 11)
-                .offset(y: -10)
+                .frame(width: 1.5, height: 9)
+                .offset(y: -8)
                 .rotationEffect(.degrees(pointerAngle))
                 .shadow(color: .white.opacity(isDragging ? 0.6 : 0.25), radius: isDragging ? 3 : 1.5)
         }
-        .frame(width: 44, height: 44)
+        .frame(width: 36, height: 36)
         // The hit target extends well past the drawn dial so the thumb lands
         // on it without aiming.
-        .frame(width: 64, height: 56)
+        .frame(width: 54, height: 46)
         .contentShape(Rectangle())
         .gesture(dragGesture)
     }
@@ -650,6 +521,9 @@ private struct GVParamRow: View {
                     Self.tickGenerator.prepare()
                     Self.detentGenerator.prepare()
                     wasAboveDefault = value >= defaultValue
+                    distanceSinceLastTick = 0
+                    tickInstant = .now
+                    onEditingChanged?(true)
                 }
                 isDragging = true
                 let start = dragStart ?? value
@@ -661,14 +535,28 @@ private struct GVParamRow: View {
                 // control feel dead.
                 let pulled = abs(gesture.translation.height)
                 let divisor = min(1 + Double(pulled / Self.precisionSpan) * 3, 16)
-                precision = divisor * (fine ? 4 : 1)
+                precision = divisor
                 let sensitivity = span / (Double(Self.travel) * precision)
                 let moved = Double(gesture.translation.width) * sensitivity
                 value = min(max(start + moved, range.lowerBound), range.upperBound)
 
-                let bucket = Int(fraction * 10)
-                if bucket != lastTickBucket {
-                    lastTickBucket = bucket
+                // Ticks are driven by how far the finger has actually moved
+                // since the last one, and rate-limited in time.
+                //
+                // The old test was a value bucket — one impact per tenth of
+                // the range — so a nudge across a 0…1 dial produced ten
+                // haptics and a small-range dial produced a different
+                // number again, neither of which matched the finger. Travel
+                // distance is what the hand feels, and the interval floor
+                // keeps a fast drag from buzzing.
+                distanceSinceLastTick += abs(gesture.translation.width - lastDragTranslation)
+                lastDragTranslation = gesture.translation.width
+                let now = Date.now
+                let elapsed = tickInstant.map { now.timeIntervalSince($0) } ?? 0
+                if distanceSinceLastTick >= Self.tickTravelPoints, elapsed >= Self.tickInterval {
+                    distanceSinceLastTick = 0
+                    tickInstant = now
+                    lastTickBucket = Int(fraction * 10)
                     Self.tickGenerator.impactOccurred(intensity: 0.32)
                 }
                 // A firmer tick exactly on the default, so the detent drawn on
@@ -680,61 +568,24 @@ private struct GVParamRow: View {
                 wasAboveDefault = above
             }
             .onEnded { _ in
+                guard isDragging else { return }
                 isDragging = false
                 dragStart = nil
                 lastTickBucket = -1
                 wasAboveDefault = nil
                 precision = 1
+                distanceSinceLastTick = 0
+                lastDragTranslation = 0
+                tickInstant = nil
+                onEditingChanged?(false)
             }
     }
 }
 
 // MARK: - Session-wide clipboard and A/B storage
 
-/// Clipboard survives effect switches — the whole point of COPY is carrying
-/// settings onto another effect. MainActor-isolated because it is UI state.
-@MainActor
-private final class EffectClipboard {
-    static var payload: (values: [Double], source: String)?
-
-    static var hasContent: Bool { payload != nil }
-
-    static func store(values: [Double], source: String) {
-        payload = (values, source)
-    }
-}
-
-/// Per-effect A/B snapshots, keyed by effect raw value so they persist while
-/// the operator browses between effects mid-session.
-@MainActor
-final class ABSlots {
-    static var slots: [String: (a: [Double]?, b: [Double]?)] = [:]
-
-    static func has(_ effect: String, _ slot: GVSnapshotSlot) -> Bool {
-        values(effect: effect, slot: slot) != nil
-    }
-
-    static func values(effect: String, slot: GVSnapshotSlot) -> [Double]? {
-        let pair = slots[effect]
-        switch slot {
-        case .a: return pair?.a
-        case .b: return pair?.b
-        }
-    }
-
-    static func store(values: [Double], effect: String, slot: GVSnapshotSlot) {
-        var pair = slots[effect] ?? (nil, nil)
-        switch slot {
-        case .a: pair.a = values
-        case .b: pair.b = values
-        }
-        slots[effect] = pair
-    }
-}
-
-/// Snapshot slot for A/B pairs. File-scope so future decks can share the same
-/// snapshot machinery without re-declaring it.
-enum GVSnapshotSlot {
-    case a
-    case b
-}
+//
+// The clipboard and A/B stores were part of the old TOOLS drawer. Removed
+// alongside the drawer; the gestures they served (copy/paste/store/recall)
+// have no surface in the streamlined deck and only the clipboard/snapshot
+// symbols remain for any future restoration.

@@ -4,14 +4,33 @@ struct DeterministicStarfield: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dragOffset = CGSize.zero
 
-    private let stars = Star.seeded(count: 268, seed: 0x47_5649_5349_4F4E)
+    /// When false the occasional shooting star (the bright dot + tail) is
+    /// suppressed — used for the tiny passcode pills where a streak reads as
+    /// a stray dot rather than a field.
+    var showShootingStar: Bool = true
+    /// Brightness multiplier for the starfield. 1.0 is the splash default;
+    /// the passcode flash uses 1.35 for extra pop on a small pill.
+    var intensity: Double = 1.0
+
+    private let stars: [Star]
+    private let shootingStarInterval: Double
+
+    init(showShootingStar: Bool = true, intensity: Double = 1,
+         starCount: Int = 268, shootingStarInterval: Double = 6.5)
+    {
+        self.showShootingStar = showShootingStar
+        self.intensity = intensity
+        stars = Star.seeded(count: max(0, starCount), seed: 0x47_5649_5349_4F4E)
+        self.shootingStarInterval = max(2, shootingStarInterval)
+    }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 24, paused: reduceMotion)) { timeline in
             Canvas { context, size in
                 let time = timeline.date.timeIntervalSinceReferenceDate
                 for star in stars {
-                    let pulse = reduceMotion ? 0.72 : 0.52 + sin(time * star.speed + star.phase) * 0.28
+                    let basePulse = reduceMotion ? 0.72 : 0.52 + sin(time * star.speed + star.phase) * 0.28
+                    let pulse = min(basePulse * intensity, 1.0)
                     let x = star.x * size.width + dragOffset.width * star.depth
                     let y = star.y * size.height + dragOffset.height * star.depth
                     let rect = CGRect(x: x, y: y, width: star.size, height: star.size)
@@ -20,7 +39,7 @@ struct DeterministicStarfield: View {
                         with: .color((star.isViolet ? BootPalette.glow : .white).opacity(pulse))
                     )
                 }
-                if !reduceMotion {
+                if !reduceMotion, showShootingStar {
                     drawShootingStar(context: context, size: size, time: time)
                 }
             }
@@ -52,7 +71,7 @@ struct DeterministicStarfield: View {
     /// streaks do not arrive on a beat. Deriving instead of storing means no
     /// per-frame state has to cross the main actor.
     private func drawShootingStar(context: GraphicsContext, size: CGSize, time: TimeInterval) {
-        let window = 6.5
+        let window = shootingStarInterval
         let flight = 1.15
         let local = time.truncatingRemainder(dividingBy: window)
         guard local < flight else { return }

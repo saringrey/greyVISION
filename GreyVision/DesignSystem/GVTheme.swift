@@ -16,7 +16,7 @@ enum GVTheme {
 
     /// Near-black canvas. Everything sits on this.
     static var void: Color {
-        Color(red: 0.004, green: 0.004, blue: 0.004)
+        Color(red: 0, green: 0, blue: 0)
     }
 
     /// Warm off-white. Primary type and anything the operator reads to work.
@@ -53,6 +53,11 @@ enum GVTheme {
     static var record: Color {
         Color(red: 1.0, green: 0.16, blue: 0.32)
     }
+
+    /// Linear RGB passed to interaction shaders. Keeping this beside the
+    /// visible palette prevents press treatments from inventing a separate
+    /// accent that does not exist anywhere else in the instrument.
+    static let interactionPulseRGB = SIMD3<Float>(1, 1, 1)
 
     /// Warning that is genuinely a warning — thermal pressure, dropped frames.
     /// Muted on purpose so it cannot be mistaken for `record`.
@@ -117,6 +122,20 @@ enum GVTheme {
         violetDeep.opacity(0.04)
     }
 
+    /// Compact camera chrome keeps its existing dimensions while sharing text roles.
+    enum CompactType {
+        case caption, label, control, value
+
+        var size: CGFloat {
+            switch self {
+            case .caption: 7.2
+            case .label: 8.6
+            case .control: 10.1
+            case .value: 11.5
+            }
+        }
+    }
+
     // MARK: - Type
 
     /// Four levels, and only four.
@@ -138,7 +157,8 @@ enum GVTheme {
             switch self {
             case .branding: 25
             case .control: 16
-            case .telemetry: 11.5
+            // Legible at arm's length while remaining secondary to capture.
+            case .telemetry: 14
             case .diagnostic: 8.5
             }
         }
@@ -176,5 +196,35 @@ enum GVTheme {
     static func terminal(_ size: CGFloat, _ weight: Font.Weight = .bold) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
             .width(.condensed)
+    }
+}
+
+extension GVTheme {
+    /// Identity hues for radial-menu subcategories.
+    ///
+    /// The core palette is deliberately tiny; these are different in kind —
+    /// they identify *which* subcategory is under the finger inside a
+    /// transient menu, so a dozen hues are the point rather than a violation.
+    /// All are tuned to sit on the black field without reading as state
+    /// colours: none of them equals acid/record/warn.
+    enum RadialHue {
+        case magenta, cyan, amber, lime, rose, teal, ember, sky, moss, plum, sand, azure
+
+        var color: Color {
+            switch self {
+            case .magenta: Color(red: 1.00, green: 0.30, blue: 0.78)
+            case .cyan: Color(red: 0.12, green: 0.96, blue: 1.00)
+            case .amber: Color(red: 1.00, green: 0.72, blue: 0.18)
+            case .lime: Color(red: 0.64, green: 1.00, blue: 0.12)
+            case .rose: Color(red: 1.00, green: 0.38, blue: 0.42)
+            case .teal: Color(red: 0.14, green: 0.86, blue: 0.66)
+            case .ember: Color(red: 1.00, green: 0.44, blue: 0.14)
+            case .sky: Color(red: 0.36, green: 0.62, blue: 1.00)
+            case .moss: Color(red: 0.62, green: 0.92, blue: 0.42)
+            case .plum: Color(red: 0.76, green: 0.42, blue: 1.00)
+            case .sand: Color(red: 0.92, green: 0.86, blue: 0.56)
+            case .azure: Color(red: 0.44, green: 0.80, blue: 1.00)
+            }
+        }
     }
 }

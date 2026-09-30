@@ -15,26 +15,24 @@ import SwiftUI
 /// Two rows, no sheet, no navigation — it opens inside the parameter deck the
 /// operator is already looking at.
 struct WorkspaceEffectStackStrip: View {
-    @Binding var effectStack: CameraEffectStackParameters
-    @Binding var rgbSplitParameters: RGBSplitEffectParameters
+    @ObservedObject var editor: EffectEditingSession
     /// The effect the parameter deck is currently editing, so its slot reads
     /// as the focused one without the strip owning a second source of truth.
     let editing: WorkspaceAdjustableEffect
     /// Owned by the deck, not by the strip: the deck edits whichever slot is
     /// focused, so focus has to outlive the strip being collapsed.
-    @Binding var focusedSlot: CameraEffectStackParameters.Slot.ID?
     let onSelect: (WorkspaceAdjustableEffect) -> Void
 
     @EnvironmentObject private var toasts: GVToastBox
 
-    private var slots: [CameraEffectStackParameters.Slot] { effectStack.orderedSlots }
+    private var slots: [CameraEffectStackParameters.Slot] { editor.effectStack.orderedSlots }
 
     /// The slot the operations act on: whatever was last tapped, falling back
     /// to the first slot for the effect the deck is editing. Without the
     /// fallback the operations row would be inert until the operator tapped a
     /// chip, which reads as broken rather than as unfocused.
     private var activeSlot: CameraEffectStackParameters.Slot? {
-        if let focusedSlot, let match = slots.first(where: { $0.id == focusedSlot }) {
+        if let focusedSlot = editor.focusedSlot, let match = slots.first(where: { $0.id == focusedSlot }) {
             return match
         }
         return slots.first { $0.effect == editing }
@@ -43,15 +41,10 @@ struct WorkspaceEffectStackStrip: View {
     var body: some View {
         VStack(spacing: 6) {
             if slots.isEmpty {
-                GVTerminalText(
-                    text: "STACK EMPTY // POWER AN EFFECT ON",
-                    size: GVMetrics.textMicro,
-                    weight: .bold,
-                    tracking: 0.8,
-                    baseColor: GVTheme.ash,
-                    intensity: 0.6
-                )
-                .frame(height: 30)
+                Text("Stack empty · Enable an effect to begin")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(GVTheme.ash)
+                    .frame(height: 30)
             } else {
                 slotStrip
                 operationsRow
@@ -79,46 +72,47 @@ struct WorkspaceEffectStackStrip: View {
         let focused = activeSlot?.id == slot.id
         let live = slot.parameters.isEnabled
         return Button {
-            focusedSlot = slot.id
+            editor.focusedSlot = slot.id
             onSelect(slot.effect)
         } label: {
             HStack(spacing: 5) {
                 // Render position, not effect index. This number is the whole
                 // reason the strip exists: it is the answer to "what runs
                 // before what", which nothing in the app said before.
-                Text(String(format: "%02d", index + 1))
-                    .gvMono(GVMetrics.textMicro, .black)
+                Text("\(index + 1)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(focused ? Color.white : GVTheme.ash)
                 Text(slot.effect.label)
-                    .gvMono(GVMetrics.textMicro, .black)
-                    .tracking(0.7)
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .foregroundStyle(live ? Color.white : GVTheme.bone.opacity(0.45))
                 Circle()
                     .fill(live ? Color.white : Color(white: 0.28))
                     .frame(width: 4.5, height: 4.5)
-                    .shadow(color: live ? .white.opacity(0.9) : .clear, radius: 3)
             }
             .padding(.horizontal, 8)
             .frame(height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(focused ? Color.white.opacity(0.13) : Color(white: 0.145))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(
-                                focused ? Color.white.opacity(0.9) : Color.white.opacity(0.08),
-                                lineWidth: focused ? 1.1 : 0.8
-                            )
-                    )
-                    .shadow(color: focused ? .white.opacity(0.35) : .clear, radius: 7)
-            )
-            .contentShape(Rectangle())
         }
-        .buttonStyle(GVPressStyle(scale: 0.94))
+        .buttonStyle(GVGlassSlotChipStyle(focused: focused, live: live))
+        .frame(minHeight: GVMetrics.touchTarget)
+        .contentShape(Rectangle())
         .accessibilityLabel("\(index + 1) \(slot.effect.label)")
-        .accessibilityValue(live ? "on" : "off")
+        .accessibilityValue("\(live ? "on" : "off")\(focused ? ", focused" : "")")
         .accessibilityIdentifier("workspace.stack.slot.\(index + 1)")
+    }
+
+    private struct GVGlassSlotChipStyle: ButtonStyle {
+        let focused: Bool
+        let live: Bool
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .gvGlassChip(radius: 8, active: focused || configuration.isPressed, tint: .white)
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
+                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+        }
     }
 
     // MARK: - Operations
@@ -130,6 +124,7 @@ struct WorkspaceEffectStackStrip: View {
             GVDeckChip(
                 label: "",
                 symbol: "chevron.left",
+                accessibilityLabel: "Move effect earlier in stack",
                 dimmed: index == nil || index == 0,
                 id: "stackup"
             ) {
@@ -138,31 +133,30 @@ struct WorkspaceEffectStackStrip: View {
             GVDeckChip(
                 label: "",
                 symbol: "chevron.right",
+                accessibilityLabel: "Move effect later in stack",
                 dimmed: index == nil || index == slots.count - 1,
                 id: "stackdown"
             ) {
-                move(by: 1)
+                move(by: +1)
             }
             GVDeckChip(
                 label: "",
                 symbol: slot?.parameters.isEnabled == true ? "power" : "power.dotted",
+                accessibilityLabel: slot?.parameters.isEnabled == true ? "Disable effect" : "Enable effect",
                 active: slot?.parameters.isEnabled == true,
                 dimmed: slot == nil,
                 id: "stackpower"
             ) {
                 toggleActive()
             }
-            // Duplicating is the operation slots were built for: the same
-            // effect twice with different parameters, which the old
-            // effect-keyed dictionary could not represent at all.
-            GVDeckChip(label: "DUP", symbol: "plus.square.on.square", dimmed: slot == nil, id: "stackdup") {
-                duplicateActive()
-            }
-            GVDeckChip(label: "SOLO", symbol: "1.circle", dimmed: slot == nil, id: "stacksolo") {
+            GVDeckChip(label: "Solo", symbol: "1.circle", dimmed: slot == nil, id: "stacksolo") {
                 soloActive()
             }
+            GVDeckChip(label: "Duplicate", symbol: "doc.on.doc", dimmed: slot == nil, id: "stackdup") {
+                duplicateActive()
+            }
             Spacer(minLength: 0)
-            GVDeckChip(label: "", symbol: "trash", dimmed: slot == nil, tint: GVTheme.record, id: "stackremove") {
+            GVDeckChip(label: "", symbol: "trash", accessibilityLabel: "Remove effect from stack", dimmed: slot == nil, tint: GVTheme.record, id: "stackremove") {
                 removeActive()
             }
         }
@@ -171,46 +165,29 @@ struct WorkspaceEffectStackStrip: View {
     // MARK: - Actions
 
     private func move(by offset: Int) {
-        guard let slot = activeSlot,
-              let index = slots.firstIndex(where: { $0.id == slot.id })
-        else { return }
-        let target = index + offset
-        guard slots.indices.contains(target) else { return }
-        // SwiftUI's move takes an insertion point rather than a destination
-        // index, so moving later needs one extra step to land past the element
-        // being displaced.
-        effectStack.move(fromOffsets: IndexSet(integer: index), toOffset: offset > 0 ? target + 1 : target)
-        focusedSlot = slot.id
-        toasts.show("STACK // \(slot.effect.label) -> \(String(format: "%02d", target + 1))")
+        guard let slot = activeSlot, let position = editor.moveFocused(by: offset) else { return }
+        toasts.show("\(slot.effect.label) moved to position \(position)")
     }
 
     private func toggleActive() {
-        guard let slot = activeSlot else { return }
-        effectStack.setEnabled(!slot.parameters.isEnabled, slot: slot.id)
-    }
-
-    private func duplicateActive() {
-        guard let slot = activeSlot, let copy = effectStack.duplicate(slot.id) else { return }
-        focusedSlot = copy
-        toasts.show("STACK // \(slot.effect.label) DUPLICATED")
+        editor.toggleFocused()
     }
 
     /// Powers everything else down without discarding it, so the operator can
     /// audition one node of a deep stack and get the rest back by re-powering
     /// rather than by rebuilding.
     private func soloActive() {
-        guard let slot = activeSlot else { return }
-        for other in slots {
-            effectStack.setEnabled(other.id == slot.id, slot: other.id)
-        }
-        rgbSplitParameters.isEnabled = false
-        toasts.show("STACK // SOLO \(slot.effect.label)")
+        guard let effect = editor.soloFocused() else { return }
+        toasts.show("Soloing \(effect.label)")
     }
 
     private func removeActive() {
-        guard let slot = activeSlot else { return }
-        effectStack.remove(slot.id)
-        focusedSlot = nil
-        toasts.show("STACK // \(slot.effect.label) REMOVED")
+        guard let effect = editor.removeFocused() else { return }
+        toasts.show("\(effect.label) removed")
+    }
+
+    private func duplicateActive() {
+        guard let effect = editor.duplicateFocused() else { return }
+        toasts.show("\(effect.label) duplicated")
     }
 }

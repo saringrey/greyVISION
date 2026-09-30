@@ -16,50 +16,38 @@ struct CameraFailureNotice: View {
 
     var body: some View {
         VStack(spacing: GVMetrics.gap) {
-            GVTerminalText(
-                text: "CAPTURE FAULT",
-                size: GVMetrics.textBody,
-                weight: .black,
-                tracking: 1.6,
-                baseColor: GVTheme.record,
-                intensity: 1.0
-            )
+            Text("Capture Unavailable")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(GVTheme.record)
 
             Text(message)
-                .gvMono(GVMetrics.textSmall, .bold)
-                .tracking(0.6)
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(GVTheme.bone)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let reason {
-                Text(reason.uppercased())
-                    .gvMono(GVMetrics.textMicro, .bold)
-                    .tracking(0.8)
+                Text(reason)
+                    .font(.system(size: 12, weight: .regular))
                     .foregroundStyle(GVTheme.ash)
                     .multilineTextAlignment(.center)
             }
 
             Button(action: onRetry) {
-                GVTerminalText(
-                    text: "RETRY CAPTURE",
-                    size: GVMetrics.textSmall,
-                    weight: .black,
-                    tracking: 1.3,
-                    baseColor: GVTheme.bone,
-                    intensity: 0.9
-                )
-                .padding(.horizontal, GVMetrics.gapWide)
-                .frame(height: GVMetrics.controlHeight)
-                .background(
-                    GVChamferedPlate(cut: 9)
-                        .fill(GVTheme.violet.opacity(0.18))
-                )
-                .overlay(
-                    GVChamferedPlate(cut: 9)
-                        .stroke(GVTheme.violet, lineWidth: GVMetrics.hairline)
-                )
-                .contentShape(GVChamferedPlate(cut: 9))
+                Text("Retry Capture")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(GVTheme.bone)
+                    .padding(.horizontal, GVMetrics.gapWide)
+                    .frame(height: GVMetrics.controlHeight)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.white.opacity(0.14), lineWidth: GVMetrics.hairline)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(GVPressStyle())
             .accessibilityIdentifier("workspace.capture.retry")

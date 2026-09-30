@@ -67,15 +67,14 @@ struct GVRecordingHUD: View {
                     .frame(width: islandReserve)
                     .accessibilityHidden(true)
 
-                HStack(spacing: GVMetrics.stepRelated) {
+                HStack(spacing: 8) {
                     Circle()
                         .fill(GVTheme.record)
-                        .frame(width: 8, height: 8)
+                        .frame(width: 7, height: 7)
                         .opacity(blinkOpacity(at: timeline.date))
-                        .shadow(color: GVTheme.record.opacity(0.8), radius: 5)
 
                     Text(timecode(at: timeline.date))
-                        .gvFont(.control)
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
                         .monospacedDigit()
                         .foregroundStyle(GVTheme.bone)
                         .lineLimit(1)
@@ -85,7 +84,6 @@ struct GVRecordingHUD: View {
             }
             .padding(.horizontal, horizontalInset)
             .frame(height: panelHeight)
-            .shadow(color: .black.opacity(0.85), radius: 3)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Recording \(timecode(at: timeline.date))")
         }
@@ -94,15 +92,13 @@ struct GVRecordingHUD: View {
     /// One line naming what is on the image, so the operator can see the
     /// treatment without reopening the browser they just collapsed.
     private var effectSummary: some View {
-        HStack(spacing: GVMetrics.stepSection) {
+        HStack(spacing: 12) {
             ForEach(activeEffects.prefix(4), id: \.self) { name in
-                Text(name.uppercased())
-                    .gvFont(.diagnostic)
-                    .tracking(GVTheme.TypeLevel.diagnostic.tracking)
-                    .foregroundStyle(GVTheme.violet)
+                Text(name)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(GVTheme.bone.opacity(0.7))
             }
         }
-        .shadow(color: .black.opacity(0.9), radius: 3)
         .frame(maxWidth: .infinity)
         .padding(.bottom, GVMetrics.stepSection)
     }

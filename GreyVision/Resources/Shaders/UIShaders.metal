@@ -32,6 +32,54 @@ float2 logoDisintegration(float2 position, float time, float amount) {
     return position + float2(active * direction * amount * 5.0, 0.0);
 }
 
+// MARK: - Apollonian gasket (passcode screen backdrop, black & white)
+// Port of https://www.shadertoy.com/view/4ds3zn
+[[ stitchable ]]
+half4 gateApollonian(float2 position, half4 source, float time, float2 resolution) {
+    // SwiftUI supplies local point coordinates; Shadertoy's `getSpace()` is
+    // centered and aspect-corrected. Without this normalization the gasket
+    // changes scale with the raw pixel dimensions and becomes a flat noise
+    // field on a tall phone.
+    float2 safeResolution = max(resolution, float2(1.0));
+    float2 centered = (position * 2.0 - safeResolution) / safeResolution.y;
+    float3 s = float3(centered, 0.0);
+    s.z += 2.0;
+    s.y += 0.275;
+    s.x += time / 10.0;
+
+    float scale = 29.0;
+    float4 orb = float4(0.5);
+    float3 pn = s;
+
+    for (int i = 0; i < 7; i++) {
+        pn = -1.0 + 2.0 * fract(0.5 * pn + 0.5);
+        float r2 = dot(pn, pn);
+        float3 r3 = abs(pn);
+        float4 r4 = float4(r3.x, r3.z, r3.z, r3.x);
+        orb = min(orb, r4);
+        float k = 1.25 / max(r2, 1e-6);
+        pn *= k;
+        scale += k;
+    }
+
+    // Orbit-trap edge: the closest approach across all iterations, scaled
+    // by the accumulated inversion factor, traces the packing boundaries.
+    // Black & white only — the gate carries no accent colour.
+    float edge = min(min(orb.x, orb.y), min(orb.z, orb.w));
+    float v = 1.0 - clamp(edge * scale * 0.30, 0.0, 1.0);
+    v = pow(v, 1.4);
+
+    // The pow ramp compresses most of its energy into the darkest stop, which
+    // is where 8-bit stepping shows as contour rings on a monochrome field.
+    // One bit of hash dither per pixel breaks the steps without reading as
+    // noise — at this amplitude it only trades banding for grain at the
+    // threshold of perception.
+    const float dither = fract(sin(dot(position, float2(127.1, 311.7))) * 43758.5453);
+    v += (dither - 0.5) * (1.5 / 255.0);
+    (void)resolution;
+    return half4(half3(half(saturate(v))) * source.a, source.a);
+}
+
 // MARK: - Boot sequence
 
 float gvBootHash(float2 value) {
@@ -186,6 +234,8 @@ struct GVDepthUniforms {
     float4 interaction;
     uint4 source;
     uint4 options;
+    float4x4 worldFromCamera;
+    float4 scanOriginAge;
 };
 
 struct GVDepthRaster {
@@ -265,6 +315,18 @@ bool gvValidDepth(float depth, constant GVDepthUniforms &uniforms) {
     return isfinite(depth) && depth > uniforms.tuning.x && depth < uniforms.tuning.y;
 }
 
+// Camera intrinsics are scaled to depth resolution by the CPU. ARKit camera
+// coordinates look down -Z with +Y up; depth samples have +Y down and +Z range.
+static float3 gvDepthCameraPoint(float2 sensorUV, float depth, constant GVDepthUniforms &u) {
+    const float2 pixel = sensorUV * float2(u.source.xy) - 0.5;
+    const float2 xy = (pixel - u.intrinsics.zw) * depth / max(u.intrinsics.xy, float2(0.001));
+    return float3(xy.x, -xy.y, -depth);
+}
+
+static float3 gvDepthWorldPoint(float2 sensorUV, float depth, constant GVDepthUniforms &u) {
+    return (u.worldFromCamera * float4(gvDepthCameraPoint(sensorUV, depth, u), 1.0)).xyz;
+}
+
 vertex GVDepthRaster gvDepthFullscreenVertex(uint vertexID [[vertex_id]]) {
     const float2 positions[3] = {
         float2(-1.0, -1.0),
@@ -293,7 +355,8 @@ fragment float4 gvDepthCompositeFragment(
     constant GVDepthUniforms &uniforms [[buffer(0)]]
 ) {
     const float2 sensorUV = gvSensorUV(input.uv, uniforms);
-    const float depth = depthTexture.sample(gvLinearSampler, sensorUV).r;
+    constexpr sampler depthSampler(coord::normalized, address::clamp_to_edge, filter::nearest);
+    const float depth = depthTexture.sample(depthSampler, sensorUV).r;
     const float range = max(uniforms.tuning.y - uniforms.tuning.x, 0.001);
     const float normalizedDepth = saturate((depth - uniforms.tuning.x) / range);
     const float3 cameraColor = gvCameraColor(sensorUV, lumaTexture, chromaTexture);
@@ -309,6 +372,12 @@ fragment float4 gvDepthCompositeFragment(
         : 2;
     const float confidenceValue = float(confidence) / 2.0;
     const bool confidenceValid = confidence >= uniforms.source.w;
+
+    // Zero intensity always presents the original feed, including missing depth.
+    if (wet <= 0.0) { return float4(cameraColor, 1.0); }
+    const bool depthAccepted = gvValidDepth(depth, uniforms) && confidenceValid;
+    const bool diagnostic = mode == 1 || mode == 4 || mode == 9;
+    if (!depthAccepted && !diagnostic) { return float4(cameraColor, 1.0); }
 
     if (mode == 15) {
         const float2 viewTexel = 1.0 / max(uniforms.viewport.xy, float2(1.0));
@@ -390,7 +459,73 @@ fragment float4 gvDepthCompositeFragment(
     }
 
     if (!gvValidDepth(depth, uniforms) || !confidenceValid) {
-        return float4(cameraColor * 0.16, 1.0);
+        return float4(mix(cameraColor, float3(0.03), wet), 1.0);
+    }
+
+    if (mode == 17) { // Surface Relight: calibrated local tangents, no edge bridging.
+        const float2 rightUV = sensorUV + float2(texel.x, 0.0);
+        const float2 downUV = sensorUV + float2(0.0, texel.y);
+        const float right = depthTexture.sample(depthSampler, rightUV).r;
+        const float down = depthTexture.sample(depthSampler, downUV).r;
+        const uint2 rightCoordinate = min(confidenceCoordinate + uint2(1, 0), uniforms.source.xy - 1);
+        const uint2 downCoordinate = min(confidenceCoordinate + uint2(0, 1), uniforms.source.xy - 1);
+        const bool neighborConfidence = uniforms.options.z == 0 ||
+            (confidenceTexture.read(rightCoordinate).r >= uniforms.source.w && confidenceTexture.read(downCoordinate).r >= uniforms.source.w);
+        const float discontinuity = max(0.025, depth * 0.035);
+        if (any(rightUV >= 1.0) || any(downUV >= 1.0) || !neighborConfidence ||
+            !gvValidDepth(right, uniforms) || !gvValidDepth(down, uniforms) ||
+            abs(right - depth) > discontinuity || abs(down - depth) > discontinuity) {
+            return float4(cameraColor, 1.0);
+        }
+        const float3 point = gvDepthCameraPoint(sensorUV, depth, uniforms);
+        const float3 tangentX = gvDepthCameraPoint(rightUV, right, uniforms) - point;
+        const float3 tangentY = gvDepthCameraPoint(downUV, down, uniforms) - point;
+        const float3 crossNormal = cross(tangentX, tangentY);
+        if (length_squared(crossNormal) < 1e-12) { return float4(cameraColor, 1.0); }
+        float3 normal = normalize(crossNormal);
+        const float3 viewDirection = normalize(-point);
+        if (dot(normal, viewDirection) < 0.0) { normal = -normal; }
+        const float azimuth = (uniforms.controls.x * M_PI_F / 180.0);
+        const float elevation = (uniforms.controls.y * M_PI_F / 180.0);
+        const float3 light = normalize(float3(sin(azimuth) * cos(elevation), sin(elevation), cos(azimuth) * cos(elevation)));
+        const float diffuse = max(dot(normal, light), 0.0);
+        const float roughness = clamp(uniforms.controls.z, 0.08, 1.0);
+        const float specular = pow(max(dot(normal, normalize(light + viewDirection)), 0.0), mix(96.0, 4.0, roughness)) * (1.0 - roughness) * 0.18;
+        const float3 lit = cameraColor * (0.30 + diffuse * 0.95) + float3(1.0, 0.97, 0.90) * specular;
+        return float4(mix(cameraColor, saturate(lit), wet), 1.0);
+    }
+
+    if (mode == 18) { // World Grid: metric planes remain fixed while the camera moves.
+        const float3 world = gvDepthWorldPoint(sensorUV, depth, uniforms);
+        if (!all(isfinite(world))) { return float4(cameraColor, 1.0); }
+        const float3 cells = world / max(uniforms.controls.x, 0.05);
+        const float3 derivative = max(fwidth(cells), float3(0.00001));
+        const float3 distancePx = abs(fract(cells + 0.5) - 0.5) / derivative;
+        const float3 lines = smoothstep(float3(0.00001), float3(0.00005), derivative) * (1.0 - smoothstep(float3(uniforms.controls.y * 0.5), float3(uniforms.controls.y * 0.5 + 1.0), distancePx)) * (1.0 - smoothstep(float3(0.25), float3(0.5), derivative));
+        const float xz = max(lines.x, lines.z);
+        const float grid = mix(xz, max(xz, lines.y), saturate(uniforms.controls.z));
+        const float3 ink = mix(float3(0.14, 0.87, 0.73), float3(0.44, 0.67, 1.0), lines.y * uniforms.controls.z);
+        return float4(mix(cameraColor, ink, grid * wet * 0.88), 1.0);
+    }
+
+    if (mode == 19) { // Sonar Pulse: analytic world-space shell, no history texture.
+        if (uniforms.scanOriginAge.w < 0.0) { return float4(cameraColor, 1.0); }
+        const float3 world = gvDepthWorldPoint(sensorUV, depth, uniforms);
+        if (!all(isfinite(world))) { return float4(cameraColor, 1.0); }
+        const float maxRadius = max(uniforms.tuning.y, 0.2);
+        const float radius = fmod(uniforms.scanOriginAge.w * uniforms.controls.x, maxRadius);
+        const float distanceFromOrigin = distance(world, uniforms.scanOriginAge.xyz);
+        const float width = max(uniforms.controls.y, 0.02);
+        const float delta = distanceFromOrigin - radius;
+        const float aa = max(fwidth(distanceFromOrigin), 0.002);
+        const float shell = 1.0 - smoothstep(width * 0.5, width * 0.5 + aa, abs(delta));
+        const float trailLength = mix(width, max(0.25, maxRadius * 0.3), uniforms.controls.z);
+        const float trail = delta < 0.0 ? exp(delta / trailLength) * uniforms.controls.z * 0.38 : 0.0;
+        const float fadeDistance = min(maxRadius * 0.2, max(width * 2.0, 0.15));
+        const float wrapFade = smoothstep(0.0, fadeDistance, radius) * (1.0 - smoothstep(maxRadius - fadeDistance, maxRadius, radius));
+        const float wave = saturate(shell + trail) * wrapFade;
+        const float3 sonar = cameraColor * (1.0 + wave * 0.18) + float3(0.10, 0.85, 0.66) * wave * 0.75;
+        return float4(mix(cameraColor, saturate(sonar), wet), 1.0);
     }
 
     if (mode == 1) {
@@ -571,7 +706,7 @@ fragment float4 gvDepthCompositeFragment(
         // hard and clip everything above it, which is why the image reads as
         // flat glowing green rather than as a tinted photograph.
         const float luma = dot(cameraColor, float3(0.2126, 0.7152, 0.0722));
-        const float gain = mix(2.0, 14.0, uniforms.controls.y);
+        const float gain = mix(2.0, 14.0, uniforms.controls.x);
         float intensified = 1.0 - exp(-luma * gain);
 
         // The illuminator falls off with the square of distance, so LiDAR range
@@ -579,14 +714,16 @@ fragment float4 gvDepthCompositeFragment(
         // system instead of a green colour filter: near surfaces blow out, far
         // ones sink into the noise floor regardless of ambient light.
         const float metres = max(depth, 0.05);
-        const float falloff = 1.0 / (1.0 + metres * metres * mix(0.05, 0.6, uniforms.controls.z));
+        const float falloff = 1.0 / (1.0 + metres * metres * mix(0.05, 0.6, uniforms.controls.w));
         intensified *= mix(1.0, falloff * 3.0, uniforms.controls.w);
+        const float gateMeters = mix(uniforms.tuning.y, uniforms.tuning.x + 0.2, uniforms.controls.z);
+        const float rangeGate = 1.0 - smoothstep(gateMeters - 0.15, gateMeters + 0.15, depth);
 
         // Scintillation: individual photon events in the tube. Uncorrelated per
         // pixel per frame, and stronger where the signal is weakest.
-        const float grainSeed = gvBootHash(input.uv * 900.0 + uniforms.pose.z * 60.0);
+        const float grainSeed = gvBootHash(input.uv * uniforms.viewport.xy + float2(floor(uniforms.interaction.z * 60.0), floor(uniforms.interaction.z * 47.0)));
         const float shotNoise = (grainSeed - 0.5) * mix(0.5, 0.06, saturate(intensified));
-        intensified = saturate(intensified + shotNoise * uniforms.controls.x);
+        intensified = saturate(intensified + shotNoise * uniforms.controls.y);
 
         // Depth edges, drawn brighter than the surfaces they bound. An
         // intensifier has no colour to separate objects, so geometry has to
@@ -598,7 +735,8 @@ fragment float4 gvDepthCompositeFragment(
             gvLinearSampler, sensorUV + float2(0.0, texel.y * 2.0)
         ).r;
         const float edge = saturate(
-            (abs(depthRight - depth) + abs(depthDown - depth)) * 14.0
+            ((gvValidDepth(depthRight, uniforms) ? abs(depthRight - depth) : 0.0) +
+             (gvValidDepth(depthDown, uniforms) ? abs(depthDown - depth) : 0.0)) * 14.0
         );
 
         // P43 phosphor: yellow-green, not pure green.
@@ -612,7 +750,7 @@ fragment float4 gvDepthCompositeFragment(
         nightColor += phosphor * pow(saturate(intensified - 0.72), 2.0) * 0.6;
 
         // Out-of-range returns get no illuminator, so they stay black.
-        const float ranged = gvValidDepth(depth, uniforms) ? 1.0 : 0.25;
+        const float ranged = rangeGate;
         return float4(mix(cameraColor, nightColor * ranged, wet), 1.0);
     }
 
@@ -753,7 +891,8 @@ vertex GVDepthPointRaster gvDepthPointVertex(
     const float pixels = angularSize * (uniforms.viewport.x * 0.5) / max(aspect, 0.05);
     // Surfaces seen edge-on need slightly wider splats or the sheet tears open.
     const float facing = max(abs(output.normal.z), 0.30);
-    output.pointSize = clamp(pixels * uniforms.tuning.w * 0.5 / facing, 1.0, 24.0);
+    const float metricSize = mix(1.0, clamp(1.5 / max(depth, 0.1), 0.45, 2.5), uniforms.controls.x);
+    output.pointSize = clamp(pixels * uniforms.tuning.w * metricSize * 0.5 / facing, 1.0, 24.0);
 
     output.confidence = uniforms.options.z == 1 ? saturate(float(rawConfidence) / 2.0) : 1.0;
     output.viewDepth = depth;
@@ -764,7 +903,7 @@ vertex GVDepthPointRaster gvDepthPointVertex(
         (depth - uniforms.tuning.x) / max(uniforms.tuning.y - uniforms.tuning.x, 0.001)
     );
     const float3 depthColor = gvDepthPalette(normalizedDepth);
-    output.color = float4(mix(cameraColor, depthColor, uniforms.controls.y), 1.0);
+    output.color = float4(mix(cameraColor, depthColor, uniforms.controls.y * saturate(uniforms.tuning.z)), 1.0);
     return output;
 }
 

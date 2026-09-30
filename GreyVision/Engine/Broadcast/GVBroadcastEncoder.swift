@@ -26,6 +26,8 @@ final class GVBroadcastEncoder: @unchecked Sendable {
     private var session: VTCompressionSession?
     private var configuredWidth = 0
     private var configuredHeight = 0
+    private var configuredFrameRate = 0
+    private var configuredRequestedCodec = ""
     private var frameRate: Int32 = 30
     private var forceKeyframeOnNextEncode = false
     /// Retained so a format change mid-stream can be noticed and republished;
@@ -39,7 +41,13 @@ final class GVBroadcastEncoder: @unchecked Sendable {
     private(set) var codec: CMVideoCodecType = kCMVideoCodecType_HEVC
 
     var codecFourCC: String {
-        codec == kCMVideoCodecType_HEVC ? "hvc1" : "avc1"
+        switch codec {
+        case kCMVideoCodecType_HEVC: "hvc1"
+        case kCMVideoCodecType_H264: "avc1"
+        case kCMVideoCodecType_AppleProRes4444: "ap4h"
+        case kCMVideoCodecType_AppleProRes422HQ: "apch"
+        default: "unknown"
+        }
     }
 
     func setHandlers(
@@ -58,20 +66,31 @@ final class GVBroadcastEncoder: @unchecked Sendable {
     /// size has not changed. Returns false when no encoder could be created at
     /// all, which is the caller's cue to stop rather than to retry per frame.
     @discardableResult
-    func prepare(width: Int, height: Int, bitrate: Int, frameRate: Int) -> Bool {
+    func prepare(width: Int, height: Int, bitrate: Int, frameRate: Int, requestedCodec: String = "hevc") -> Bool {
         lock.withLock {
-            if session != nil, configuredWidth == width, configuredHeight == height {
+            if session != nil,
+               configuredWidth == width,
+               configuredHeight == height,
+               configuredFrameRate == frameRate,
+               configuredRequestedCodec == requestedCodec
+            {
                 return true
             }
             teardownLocked()
 
-            // HEVC first: roughly half the bitrate of H.264 for the same
-            // quality, which matters more here than anywhere else because the
-            // link is the bottleneck. Falling back rather than failing keeps
-            // older hardware working.
-            guard let created = Self.makeSession(width: width, height: height, codec: kCMVideoCodecType_HEVC)
-                ?? Self.makeSession(width: width, height: height, codec: kCMVideoCodecType_H264)
-            else {
+            // Try the selected profile first. ProRes variants are attempted
+            // only when VideoToolbox exposes a live encoder; otherwise the
+            // stream falls back and reports its actual codec in the handshake.
+            let requested = Self.codecCandidates(for: requestedCodec)
+            let candidates = requested + [kCMVideoCodecType_HEVC, kCMVideoCodecType_H264]
+            var created: (session: VTCompressionSession, codec: CMVideoCodecType)?
+            for candidate in candidates {
+                if let session = makeSession(width: width, height: height, codec: candidate) {
+                    created = session
+                    break
+                }
+            }
+            guard let created else {
                 GVLog.recording.error("Broadcast encoder unavailable for \(width)x\(height)")
                 return false
             }
@@ -80,6 +99,8 @@ final class GVBroadcastEncoder: @unchecked Sendable {
             codec = created.codec
             configuredWidth = width
             configuredHeight = height
+            configuredFrameRate = frameRate
+            configuredRequestedCodec = requestedCodec
             self.frameRate = Int32(max(frameRate, 1))
             publishedFormatPointer = nil
 
@@ -132,16 +153,20 @@ final class GVBroadcastEncoder: @unchecked Sendable {
             ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
             : nil
 
-        VTCompressionSessionEncodeFrame(
+        // Register the output callback on the session itself. This works across
+        // the iOS deployment range; the newer per-call callback overload can
+        // otherwise leave the first access unit pending on some devices.
+        let status = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
             presentationTimeStamp: presentationTime,
             duration: CMTime(value: 1, timescale: frameRate),
             frameProperties: properties,
+            sourceFrameRefcon: Unmanaged.passUnretained(self).toOpaque(),
             infoFlagsOut: nil
-        ) { [weak self] status, _, sampleBuffer in
-            guard status == noErr, let sampleBuffer else { return }
-            self?.handleEncoded(sampleBuffer)
+        )
+        if status != noErr {
+            GVLog.recording.error("Broadcast frame encode failed: \(status)")
         }
     }
 
@@ -248,14 +273,23 @@ final class GVBroadcastEncoder: @unchecked Sendable {
                 parameterSets: parameterSets,
                 nalUnitHeaderLength: nalHeaderLength,
                 width: Int(dimensions.width),
-                height: Int(dimensions.height)
+                height: Int(dimensions.height),
+                framesPerSecond: Int(frameRate)
             )
         )
     }
 
     // MARK: - Session construction
 
-    private static func makeSession(
+    private static func codecCandidates(for rawValue: String) -> [CMVideoCodecType] {
+        let normalized = rawValue.lowercased()
+        if normalized.contains("4444") { return [kCMVideoCodecType_AppleProRes4444] }
+        if normalized.contains("422hq") { return [kCMVideoCodecType_AppleProRes422HQ] }
+        if normalized.contains("h264") { return [kCMVideoCodecType_H264] }
+        return [kCMVideoCodecType_HEVC]
+    }
+
+    private func makeSession(
         width: Int,
         height: Int,
         codec: CMVideoCodecType
@@ -275,9 +309,15 @@ final class GVBroadcastEncoder: @unchecked Sendable {
             encoderSpecification: specification as CFDictionary,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
-            // Must be nil to use the block-based encode entry point.
-            outputCallback: nil,
-            refcon: nil,
+            outputCallback: { refcon, _, status, _, sampleBuffer in
+                guard status == noErr,
+                      let refcon,
+                      let sampleBuffer
+                else { return }
+                let encoder = Unmanaged<GVBroadcastEncoder>.fromOpaque(refcon).takeUnretainedValue()
+                encoder.handleEncoded(sampleBuffer)
+            },
+            refcon: Unmanaged<GVBroadcastEncoder>.passUnretained(self).toOpaque(),
             compressionSessionOut: &session
         )
         guard status == noErr, let session else { return nil }
@@ -318,6 +358,8 @@ final class GVBroadcastEncoder: @unchecked Sendable {
         self.session = nil
         configuredWidth = 0
         configuredHeight = 0
+        configuredFrameRate = 0
+        configuredRequestedCodec = ""
         publishedFormatPointer = nil
     }
 

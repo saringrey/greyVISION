@@ -82,4 +82,30 @@ extension View {
     func gvTerminal(_ size: CGFloat, _ weight: Font.Weight = .bold) -> some View {
         modifier(GVScaledFont(face: .terminal(size, weight)))
     }
+
+    /// Scales GVTerminalText sizes to respect Dynamic Type.
+    func gvTerminalScaled() -> some View {
+        modifier(GVTerminalTextScaler())
+    }
+}
+
+/// Internal modifier that applies Dynamic Type scaling to GVTerminalText.
+private struct GVTerminalTextScaler: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.gvTerminalTextScale, GVTheme.typeScale(for: dynamicTypeSize))
+    }
+}
+
+private struct GVTerminalTextScaleKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 1.0
+}
+
+extension EnvironmentValues {
+    var gvTerminalTextScale: CGFloat {
+        get { self[GVTerminalTextScaleKey.self] }
+        set { self[GVTerminalTextScaleKey.self] = newValue }
+    }
 }

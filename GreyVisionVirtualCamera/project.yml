@@ -1,0 +1,63 @@
+name: GreyVisionVirtualCamera
+options:
+  bundleIdPrefix: com.saringrey.greyvision
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: 5NCWM6DS4H
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  GreyVisionVirtualCamera:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/Host
+      - Sources/Shared
+    info:
+      path: Resources/Host-Info.plist
+    entitlements:
+      path: Resources/Host.entitlements
+      properties:
+        com.apple.developer.system-extension.install: true
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.saringrey.greyvision.virtualcamera
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.saringrey.greyvision.virtualcamera
+        # Bundles cannot contain a "/" in the on-disk name, so the product is
+        # `GreyVisionVirtualCamera` on disk. The user-facing name — and the
+        # name of the camera in Photo Booth, OBS, and FaceTime — is set
+        # through CFBundleName in the host's Info.plist and the camera
+        # extension's `localizedName`. The two are independent.
+        PRODUCT_NAME: GreyVisionVirtualCamera
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Resources/Host.entitlements
+    dependencies:
+      - target: GreyVisionCameraExtension
+        embed: true
+  GreyVisionCameraExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - Sources/CameraExtension
+      - Sources/Shared
+    info:
+      path: Resources/CameraExtension-Info.plist
+    entitlements:
+      path: Resources/CameraExtension.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.saringrey.greyvision.virtualcamera
+        com.apple.security.network.client: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.saringrey.greyvision.virtualcamera.cameraextension
+        PRODUCT_NAME: GreyVision Camera Extension
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Resources/CameraExtension.entitlements
+        PRODUCT_TYPE: com.apple.product-type.system-extension

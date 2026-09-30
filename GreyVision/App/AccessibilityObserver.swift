@@ -32,7 +32,9 @@ final class AccessibilityObserver: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleReduceMotionChange()
+            Task { @MainActor [weak self] in
+                self?.handleReduceMotionChange()
+            }
         }
         notificationObservers.append(reduceMotionObserver)
 
@@ -42,7 +44,9 @@ final class AccessibilityObserver: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleDynamicTypeChange()
+            Task { @MainActor [weak self] in
+                self?.handleDynamicTypeChange()
+            }
         }
         notificationObservers.append(contentSizeObserver)
 
@@ -52,7 +56,9 @@ final class AccessibilityObserver: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleBoldTextChange()
+            Task { @MainActor [weak self] in
+                self?.handleBoldTextChange()
+            }
         }
         notificationObservers.append(boldTextObserver)
 
@@ -62,7 +68,9 @@ final class AccessibilityObserver: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleDisplayScaleChange()
+            Task { @MainActor [weak self] in
+                self?.handleDisplayScaleChange()
+            }
         }
         notificationObservers.append(displayScaleObserver)
 
@@ -72,7 +80,9 @@ final class AccessibilityObserver: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleContrastChange()
+            Task { @MainActor [weak self] in
+                self?.handleContrastChange()
+            }
         }
         notificationObservers.append(contrastObserver)
     }

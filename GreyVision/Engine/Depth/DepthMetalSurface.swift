@@ -137,14 +137,14 @@ final class DepthMetalView: MTKView {
         case .changed:
             onTouchChanged?(.moved(normalized, normalizedVelocity))
         case .ended, .cancelled, .failed:
-            onTouchChanged?(.ended)
+            onTouchChanged?(.ended(normalized))
         default:
             break
         }
     }
 }
 
-private struct DepthMetalUniforms {
+struct DepthMetalUniforms {
     var intrinsics: SIMD4<Float>
     var viewport: SIMD4<Float>
     var tuning: SIMD4<Float>
@@ -153,6 +153,16 @@ private struct DepthMetalUniforms {
     var interaction: SIMD4<Float>
     var source: SIMD4<UInt32>
     var options: SIMD4<UInt32>
+    var worldFromCamera: simd_float4x4
+    var scanOriginAge: SIMD4<Float>
+}
+
+private struct DepthSubmissionKey: Equatable {
+    let timestamp: TimeInterval
+    let effect: DepthEffectMode
+    let parameters: DepthEffectParameters
+    let viewport: CGSize
+    let touch: CameraTouchSnapshot
 }
 
 private struct DepthRenderSettings {
@@ -212,6 +222,14 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private let colorPixelFormat: MTLPixelFormat
     private let personAnalyzer = VisionPersonMaskAnalyzer()
 
+    private let inFlight = DispatchSemaphore(value: 2)
+    private var lastSubmission: DepthSubmissionKey?
+    private var sessionGeneration: UInt64 = 0
+    private var scanOrigin: SIMD3<Float>?
+    private var scanStartedAt: TimeInterval = 0
+    private var lastImpactTime: TimeInterval?
+    private let animationEpoch = ProcessInfo.processInfo.systemUptime
+
     private var effect = DepthEffectMode.pointCloud
     private var parameters = DepthEffectParameters.defaults
     private var textureSet: DepthTextureSet?
@@ -244,7 +262,8 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
         compositeDescriptor.vertexFunction = fullscreenVertex
         compositeDescriptor.fragmentFunction = compositeFragment
         compositeDescriptor.colorAttachments[0].pixelFormat = colorPixelFormat
-        compositeDescriptor.depthAttachmentPixelFormat = .depth32Float
+        // Fullscreen offscreen feedback has no depth attachment.
+        compositeDescriptor.depthAttachmentPixelFormat = .invalid
 
         let pointDescriptor = MTLRenderPipelineDescriptor()
         pointDescriptor.label = "greyVISION Depth Point Cloud"
@@ -339,9 +358,6 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
 
     func update(effect: DepthEffectMode, parameters: DepthEffectParameters) {
         settingsLock.withLock {
-            if self.effect != effect, effect != .subjectDecay {
-                hasSubjectHistory = false
-            }
             self.effect = effect
             self.parameters = parameters.sanitized
         }
@@ -356,12 +372,32 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
         subjectOutputTexture = nil
         subjectHistoryTexture = nil
         hasSubjectHistory = false
+        scanOrigin = nil
+        lastSubmission = nil
+        lastImpactTime = nil
         CVMetalTextureCacheFlush(textureCache, 0)
     }
 
     func mtkView(_: MTKView, drawableSizeWillChange _: CGSize) {}
 
     func draw(in view: MTKView) {
+        // Dropping a render opportunity keeps capture and the UI responsive.
+        guard inFlight.wait(timeout: .now()) == .success else { return }
+        var submitted = false
+        defer { if !submitted { inFlight.signal() } }
+        let generation = mailbox.sessionGeneration
+        if generation != sessionGeneration {
+            sessionGeneration = generation
+            scanOrigin = nil
+            lastImpactTime = nil
+            lastSubmission = nil
+            textureSet = nil
+            hasSubjectHistory = false
+            personAnalyzer.reset()
+            personMaskTexture = nil
+            personMaskLease = nil
+            personMaskSequence = 0
+        }
         let settings = settingsLock.withLock {
             DepthRenderSettings(
                 effect: effect,
@@ -377,10 +413,28 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
                 textureSet = textures
             }
         }
-        updatePersonMaskTexture()
+        if settings.effect == .subjectDecay { updatePersonMaskTexture() }
+        guard let textureSet, view.drawableSize.width.isFinite, view.drawableSize.height.isFinite,
+              view.drawableSize.width > 0, view.drawableSize.height > 0 else { return }
+        let key = DepthSubmissionKey(timestamp: textureSet.frame.timestamp, effect: settings.effect,
+                                     parameters: settings.parameters, viewport: view.drawableSize, touch: settings.touch)
+        guard DepthEffectCatalog.isAnimated(settings.effect) || key != lastSubmission else { return }
+        if lastSubmission?.effect != settings.effect {
+            hasSubjectHistory = false
+            if settings.effect != .subjectDecay {
+                subjectOutputTexture = nil
+                subjectHistoryTexture = nil
+                personAnalyzer.reset()
+                personMaskTexture = nil
+                personMaskLease = nil
+                personMaskSequence = 0
+            }
+        }
+        if settings.effect == .sonarPulse {
+            updateScanOrigin(frame: textureSet.frame, settings: settings, viewport: view.drawableSize)
+        }
 
-        guard let textureSet,
-              let drawable = view.currentDrawable,
+        guard let drawable = view.currentDrawable,
               let renderPass = view.currentRenderPassDescriptor,
               let commandBuffer = commandQueue.makeCommandBuffer()
         else { return }
@@ -405,26 +459,6 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
                 hasTemporalHistory: hasSubjectHistory
             ) else { return }
 
-            if let blit = commandBuffer.makeBlitCommandEncoder() {
-                blit.label = "greyVISION Subject Feedback Update"
-                blit.copy(
-                    from: subjectOutputTexture,
-                    sourceSlice: 0,
-                    sourceLevel: 0,
-                    sourceOrigin: .init(x: 0, y: 0, z: 0),
-                    sourceSize: .init(
-                        width: subjectOutputTexture.width,
-                        height: subjectOutputTexture.height,
-                        depth: 1
-                    ),
-                    to: subjectHistoryTexture,
-                    destinationSlice: 0,
-                    destinationLevel: 0,
-                    destinationOrigin: .init(x: 0, y: 0, z: 0)
-                )
-                blit.endEncoding()
-            }
-
             guard let presentEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else { return }
             presentEncoder.label = "greyVISION Subject Decay Present"
             presentEncoder.setRenderPipelineState(presentPipeline)
@@ -432,6 +466,9 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
             presentEncoder.setFragmentTexture(subjectOutputTexture, index: 0)
             presentEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             presentEncoder.endEncoding()
+            // Command queue order protects the two textures across submissions.
+            self.subjectOutputTexture = subjectHistoryTexture
+            self.subjectHistoryTexture = subjectOutputTexture
             hasSubjectHistory = true
         } else {
             guard encodeScene(
@@ -448,10 +485,14 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
         let retainedTextureSet = textureSet
         let retainedMaskLease = personMaskLease
         commandBuffer.present(drawable)
+        let limiter = inFlight
         commandBuffer.addCompletedHandler { _ in
             _ = retainedTextureSet
             _ = retainedMaskLease
+            limiter.signal()
         }
+        lastSubmission = key
+        submitted = true
         commandBuffer.commit()
     }
 
@@ -464,6 +505,10 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
         historyTexture: MTLTexture,
         hasTemporalHistory: Bool
     ) -> Bool {
+        if settings.effect != .pointCloud || settings.parameters.intensity == 0 {
+            pass.depthAttachment.texture = nil
+            pass.stencilAttachment.texture = nil
+        }
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return false }
         var uniforms = makeUniforms(
             frame: textureSet.frame,
@@ -488,7 +533,7 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<DepthMetalUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<DepthMetalUniforms>.stride, index: 0)
 
-        if settings.effect == .pointCloud {
+        if settings.effect == .pointCloud, settings.parameters.intensity > 0 {
             encoder.setRenderPipelineState(pointPipeline)
             encoder.setDepthStencilState(pointDepthState)
             let stride = max(1, Int(settings.parameters.sampleStride.rounded()))
@@ -549,16 +594,11 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
                 min(max(touch.velocity.x, -2), 2),
                 min(max(touch.velocity.y, -2), 2)
             ),
-            controls: SIMD4<Float>(
-                Float(parameters.falloff),
-                Float(parameters.detail),
-                Float(parameters.bandCenter),
-                Float(parameters.bandWidth)
-            ),
+            controls: parameters.packedControls(for: settings.effect),
             interaction: SIMD4<Float>(
                 touch.position.x,
                 touch.position.y,
-                Float(ProcessInfo.processInfo.systemUptime.truncatingRemainder(dividingBy: 120)),
+                Float(ProcessInfo.processInfo.systemUptime - animationEpoch),
                 touch.isActive ? 1 : 0
             ),
             source: SIMD4<UInt32>(
@@ -572,8 +612,30 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
                 orientation,
                 hasConfidence ? 1 : 0,
                 hasTemporalHistory ? 1 : 0
-            )
+            ),
+            worldFromCamera: frame.cameraTransform,
+            scanOriginAge: SIMD4(scanOrigin?.x ?? 0, scanOrigin?.y ?? 0, scanOrigin?.z ?? 0,
+                                 scanOrigin == nil ? -1 : Float(max(0, ProcessInfo.processInfo.systemUptime - scanStartedAt)))
         )
+    }
+
+    private func updateScanOrigin(frame: DepthFrame, settings: DepthRenderSettings, viewport: CGSize) {
+        let size = SIMD2(Float(viewport.width), Float(viewport.height))
+        if let impactTime = settings.touch.impactTime, impactTime != lastImpactTime {
+            lastImpactTime = impactTime
+            if let position = settings.touch.impactPosition,
+               let anchor = DepthGeometry.anchor(viewUV: position, viewport: size, frame: frame, parameters: settings.parameters)
+            {
+                scanOrigin = anchor
+                scanStartedAt = ProcessInfo.processInfo.systemUptime
+            }
+        }
+        if scanOrigin == nil,
+           let anchor = DepthGeometry.anchor(viewUV: SIMD2(repeating: 0.5), viewport: size, frame: frame, parameters: settings.parameters)
+        {
+            scanOrigin = anchor
+            scanStartedAt = ProcessInfo.processInfo.systemUptime
+        }
     }
 
     private func updatePersonMaskTexture() {

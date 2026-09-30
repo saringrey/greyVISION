@@ -151,6 +151,30 @@ struct GVBootTelemetryLine: View {
     }
 }
 
+/// A single rolling counter embedded in the splash console. Keeping the effect
+/// to one digit preserves the terminal's calm, readable cadence.
+struct GVBootCyclingDigitLine: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let size: CGFloat
+    let tracking: CGFloat
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 10, paused: reduceMotion)) { timeline in
+            let tick = reduceMotion ? 0 : Int(timeline.date.timeIntervalSinceReferenceDate * 10)
+            let digit = tick % 10
+
+            Text("> TELEMETRY CYCLE // \(digit)")
+                .gvMono(size, .medium)
+                .tracking(tracking)
+                .foregroundStyle(GVTheme.bone.opacity(0.84))
+                .shadow(color: GVTheme.violet.opacity(0.16), radius: 2)
+        }
+        .lineLimit(1)
+        .accessibilityLabel("Telemetry cycle")
+    }
+}
+
 // MARK: - Element decay
 
 /// Momentary signal decay applied to a single splash element.

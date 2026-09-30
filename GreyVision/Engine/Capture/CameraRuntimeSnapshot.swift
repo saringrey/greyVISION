@@ -47,7 +47,6 @@ struct CameraRuntimeSnapshot: Sendable, Equatable {
     /// requires custom exposure mode, so the device stops metering — and a
     /// camera that has silently stopped metering has to say so.
     var exposureLocked = false
-    var availableLensCount: Int
     var interruptionReason: String?
     var errorMessage: String?
 
@@ -74,7 +73,6 @@ struct CameraRuntimeSnapshot: Sendable, Equatable {
         torchAvailable: false,
         torchEnabled: false,
         whiteBalanceLocked: false,
-        availableLensCount: 0,
         interruptionReason: nil,
         errorMessage: nil
     )

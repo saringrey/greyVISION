@@ -49,7 +49,7 @@ final class CameraEffectStackTests: XCTestCase {
         XCTAssertNotEqual(stack[.trails].primary, 0.93)
     }
 
-    func testRenderPositionFollowsOrder() throws {
+    func testRenderPositionFollowsOrder() {
         var stack = CameraEffectStackParameters()
         stack.reset(.pixelate)
         stack.reset(.grain)

@@ -12,19 +12,25 @@ struct GVRule: View {
 }
 
 struct GVBrackets: View {
-    var color = GVTheme.bone.opacity(0.28)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var color = Color.white.opacity(0.14)
     var length: CGFloat = 26
     var lineWidth: CGFloat = 1
     /// Radius of the corner the bracket wraps. Zero draws a square elbow; set
     /// this to the display's own corner radius, less the inset, and the
     /// brackets follow the glass instead of cutting across it.
     var cornerRadius: CGFloat = 0
+    var breathing = true
 
     var body: some View {
-        BracketShape(length: length, cornerRadius: cornerRadius)
-            .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .square))
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 30, paused: reduceMotion || !breathing)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            let breath = reduceMotion || !breathing ? 1 : 0.86 + sin(time * 0.52) * 0.14
+            BracketShape(length: length, cornerRadius: cornerRadius)
+                .stroke(color.opacity(breath), style: StrokeStyle(lineWidth: lineWidth, lineCap: .square))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 }
 
@@ -134,10 +140,9 @@ struct GVPanel<Content: View>: View {
 
             content
         }
-        .background(.ultraThinMaterial)
-        .background(Color.black.opacity(0.12))
-        .overlay(Rectangle().strokeBorder(GVTheme.separator, lineWidth: 1))
-        .shadow(color: GVTheme.elevationShadow, radius: 18, y: 10)
+        .padding(.horizontal, GVMetrics.stepInternal)
+        .padding(.vertical, GVMetrics.stepRelated)
+        .gvGlass(.primary, radius: GVMetrics.radiusPanel)
     }
 }
 
@@ -149,6 +154,8 @@ struct GVInstrumentButton: View {
     var isEnabled = true
     var testIdentifier: String?
     let action: () -> Void
+
+    @State private var isPressed = false
 
     var body: some View {
         Button(action: action) {
@@ -173,20 +180,50 @@ struct GVInstrumentButton: View {
                     .gvMono(GVMetrics.textMicro, .bold)
                     .foregroundStyle(roleColor)
             }
-            .foregroundStyle(GVTheme.bone)
+            .foregroundStyle(isEnabled ? GVTheme.bone : GVTheme.ash)
             .padding(.horizontal, 13)
             .frame(minHeight: 46)
-            .background(roleColor.opacity(0.08))
-            .overlay(Rectangle().strokeBorder(isEnabled ? roleColor.opacity(0.68) : GVTheme.separator, lineWidth: 1))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVGlassButtonStyle(roleColor: roleColor, isEnabled: isEnabled))
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.42)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityHint(detail ?? "Activate instrument control")
         .accessibilityIdentifier(testIdentifier ?? "instrument.\(label.lowercased())")
+    }
+}
+
+private struct GVGlassButtonStyle: ButtonStyle {
+    let roleColor: Color
+    let isEnabled: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var pulseTint: SIMD3<Float> {
+        SIMD3<Float>(0.7, 0.2, 1.0)
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .gvGlassButton(radius: GVMetrics.radius, active: configuration.isPressed)
+            .overlay(
+                RoundedRectangle(cornerRadius: GVMetrics.radius, style: .continuous)
+                    .strokeBorder(
+                        isEnabled ? roleColor.opacity(configuration.isPressed ? 0.85 : 0.68) : GVTheme.separator,
+                        lineWidth: configuration.isPressed ? 1.3 : 1
+                    )
+            )
+            .scaleEffect(configuration.isPressed ? 0.975 : 1)
+            .colorEffect(
+                ShaderLibrary.pressPulse(
+                    .float(Float(Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600))),
+                    .float2(120, 46),
+                    .float(configuration.isPressed && !reduceMotion ? 1.0 : 0.0),
+                    .float3(pulseTint.x, pulseTint.y, pulseTint.z)
+                )
+            )
+            .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 }
 
@@ -371,57 +408,33 @@ struct GVPlateRegistration: View {
     }
 }
 
-/// A single emitting rule used to terminate the top and bottom chrome.
+/// A single quiet rule used to terminate the top and bottom chrome.
 ///
 /// Replaces the enclosing capsule/oval borders. A full outline draws a box
 /// around the chrome and competes with the camera behind it; one lit edge
 /// states the boundary and leaves the frame alone. The gradient falls off at
 /// both ends so the rule never collides with the screen edge.
 struct GVEdgeRule: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var height: CGFloat = 2
-    var intensity: Double = 1
+    var height: CGFloat = 1
+    var intensity: Double = 0.72
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 30, paused: reduceMotion)) { timeline in
-            let time = timeline.date.timeIntervalSinceReferenceDate
-            let breath = reduceMotion ? 0.7 : 0.62 + sin(time * 0.9) * 0.28
-
-            ZStack(alignment: .top) {
-                let bevelHeight = height / 2
-
-                Rectangle()
-                    .fill(Color.black.opacity(0.8))
-                    .frame(height: bevelHeight)
-
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0),
-                                .init(color: GVTheme.violetDeep.opacity(0.55 * intensity), location: 0.12),
-                                .init(color: GVTheme.violet.opacity(breath * intensity), location: 0.5),
-                                .init(color: GVTheme.violetDeep.opacity(0.55 * intensity), location: 0.88),
-                                .init(color: .clear, location: 1)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .overlay(Color.white.opacity(0.06 * intensity))
-                    .frame(height: bevelHeight)
-                    .offset(y: bevelHeight)
-                    .shadow(color: GVTheme.violet.opacity(0.85 * intensity * breath), radius: 5)
-                    .shadow(color: GVTheme.violet.opacity(0.45 * intensity), radius: 12)
-                    .shadow(color: GVTheme.violetDeep.opacity(0.32 * intensity), radius: 24)
-                    // Cast down as well as out. Without a dark side the rule
-                    // has no edge against a bright frame and disappears.
-                    .shadow(color: .black.opacity(0.55), radius: 4, y: 2)
-            }
-        }
-        .frame(height: height)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: Color.white.opacity(0.08 * intensity), location: 0.14),
+                        .init(color: Color.white.opacity(0.14 * intensity), location: 0.5),
+                        .init(color: Color.white.opacity(0.08 * intensity), location: 0.86),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .frame(height: height)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }

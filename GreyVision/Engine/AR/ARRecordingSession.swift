@@ -1,7 +1,37 @@
 import AVFoundation
+import CoreGraphics
 import CoreVideo
 import Foundation
+import ImageIO
 import Photos
+
+extension CGImagePropertyOrientation {
+    /// Returns the preferred transform for a given orientation and natural size.
+    func transform(for naturalSize: CGSize) -> CGAffineTransform {
+        var transform = CGAffineTransform.identity
+        switch self {
+        case .up:
+            transform = .identity
+        case .upMirrored:
+            transform = CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -naturalSize.width, y: 0)
+        case .down:
+            transform = CGAffineTransform(rotationAngle: .pi).translatedBy(x: -naturalSize.width, y: -naturalSize.height)
+        case .downMirrored:
+            transform = CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: 0, y: -naturalSize.height).rotated(by: .pi)
+        case .left:
+            transform = CGAffineTransform(rotationAngle: .pi / 2).translatedBy(x: 0, y: -naturalSize.width)
+        case .leftMirrored:
+            transform = CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -naturalSize.height, y: 0).rotated(by: .pi / 2)
+        case .right:
+            transform = CGAffineTransform(rotationAngle: -.pi / 2).translatedBy(x: -naturalSize.height, y: 0)
+        case .rightMirrored:
+            transform = CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: 0, y: -naturalSize.width).rotated(by: -.pi / 2)
+        @unknown default:
+            transform = .identity
+        }
+        return transform
+    }
+}
 
 enum GVRecordingError: LocalizedError, Sendable {
     case writerSetupFailed
@@ -47,10 +77,25 @@ private final class MediaBox: @unchecked Sendable {
     }
 }
 
+/// Audited handoff for the audio path: the serial `writerQueue` is the sole
+/// owner of writer inputs once handed off. The box retains the input and the
+/// rewritten sample buffer across the async boundary so neither the capture
+/// callback nor the writer queue can observe a half-moved value.
+private final class AudioBox: @unchecked Sendable {
+    let audioInput: AVAssetWriterInput
+    let sampleBuffer: CMSampleBuffer
+
+    init(audioInput: AVAssetWriterInput, sampleBuffer: CMSampleBuffer) {
+        self.audioInput = audioInput
+        self.sampleBuffer = sampleBuffer
+    }
+}
+
 final class GVRealtimeRecordingSession: @unchecked Sendable {
     let outputURL: URL
     let size: CGSize
     let saveToPhotos: Bool
+    let burnHUD: Bool
 
     private let lock = NSLock()
     private let writerQueue = DispatchQueue(
@@ -65,31 +110,91 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
     private var pendingBuffers = 0
     private var isFinished = false
     private let codec: AVVideoCodecType
+    /// Frames dropped due to encoder backpressure (pendingBuffers >= 4)
+    private var droppedFrames: Int64 = 0
+    /// Frames dropped due to pixel buffer pool exhaustion
+    private var poolExhaustionFrames: Int64 = 0
+    /// Frames successfully encoded
+    private var encodedFrames: Int64 = 0
 
-    init(outputURL: URL, size: CGSize, saveToPhotos: Bool, codec: AVVideoCodecType = .hevc) {
+    var pixelFormat: OSType {
+        isHighPrecisionProRes ? kCVPixelFormatType_64RGBAHalf : kCVPixelFormatType_32BGRA
+    }
+
+    /// Total frames successfully encoded.
+    var encodedFrameCount: Int64 {
+        lock.withLock { encodedFrames }
+    }
+
+    /// Frames dropped due to encoder not ready (backpressure).
+    var droppedFrameCount: Int64 {
+        lock.withLock { droppedFrames }
+    }
+
+    /// Frames dropped due to pixel buffer pool exhaustion.
+    var poolExhaustionFrameCount: Int64 {
+        lock.withLock { poolExhaustionFrames }
+    }
+
+    /// Total frames presented to recorder (encoded + dropped).
+    var totalFramesPresented: Int64 {
+        lock.withLock { encodedFrames + droppedFrames + poolExhaustionFrames }
+    }
+
+    private var isHighPrecisionProRes: Bool {
+        [.proRes422Proxy, .proRes422LT, .proRes422, .proRes422HQ, .proRes4444]
+            .contains(codec) || codec.rawValue == "ap4x"
+    }
+
+    /// Video orientation for the output file. Set before start().
+    var videoOrientation: CGImagePropertyOrientation = .up
+
+    init(
+        outputURL: URL,
+        size: CGSize,
+        saveToPhotos: Bool,
+        codec: AVVideoCodecType = .hevc,
+        burnHUD: Bool = false
+    ) {
         self.outputURL = outputURL
         self.size = size
         self.saveToPhotos = saveToPhotos
         self.codec = codec
+        self.burnHUD = burnHUD
     }
 
     func start(withAudio: Bool = false) -> Bool {
-        writerQueue.sync {
+        writerQueue.sync { () -> Bool in
             guard writer == nil else { return false }
             let width = max(16, Int(size.width.rounded() / 2) * 2)
             let height = max(16, Int(size.height.rounded() / 2) * 2)
             do {
                 let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-                let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                var outputSettings: [String: Any] = [
                     AVVideoCodecKey: codec,
                     AVVideoWidthKey: width,
                     AVVideoHeightKey: height
-                ])
+                ]
+                if isHighPrecisionProRes {
+                    // The Metal graph works in RGBA16Float linear light. Keep
+                    // that precision through the ProRes encoder and identify
+                    // the transfer correctly instead of quantizing to 8-bit
+                    // BGRA while merely changing the codec label.
+                    outputSettings[AVVideoColorPropertiesKey] = [
+                        AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                        AVVideoTransferFunctionKey: AVVideoTransferFunction_Linear,
+                        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
+                    ]
+                }
+                guard assetWriter.canApply(outputSettings: outputSettings, forMediaType: .video) else {
+                    return false
+                }
+                let input = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
                 input.expectsMediaDataInRealTime = true
                 let pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
                     assetWriterInput: input,
                     sourcePixelBufferAttributes: [
-                        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                        kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
                         kCVPixelBufferWidthKey as String: width,
                         kCVPixelBufferHeightKey as String: height,
                         kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -100,7 +205,7 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
                     return false
                 }
                 assetWriter.add(input)
-                
+
                 var audioInput: AVAssetWriterInput?
                 if withAudio {
                     let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
@@ -115,7 +220,7 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
                         audioInput = aInput
                     }
                 }
-                
+
                 guard assetWriter.startWriting() else {
                     return false
                 }
@@ -142,6 +247,7 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
         guard writer != nil, !isFinished, pendingBuffers < 4,
               let pool = adaptor?.pixelBufferPool
         else {
+            droppedFrames += 1
             lock.unlock()
             return nil
         }
@@ -151,7 +257,10 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
         var pixelBuffer: CVPixelBuffer?
         let result = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
         if result != kCVReturnSuccess || pixelBuffer == nil {
-            lock.withLock { pendingBuffers = max(pendingBuffers - 1, 0) }
+            lock.withLock {
+                pendingBuffers = max(pendingBuffers - 1, 0)
+                poolExhaustionFrames += 1
+            }
             return nil
         }
         return pixelBuffer
@@ -171,8 +280,6 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
         let baseTime = startTime ?? timestamp
         lock.unlock()
 
-        overlayRenderer.composite(into: pixelBuffer, timestamp: max(timestamp - baseTime, 0))
-
         guard !finished, let adaptor else {
             lock.withLock { pendingBuffers = max(pendingBuffers - 1, 0) }
             return
@@ -189,8 +296,17 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
             defer {
                 self.lock.withLock { self.pendingBuffers = max(self.pendingBuffers - 1, 0) }
             }
+            // The completion handler is on the live render path. Burn the
+            // recording-only overlay on the bounded writer queue instead, so
+            // text rasterisation can never delay preview presentation.
+            if self.burnHUD {
+                self.overlayRenderer.composite(into: box.pixelBuffer, timestamp: max(timestamp - baseTime, 0))
+            }
             if box.adaptor.assetWriterInput.isReadyForMoreMediaData {
                 box.adaptor.append(box.pixelBuffer, withPresentationTime: presentationTime)
+                self.lock.withLock { self.encodedFrames += 1 }
+            } else {
+                self.lock.withLock { self.droppedFrames += 1 }
             }
         }
     }
@@ -199,17 +315,61 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
         lock.lock()
         let finished = isFinished
         let audioInput = self.audioWriterInput
+        let audioPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         if startTime == nil {
-            startTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+            // The first audio buffer sets the session's epoch. The video path
+            // does the same with the first video frame, and the two epochs are
+            // both "time since boot", so whichever lands first anchors the
+            // writer.
+            startTime = audioPTS
         }
+        let baseTime = startTime ?? audioPTS
         lock.unlock()
 
         guard !finished, let audioInput else { return }
-        
+
+        // The audio sample's PTS is in the capture clock (time since boot). The
+        // writer was started at .zero and expects PTS in that same epoch
+        // starting at 0, which is what the video path produces. The raw audio
+        // buffer carries the original capture-time PTS - leaving it unchanged
+        // puts audio at e.g. +12 000 s while video sits at 0, the writer drops
+        // the buffers, and the file ends up silent.
+        //
+        // Rewriting the presentation time on a copy keeps the source buffer
+        // untouched (the camera session owns it) and lets the writer align
+        // audio with the video it is paired with.
+        let sessionTime = max(audioPTS - baseTime, 0)
+        var sourceDuration = CMSampleBufferGetDuration(sampleBuffer)
+        if !sourceDuration.isValid {
+            // Audio from AVCaptureAudioDataOutput typically carries no per-
+            // buffer duration; the encoder derives frame timing from the PTS
+            // series. A single sample's duration is irrelevant in that case,
+            // so we leave the new buffer's duration invalid.
+            sourceDuration = .invalid
+        }
+        var timing = CMSampleTimingInfo(
+            duration: sourceDuration,
+            presentationTimeStamp: CMTime(seconds: sessionTime, preferredTimescale: 600),
+            decodeTimeStamp: .invalid
+        )
+        var rewritten: CMSampleBuffer?
+        let status = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleBufferOut: &rewritten
+        )
+        guard status == noErr, let audioBuffer = rewritten else {
+            return
+        }
+
+        // Hand off to the serial writerQueue owner via an audited box.
+        let box = AudioBox(audioInput: audioInput, sampleBuffer: audioBuffer)
         writerQueue.async { [weak self] in
             guard let _ = self else { return }
-            if audioInput.isReadyForMoreMediaData {
-                audioInput.append(sampleBuffer)
+            if box.audioInput.isReadyForMoreMediaData {
+                box.audioInput.append(box.sampleBuffer)
             }
         }
     }

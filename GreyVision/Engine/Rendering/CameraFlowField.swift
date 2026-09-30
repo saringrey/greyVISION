@@ -10,7 +10,7 @@ import Metal
 ///
 /// Everything is GPU-resident and fixed size. Nothing is read back to the CPU,
 /// no per-frame allocation happens after `prepare`, and the footprint cannot
-/// grow: four RG16F textures at a fixed working resolution.
+/// grow: five RG16F textures at a fixed working resolution.
 ///
 /// Flow is estimated at a reduced resolution on purpose. Motion vectors are
 /// low-frequency data — the useful signal is where a region went, not where a
@@ -29,6 +29,10 @@ final class CameraFlowField {
     /// Motion accumulated over time. This is what makes displacement outlive
     /// the frame that created it, and it is the core of realtime datamosh.
     private(set) var persistent: MTLTexture?
+    /// Write half of the persistent-field ping-pong pair. Accumulating back
+    /// into `persistent` while sampling it is an undefined read/write hazard
+    /// on tile GPUs and was the reason datamosh could collapse or stop moving.
+    private(set) var persistentOutput: MTLTexture?
     /// A snapshot of `persistent`, held while MOTION HOLD is engaged or
     /// captured for MOTION TRANSPLANT.
     private(set) var frozen: MTLTexture?
@@ -40,6 +44,9 @@ final class CameraFlowField {
     /// False until two frames have been seen. Consumers must not read the
     /// field before this, or the first frame will displace against noise.
     private(set) var isPrimed = false
+    /// Newly allocated private textures have undefined contents. The renderer
+    /// consumes this latch and clears all vector fields before the first read.
+    private(set) var needsClear = false
     /// Set once a snapshot exists in `frozen`.
     private(set) var hasSnapshot = false
 
@@ -54,11 +61,11 @@ final class CameraFlowField {
     /// Allocates the field for a given source size. Cheap and idempotent once
     /// the size has settled.
     @discardableResult
-    func prepare(sourceWidth: Int, sourceHeight: Int) -> Bool {
+    func prepare(sourceWidth: Int, sourceHeight: Int, maximumEdge: Int = 192) -> Bool {
         guard sourceWidth > 0, sourceHeight > 0 else { return false }
 
         let longest = max(sourceWidth, sourceHeight)
-        let scale = min(Double(Self.workingEdge) / Double(longest), 1)
+        let scale = min(Double(min(max(maximumEdge, 64), Self.workingEdge)) / Double(longest), 1)
         let targetWidth = max(Int((Double(sourceWidth) * scale).rounded()), 16)
         let targetHeight = max(Int((Double(sourceHeight) * scale).rounded()), 16)
 
@@ -70,6 +77,7 @@ final class CameraFlowField {
         height = targetHeight
         isPrimed = false
         hasSnapshot = false
+        needsClear = true
 
         let vectors = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rg16Float,
@@ -92,6 +100,7 @@ final class CameraFlowField {
         guard let currentTexture = device.makeTexture(descriptor: vectors),
               let previousTexture = device.makeTexture(descriptor: vectors),
               let persistentTexture = device.makeTexture(descriptor: vectors),
+              let persistentOutputTexture = device.makeTexture(descriptor: vectors),
               let frozenTexture = device.makeTexture(descriptor: vectors),
               let lumaA = device.makeTexture(descriptor: luma),
               let lumaB = device.makeTexture(descriptor: luma)
@@ -103,6 +112,7 @@ final class CameraFlowField {
         currentTexture.label = "greyVISION Flow Current"
         previousTexture.label = "greyVISION Flow Previous"
         persistentTexture.label = "greyVISION Flow Persistent"
+        persistentOutputTexture.label = "greyVISION Flow Persistent Output"
         frozenTexture.label = "greyVISION Flow Frozen"
         lumaA.label = "greyVISION Flow Luma A"
         lumaB.label = "greyVISION Flow Luma B"
@@ -110,6 +120,7 @@ final class CameraFlowField {
         current = currentTexture
         previous = previousTexture
         persistent = persistentTexture
+        persistentOutput = persistentOutputTexture
         frozen = frozenTexture
         currentLuma = lumaA
         previousLuma = lumaB
@@ -130,6 +141,16 @@ final class CameraFlowField {
         }
     }
 
+    /// Makes the field just written by the accumulator the field consumers
+    /// read this frame. Swapping references avoids a full-texture copy.
+    func advancePersistent() {
+        swap(&persistent, &persistentOutput)
+    }
+
+    func markCleared() {
+        needsClear = false
+    }
+
     /// Marks the current persistent field as captured.
     func markSnapshot() {
         hasSnapshot = true
@@ -145,6 +166,7 @@ final class CameraFlowField {
         current = nil
         previous = nil
         persistent = nil
+        persistentOutput = nil
         frozen = nil
         currentLuma = nil
         previousLuma = nil
@@ -152,6 +174,7 @@ final class CameraFlowField {
         height = 0
         isPrimed = false
         hasSnapshot = false
+        needsClear = false
     }
 
     var size: (width: Int, height: Int) {
@@ -160,8 +183,8 @@ final class CameraFlowField {
 
     /// Fixed footprint in megabytes, for the diagnostics readout.
     var megabytes: Double {
-        // 4 vector textures at 4 bytes per texel, 2 luma at 2 bytes.
-        let bytes = width * height * (4 * 4 + 2 * 2)
+        // 5 vector textures at 4 bytes per texel, 2 luma at 2 bytes.
+        let bytes = width * height * (5 * 4 + 2 * 2)
         return Double(bytes) / (1024 * 1024)
     }
 }

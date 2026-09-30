@@ -10,17 +10,18 @@ enum GVMotion {
     /// threshold where the user reads it as "animation" rather than "response".
     static let micro: Animation = .easeOut(duration: 0.12)
 
-    /// 220ms — selection changes, card slides, category movement.
-    static let normal: Animation = .easeInOut(duration: 0.22)
+    /// 200ms — selection changes, card slides, category movement.
+    static let normal: Animation = .timingCurve(0.25, 1, 0.5, 1, duration: 0.20)
 
-    /// 320ms — panels arriving and leaving. Spring because panels carry weight.
-    static let panel: Animation = .spring(response: 0.32, dampingFraction: 0.82)
+    /// 320ms — panels arriving and leaving. Decelerates without overshoot so
+    /// chrome never wobbles over a live frame.
+    static let panel: Animation = .timingCurve(0.25, 1, 0.5, 1, duration: 0.28)
 
     /// 450ms — deliberate, once-per-interaction moments. Used sparingly.
-    static let cinematic: Animation = .spring(response: 0.45, dampingFraction: 0.78)
+    static let cinematic: Animation = .timingCurve(0.16, 1, 0.3, 1, duration: 0.45)
 
-    /// Release spring for press states — small overshoot, settles fast.
-    static let press: Animation = .spring(response: 0.26, dampingFraction: 0.62)
+    /// Release curve for press states. Fast and mechanical, with no bounce.
+    static let press: Animation = .timingCurve(0.25, 1, 0.5, 1, duration: 0.16)
 
     /// Reduce Motion substitute. Same perceived state change, no travel.
     static let reduced: Animation = .easeInOut(duration: 0.12)
@@ -59,11 +60,10 @@ enum GVMotion {
 
 /// Press treatment shared by every interactive chrome element.
 ///
-/// Compresses slightly, brightens its border, pulls its glow inward, then
-/// releases on a short spring. Deliberately subtle — the point is that the
-/// control feels physically connected to the finger, not that it performs.
+/// Compresses slightly and lifts in value. Feedback stays tactile without
+/// adding a glow or shader event that competes with the live image.
 struct GVPressStyle: ButtonStyle {
-    var scale: CGFloat = 0.97
+    var scale: CGFloat = 0.98
     var tint: Color = GVTheme.violetDeep
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -71,11 +71,7 @@ struct GVPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? scale : 1))
-            .brightness(configuration.isPressed ? 0.06 : 0)
-            .shadow(
-                color: tint.opacity(configuration.isPressed ? 0.42 : 0),
-                radius: configuration.isPressed ? 3 : 0
-            )
+            .brightness(configuration.isPressed ? 0.025 : 0)
             .animation(
                 GVMotion.resolved(
                     configuration.isPressed ? GVMotion.micro : GVMotion.press,

@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import SwiftUI
+import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -11,6 +12,19 @@ final class AppModel: ObservableObject {
     /// Non-nil while the workspace is still settling from the splash raster
     /// tear. Purely presentational; it never gates the capture session.
     @Published private(set) var entrySettleStart: Date?
+    /// Whether something the operator built would actually be lost if the
+    /// display went to sleep: a live recording, a broadcast to the Mac, or at
+    /// least one armed effect.
+    ///
+    /// This is the single input to the idle-timer policy. The workspace owns
+    /// the composition and the recording transaction, so it is the only place
+    /// that can answer the question; everything above it just reads the answer.
+    @Published private(set) var isTakeAtRisk = false
+
+    /// Called by the workspace whenever the armed set or a take changes.
+    func updateTakeRisk(isRecording: Bool, isBroadcasting: Bool, armedEffectCount: Int) {
+        isTakeAtRisk = isRecording || isBroadcasting || armedEffectCount > 0
+    }
 
     let bootTelemetry: BootTelemetry
     let camera: CameraRuntime
@@ -22,19 +36,29 @@ final class AppModel: ObservableObject {
     /// camera. Owned here so it outlives any one view and can keep streaming
     /// while the operator moves around the workspace.
     let broadcast = GVBroadcastRuntime()
-    let preferences = GVPreferences()
+    let preferences: GVPreferences
     let isUITesting: Bool
-    private var engineTask: Task<Void, Never>?
+    private let sourceTransition: CaptureSourceTransition
 
     init(
         arguments: [String] = ProcessInfo.processInfo.arguments,
-        bootTelemetry: BootTelemetry? = nil
+        bootTelemetry: BootTelemetry? = nil,
+        preferences: GVPreferences? = nil
     ) {
-        camera = CameraRuntime()
-        depth = DepthRuntime()
-        objects = ARObjectRuntime()
+        let camera = CameraRuntime()
+        let depth = DepthRuntime()
+        let objects = ARObjectRuntime()
+        self.camera = camera
+        self.depth = depth
+        self.objects = objects
+        sourceTransition = CaptureSourceTransition(
+            camera: camera,
+            depth: depth,
+            objects: objects
+        )
         audio = AudioReactiveRuntime()
         blobs = BlobTrackingRuntime()
+        self.preferences = preferences ?? GVPreferences()
         isUITesting = arguments.contains("--uitesting")
         self.bootTelemetry = bootTelemetry ?? .collect()
 
@@ -48,6 +72,11 @@ final class AppModel: ObservableObject {
             route = .boot
         } else {
             route = .gate
+        }
+
+        sourceTransition.onStateChange = { [weak self] state in
+            self?.sourceMode = state.mode
+            self?.runtimeStatus = state.runtimeStatus
         }
     }
 
@@ -84,13 +113,10 @@ final class AppModel: ObservableObject {
     }
 
     func returnToBoot() {
-        engineTask?.cancel()
-        engineTask = nil
-        camera.stopSoon()
-        depth.stopSoon()
-        objects.stopSoon()
+        sourceTransition.stopSoon()
         blobs.stop(using: camera)
         audio.stop()
+        broadcast.stop()
         sourceMode = .camera
         runtimeStatus = .offline
         entrySettleStart = nil
@@ -99,13 +125,7 @@ final class AppModel: ObservableObject {
 
     func restartEngine() {
         guard route == .workspace else { return }
-        if sourceMode == .lidar {
-            beginDepthStart(effect: depth.effect)
-        } else if sourceMode == .objects {
-            beginObjectsStart()
-        } else {
-            beginEngineStart()
-        }
+        sourceTransition.restart(configuration: CaptureConfiguration(draft: setup))
     }
 
     func switchCameraPosition() {
@@ -147,63 +167,34 @@ final class AppModel: ObservableObject {
         beginEngineStart()
     }
 
-    func cycleLens() {
-        guard route == .workspace else { return }
-        engineTask?.cancel()
-        runtimeStatus = .starting
-        engineTask = Task { [weak self] in
-            guard let self else { return }
-            let running = await camera.cycleLens()
-            guard !Task.isCancelled else { return }
-            runtimeStatus = running ? .running : .failed
-        }
-    }
-
     func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .active:
             if route == .workspace, runtimeStatus == .offline || runtimeStatus == .queued {
-                if sourceMode == .lidar {
-                    beginDepthStart(effect: depth.effect)
-                } else {
-                    beginEngineStart()
-                }
+                sourceTransition.restart(configuration: CaptureConfiguration(draft: setup))
             } else {
                 updateCaptureRotation()
             }
-        case .inactive, .background:
-            // Release the audio hardware regardless of route — the boot screen
-            // uses sound too, and holding an active session while backgrounded
-            // is exactly what makes other apps' audio duck for no reason.
-            GVSoundEngine.shared.shutdown()
-            guard route == .workspace else { return }
-            engineTask?.cancel()
-            engineTask = nil
-            camera.stopSoon()
-            depth.stopSoon()
-            objects.stopSoon()
-            blobs.stop(using: camera)
-            audio.stop()
-            runtimeStatus = .offline
+        case .inactive:
+            suspendWorkspace(stopBroadcast: false)
+        case .background:
+            suspendWorkspace(stopBroadcast: true)
         @unknown default:
             break
         }
     }
 
-    func updateCaptureRotation() {
-        camera.refreshVideoRotation()
-        depth.refreshOrientation()
-        objects.refreshOrientation()
+    func updateCaptureRotation(interfaceOrientation: UIInterfaceOrientation? = nil) {
+        camera.refreshVideoRotation(interfaceOrientation)
+        depth.refreshOrientation(interfaceOrientation)
+        objects.refreshOrientation(interfaceOrientation)
     }
 
     func stopAll() {
-        engineTask?.cancel()
-        engineTask = nil
-        camera.stopSoon()
-        depth.stopSoon()
-        objects.stopSoon()
+        sourceTransition.stopSoon()
         blobs.stop(using: camera)
         audio.stop()
+        broadcast.stop()
         sourceMode = .camera
         runtimeStatus = .offline
     }
@@ -212,74 +203,31 @@ final class AppModel: ObservableObject {
         runtimeStatus = status
     }
 
+    private func suspendWorkspace(stopBroadcast: Bool) {
+        // Release the audio hardware regardless of route: the boot screen uses
+        // sound too, and holding it while inactive ducks other apps.
+        GVSoundEngine.shared.shutdown()
+        guard route == .workspace else { return }
+        sourceTransition.suspendSoon()
+        blobs.stop(using: camera)
+        audio.stop()
+        if stopBroadcast { broadcast.stop() }
+        runtimeStatus = .offline
+    }
+
     private func beginEngineStart() {
-        engineTask?.cancel()
         let configuration = CaptureConfiguration(draft: setup)
-        sourceMode = .camera
-        runtimeStatus = .starting
-        engineTask = Task { [weak self] in
-            guard let self else { return }
-            await depth.stop()
-            let running = await camera.start(configuration: configuration)
-            guard !Task.isCancelled else { return }
-            runtimeStatus = running ? .running : .failed
-        }
+        sourceTransition.activateCamera(configuration: configuration)
     }
 
     private func beginDepthStart(effect: DepthEffectMode) {
-        guard depth.capability.isSupported else {
-            depth.setEffect(effect)
-            return
-        }
-        engineTask?.cancel()
         let fallbackConfiguration = CaptureConfiguration(draft: setup)
-        sourceMode = .lidar
-        runtimeStatus = .starting
-        engineTask = Task { [weak self] in
-            guard let self else { return }
-            await camera.stop()
-            let running = await depth.start(effect: effect)
-            guard !Task.isCancelled else { return }
-            if running {
-                runtimeStatus = .running
-                return
-            }
-
-            GVLog.capture.error("LiDAR start failed; restoring AVFoundation source")
-            sourceMode = .camera
-            let fallbackRunning = await camera.start(configuration: fallbackConfiguration)
-            guard !Task.isCancelled else { return }
-            runtimeStatus = fallbackRunning ? .running : .failed
-        }
+        sourceTransition.activateDepth(effect: effect, fallback: fallbackConfiguration)
     }
 
     private func beginObjectsStart() {
-        guard objects.capability.isSupported else {
-            Task { @MainActor [objects] in
-                _ = await objects.start()
-            }
-            return
-        }
-        engineTask?.cancel()
         let fallbackConfiguration = CaptureConfiguration(draft: setup)
-        sourceMode = .objects
-        runtimeStatus = .starting
-        engineTask = Task { [weak self] in
-            guard let self else { return }
-            await camera.stop()
-            let running = await objects.start()
-            guard !Task.isCancelled else { return }
-            if running {
-                runtimeStatus = .running
-                return
-            }
-
-            GVLog.capture.error("AR objects start failed; restoring AVFoundation source")
-            sourceMode = .camera
-            let fallbackRunning = await camera.start(configuration: fallbackConfiguration)
-            guard !Task.isCancelled else { return }
-            runtimeStatus = fallbackRunning ? .running : .failed
-        }
+        sourceTransition.activateObjects(fallback: fallbackConfiguration)
     }
 }
 

@@ -27,19 +27,14 @@ struct ARObjectsParameterDeck: View {
 
     private var headerRow: some View {
         HStack(spacing: 5) {
-            GVTerminalText(
-                text: "AR.OBJECTS // \(String(format: "%02d", objectCount)) PLACED",
-                size: GVMetrics.textSmall,
-                weight: .black,
-                tracking: 1.1,
-                alignment: .leading,
-                intensity: isRecording ? 1.3 : 1.1
-            )
+            Text("\(objectCount) objects placed")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(GVTheme.bone)
 
             Spacer(minLength: 6)
 
             GVDeckChip(
-                label: isRecording ? "STOP REC" : "REC",
+                label: isRecording ? "Stop" : "Record",
                 symbol: nil,
                 active: isRecording,
                 tint: GVTheme.record,
@@ -47,11 +42,11 @@ struct ARObjectsParameterDeck: View {
             ) {
                 onRecordToggle()
             }
-            GVDeckChip(label: "CLEAR", id: "ar.clear") {
+            GVDeckChip(label: "Clear", id: "ar.clear") {
                 onClear()
-                toasts.show("AR // GEOMETRY CLEARED")
+                toasts.show("AR geometry cleared")
             }
-            GVDeckChip(label: "RETURN CAM", symbol: "camera.aperture", id: "ar.exit") {
+            GVDeckChip(label: "Camera", symbol: "camera.aperture", id: "ar.exit") {
                 onExit()
                 onClose()
             }
@@ -62,42 +57,36 @@ struct ARObjectsParameterDeck: View {
     }
 
     private var sliderRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                GVRailSlider(
-                    label: "SIZE",
-                    value: $parameters.size,
-                    defaultValue: ARObjectParameters.defaults.size,
-                    range: 0.35...1.8,
-                    format: { String(format: "%.2f\u{00D7}", $0) }
-                )
-                .accessibilityIdentifier("workspace.param.ar.size")
+        HStack(spacing: 8) {
+            GVRailSlider(
+                label: "Size",
+                value: $parameters.size,
+                defaultValue: ARObjectParameters.defaults.size,
+                range: 0.35 ... 1.8,
+                format: { String(format: "%.2f\u{00D7}", $0) }
+            )
+            .accessibilityIdentifier("workspace.param.ar.size")
 
-                GVRailSlider(
-                    label: "SPIN",
-                    value: $parameters.spin,
-                    defaultValue: ARObjectParameters.defaults.spin,
-                    range: 0...2,
-                    format: { String(format: "%.2f", $0) }
-                )
-                .accessibilityIdentifier("workspace.param.ar.spin")
+            GVRailSlider(
+                label: "Spin",
+                value: $parameters.spin,
+                defaultValue: ARObjectParameters.defaults.spin,
+                range: 0 ... 2,
+                format: { String(format: "%.2f", $0) }
+            )
+            .accessibilityIdentifier("workspace.param.ar.spin")
 
-                GVRailSlider(
-                    label: "GLOW",
-                    value: $parameters.glow,
-                    defaultValue: ARObjectParameters.defaults.glow,
-                    range: 0.1...1.6,
-                    format: { String(format: "%.2f", $0) }
-                )
-                .accessibilityIdentifier("workspace.param.ar.glow")
-            }
-            .padding(.vertical, 2)
-            .padding(.horizontal, 1)
-            .padding(.bottom, 3)
-            .scrollTargetLayout()
+            GVRailSlider(
+                label: "Glow",
+                value: $parameters.glow,
+                defaultValue: ARObjectParameters.defaults.glow,
+                range: 0.1 ... 1.6,
+                format: { String(format: "%.2f", $0) }
+            )
+            .accessibilityIdentifier("workspace.param.ar.glow")
         }
-        .scrollTargetBehavior(.viewAligned)
-        .gvHorizontalEdgeFade()
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 2)
     }
 }
 
@@ -129,22 +118,16 @@ struct BlobTrackingParameterDeck: View {
 
     private var headerRow: some View {
         HStack(spacing: 5) {
-            GVTerminalText(
-                text: isEnabled ? status : "BLOB TRACK // FIELD ANALYZER",
-                size: GVMetrics.textSmall,
-                weight: .black,
-                tracking: 1.05,
-                baseColor: isEnabled ? GVTheme.acid : GVTheme.bone,
-                alignment: .leading,
-                intensity: isEnabled ? 1.15 : 0.9
-            )
-            .lineLimit(1)
-            .minimumScaleFactor(0.62)
+            Text(isEnabled ? status : "Blob Tracking")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isEnabled ? GVTheme.bone : GVTheme.bone.opacity(0.85))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
 
             Spacer(minLength: 6)
 
             GVDeckChip(
-                label: isEnabled ? "STOP" : "START",
+                label: isEnabled ? "Stop" : "Start",
                 active: isEnabled,
                 tint: .white,
                 id: "blob.toggle"
@@ -158,51 +141,48 @@ struct BlobTrackingParameterDeck: View {
     }
 
     private var sliderRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                GVRailSlider(
-                    label: "BLOCK",
-                    value: $parameters.blockSize,
-                    defaultValue: BlobTrackingParameters.defaults.blockSize,
-                    range: 0.02...0.12,
-                    format: { "\(Int($0 * 100))% CELL" }
-                )
-                .accessibilityIdentifier("workspace.param.blobs.block")
+        LazyVGrid(
+            columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+            spacing: 8
+        ) {
+            GVRailSlider(
+                label: "Cell Size",
+                value: $parameters.blockSize,
+                defaultValue: BlobTrackingParameters.defaults.blockSize,
+                range: 0.02 ... 0.12,
+                format: { "\(Int($0 * 100))%" }
+            )
+            .accessibilityIdentifier("workspace.param.blobs.block")
 
-                GVRailSlider(
-                    label: "HUE",
-                    value: $parameters.hue,
-                    defaultValue: BlobTrackingParameters.defaults.hue,
-                    range: 0...1,
-                    format: { "\(Int($0 * 360))\u{00B0}" }
-                )
-                .accessibilityIdentifier("workspace.param.blobs.hue")
+            GVRailSlider(
+                label: "Hue",
+                value: $parameters.hue,
+                defaultValue: BlobTrackingParameters.defaults.hue,
+                range: 0 ... 1,
+                format: { "\(Int($0 * 360))\u{00B0}" }
+            )
+            .accessibilityIdentifier("workspace.param.blobs.hue")
 
-                GVRailSlider(
-                    label: "TOLERANCE",
-                    value: $parameters.tolerance,
-                    defaultValue: BlobTrackingParameters.defaults.tolerance,
-                    range: 0.01...1,
-                    format: { "\(Int($0 * 100))%" }
-                )
-                .accessibilityIdentifier("workspace.param.blobs.tolerance")
+            GVRailSlider(
+                label: "Tolerance",
+                value: $parameters.tolerance,
+                defaultValue: BlobTrackingParameters.defaults.tolerance,
+                range: 0.01 ... 1,
+                format: { "\(Int($0 * 100))%" }
+            )
+            .accessibilityIdentifier("workspace.param.blobs.tolerance")
 
-                GVRailSlider(
-                    label: "MIN AREA",
-                    value: $parameters.minArea,
-                    defaultValue: BlobTrackingParameters.defaults.minArea,
-                    range: 0.0005...0.25,
-                    format: { String(format: "%.2f%%", $0 * 100) }
-                )
-                .accessibilityIdentifier("workspace.param.blobs.minarea")
-            }
-            .padding(.vertical, 2)
-            .padding(.horizontal, 1)
-            .padding(.bottom, 3)
-            .scrollTargetLayout()
+            GVRailSlider(
+                label: "Min Area",
+                value: $parameters.minArea,
+                defaultValue: BlobTrackingParameters.defaults.minArea,
+                range: 0.0005 ... 0.25,
+                format: { String(format: "%.2f%%", $0 * 100) }
+            )
+            .accessibilityIdentifier("workspace.param.blobs.minarea")
         }
-        .scrollTargetBehavior(.viewAligned)
-        .gvHorizontalEdgeFade()
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
     }
 }
 
@@ -245,8 +225,7 @@ struct BlobTrackingOverlay: View {
                 .frame(width: 10, height: 1)
                 .padding(3)
             Text(blob.label)
-                .gvMono(GVMetrics.textMicro, .black)
-                .tracking(0.7)
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(tint)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)

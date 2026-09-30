@@ -28,18 +28,17 @@ arguments: `--uitesting` starts at `.boot`; `--uitesting-workspace` and
 
 ## Capture sources
 
-Three, mutually exclusive, all owned by `AppModel`:
+Three, mutually exclusive, coordinated by `CaptureSourceTransition`:
 
 | Mode | Owner | Backing |
 |---|---|---|
-| `.camera` | `CameraRuntime` → `CameraController` | AVFoundation |
-| `.lidar` | `DepthRuntime` → `ARDepthFrameSource` | ARKit scene depth |
-| `.objects` | `ARObjectRuntime` → `ARObjectSource` | ARKit world tracking |
+| `.camera` | Camera adapter: `CameraRuntime` → `CameraController` | AVFoundation |
+| `.lidar` | LiDAR adapter: `DepthRuntime` → `ARDepthFrameSource` | ARKit scene depth |
+| `.objects` | Objects adapter: `ARObjectRuntime` → `ARObjectSource` | ARKit world tracking |
 
-Switching is transactional: the outgoing source is fully stopped before the
-incoming one starts, and a failure restores the AVFoundation configuration that
-was live before. The two ARKit sources and AVFoundation never contend for the
-camera.
+`CaptureSourceTransition` owns stop-before-start ordering, cancellation, and
+rollback. A failure restores the AVFoundation configuration that was live
+before. The two ARKit sources and AVFoundation never contend for the camera.
 
 ## Frame path
 
@@ -60,6 +59,33 @@ CameraController (serial session queue)
 until the command buffer's completion handler fires. Two transient
 `rgba16Float` textures ping-pong; one bounded history ring backs the temporal
 nodes. Nothing in the loop allocates per frame.
+
+### Render-core infrastructure
+
+`Engine/Infrastructure` provides the contracts for extending that path without
+giving effects ownership of capture or presentation:
+
+- `FrameContext` carries frame timing, orientation, interaction, modulation,
+  masks and the command buffer through one render transaction.
+- `RenderEffect` and the render graph model define ordered effect lifecycle,
+  serializable state and failure isolation. A failed node is bypassed rather
+  than invalidating the complete frame.
+- `TexturePool`, `PingPongTextures`, `CircularFrameHistory` and
+  `TemporalBufferBank` provide bounded reusable GPU and temporal storage.
+- `MotionField` is the shared motion representation, with immutable snapshots
+  for consumers and a separate debug renderer.
+- Parameter definitions separate persisted values from mappings and runtime
+  evaluation; GPU timing and resource signals provide telemetry inputs.
+
+`CameraMetalRenderer` remains the realtime owner, but `RenderGraph` now owns
+effect sequencing inside its frame transaction. RGB Split is the fixed first
+node; every enabled Slot after it is adapted to a graph node in operator order,
+including style, temporal and per-Slot fluid nodes. Shared optical flow and
+temporal inputs are prepared from the clean source before graph execution.
+Signal Fracture, preview, recording and broadcast consume the graph's finished
+texture. The renderer supplies its persistent ping-pong textures as graph
+scratch storage, avoiding a second render loop and avoiding per-frame texture
+allocation while preserving graph failure isolation.
 
 ### Concurrency
 
@@ -112,8 +138,10 @@ mutating func remove(_ id: Slot.ID)
 mutating func setEnabled(_ enabled: Bool, slot id: Slot.ID)
 ```
 
-**None of that API has a UI yet.** The subscript still reads and writes the
-first slot for an effect, which is what every existing call site uses.
+`EffectEditingSession` owns selection, ADD mode, focused-slot identity, legal
+stack mutations and composition history. `WorkspaceEffectStackStrip` exposes
+move, per-slot power, solo and remove. The effect-keyed subscript remains the
+compatibility path for callers that intentionally mean the first slot.
 
 New slots are placed by `defaultPlacementOrder`, which is
 `metalRenderOrder + temporalRenderOrder`. The two lists are disjoint and every
@@ -147,6 +175,11 @@ and intensity controls; intensity zero returns the aligned camera image.
   chrome, controlled by `GVPreferences.captureIncludesChrome`.
 - `GVRealtimeRecordingSession` — the AR-object path.
 - `GVPhotoLibrary` — Photos permission is requested only at save.
+
+`GVRecordingTransaction` is the single operator-facing recording authority. It
+selects the processed-frame or Objects adapter from the active capture source,
+including pending-start truth, so workspace and Objects controls cannot start
+competing takes.
 
 Record and Screenshot are live controls. Documentation describing them as
 printing a "Gate 5 notice" is out of date.
@@ -183,6 +216,7 @@ that rather than becoming a side door around it.
 ## Testing
 
 - Unit: registries, parameter clamping, stack ordering and slot operations,
+  capture-source ordering and rollback, Effect Editing selection/history,
   depth geometry, horizon maths, codec mapping, capability filtering.
 - Metal: deterministic textures, kernel presence, RGB displacement, style-pixel
   mutation, temporal history dependence, point-cloud geometry.

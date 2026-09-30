@@ -91,10 +91,10 @@ enum GVMetrics {
     ///
     /// `micro` is the floor. Nothing in the chrome is drawn smaller. 5.2pt
     /// type is decoration that happens to be spelled in words.
-    static let textMicro: CGFloat = 7.2
-    static let textSmall: CGFloat = 8.6
-    static let textBody: CGFloat = 10.1
-    static let textValue: CGFloat = 11.5
+    static let textMicro = GVTheme.CompactType.caption.size
+    static let textSmall = GVTheme.CompactType.label.size
+    static let textBody = GVTheme.CompactType.control.size
+    static let textValue = GVTheme.CompactType.value.size
 }
 
 extension GVTheme {

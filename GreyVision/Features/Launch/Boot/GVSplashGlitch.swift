@@ -8,6 +8,9 @@ import SwiftUI
 /// the cost outside a glitch is a single `isEnabled: false` layer effect.
 struct GVSplashGlitch: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Gates the ambient clock: a decoration that is not on screen should
+    /// not be scheduling frames.
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Distinguishes elements so they do not corrupt in lockstep.
     let seed: Int
@@ -21,7 +24,7 @@ struct GVSplashGlitch: ViewModifier {
         if reduceMotion || !isEnabled {
             content
         } else {
-            TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { timeline in
+            TimelineView(GVAmbientClock.ambient(hertz: 30, scenePhase: scenePhase, isActive: isEnabled)) { timeline in
                 let amount = GVSplashGlitch.amount(
                     at: timeline.date.timeIntervalSinceReferenceDate,
                     seed: seed,

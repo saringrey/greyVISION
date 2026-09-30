@@ -1,6 +1,7 @@
 import SwiftUI
 
 // MARK: - Unified toast
+
 //
 /// One notice channel for the whole workspace. Replaces the three unrelated
 /// surfaces notices used to surface from — red terminal text under the top
@@ -9,27 +10,68 @@ import SwiftUI
 @MainActor
 final class GVToastBox: ObservableObject {
     @Published var message: String?
+    @Published private(set) var actionTitle: String?
+    private var actionHandler: (() -> Void)?
     private var dismissTask: Task<Void, Never>?
 
     /// A new message replaces the current one and restarts the timer. That is
     /// deliberately not a queue: notices here answer "what just happened", and
     /// a backlog of answers is noise.
     func show(_ text: String) {
+        show(text, action: nil)
+    }
+
+    /// A notice that offers a way out.
+    ///
+    /// A permission refusal is the case this exists for: telling the operator
+    /// an effect needs the microphone and then dismissing the message two
+    /// seconds later leaves them holding a control that does nothing, with no
+    /// indication that the fix lives in Settings. The action stays up longer
+    /// because it has to be reachable, not just readable.
+    func show(_ text: String, action: ToastAction?) {
         message = text
+        actionTitle = action?.title
+        actionHandler = action?.handler
         dismissTask?.cancel()
+        let duration = action == nil ? 2.4 : 6.0
         dismissTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2.4))
+            try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled else { return }
-            self?.message = nil
+            self?.dismiss()
         }
+    }
+
+    /// Runs the pending action and clears the notice. Exposed so the capsule
+    /// can invoke it without holding the handler itself.
+    func performAction() {
+        let handler = actionHandler
+        dismiss()
+        handler?()
+    }
+
+    func dismiss() {
+        dismissTask?.cancel()
+        dismissTask = nil
+        message = nil
+        actionTitle = nil
+        actionHandler = nil
+    }
+
+    struct ToastAction {
+        let title: String
+        let handler: () -> Void
     }
 }
 
 struct GVToastCapsule: View {
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var lift: Double { contrast == .increased ? 1.5 : 1 }
 
     let text: String?
+    /// Optional way out, for a notice the operator can actually resolve.
+    let actionTitle: String?
+    let onAction: (() -> Void)?
 
     private var isError: Bool {
         guard let text else { return false }
@@ -41,40 +83,39 @@ struct GVToastCapsule: View {
         if let text {
             HStack(spacing: 7) {
                 Circle()
-                    .fill(isError ? GVTheme.record : Color.white)
+                    .fill(isError ? GVTheme.record : GVTheme.bone.opacity(0.7))
                     .frame(width: 5, height: 5)
-                    .shadow(color: isError ? GVTheme.record.opacity(0.9) : .white.opacity(0.9), radius: 4)
                 Text(text)
-                    .gvMono(GVMetrics.textSmall, .bold)
-                    .tracking(0.8)
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(
                         isError
                             ? GVTheme.record.opacity(min(0.92 * lift, 1))
-                            : Color.white.opacity(min(0.88 * lift, 1))
+                            : GVTheme.bone.opacity(min(0.9 * lift, 1))
                     )
-                    .shadow(color: isError ? GVTheme.record.opacity(0.4) : .white.opacity(0.28), radius: 4)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.8)
+                if let actionTitle, let onAction {
+                    Button(action: onAction) {
+                        Text(actionTitle)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.white)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("workspace.toast.action")
+                }
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 8)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color(red: 0.135, green: 0.135, blue: 0.143).opacity(0.94))
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .stroke(
-                                isError ? GVTheme.record.opacity(0.6) : Color.white.opacity(0.14),
-                                lineWidth: 1
-                            )
-                    )
-                    .shadow(color: .black.opacity(0.55), radius: 10, y: 4)
-                    .shadow(
-                        color: isError ? GVTheme.record.opacity(0.22) : .white.opacity(0.12),
-                        radius: 12
-                    )
+            .gvNoticeCapsule(
+                tint: isError ? GVTheme.record.opacity(0.18) : nil,
+                critical: isError
             )
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .transition(
+                reduceMotion
+                    ? .opacity
+                    : .move(edge: .bottom).combined(with: .opacity)
+            )
             .accessibilityIdentifier("workspace.toast")
         }
     }
@@ -83,6 +124,7 @@ struct GVToastCapsule: View {
 // MARK: - Scroll progress line
 
 private struct GVScrollProgressLine: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var offsetX: CGFloat = 0
     @State private var contentWidth: CGFloat = 0
     @State private var visibleWidth: CGFloat = 0
@@ -98,14 +140,17 @@ private struct GVScrollProgressLine: ViewModifier {
                         : 0
                     ZStack(alignment: .leading) {
                         Capsule()
-                            .fill(Color.white.opacity(0.05))
+                            .fill(Color.white.opacity(0.04))
                             .frame(width: geometry.size.width)
                         if contentWidth > visibleWidth + 8 {
                             Capsule()
-                                .fill(Color.white.opacity(0.30))
+                                .fill(Color.white.opacity(0.16))
                                 .frame(width: fillWidth)
                                 .offset(x: progress * (geometry.size.width - fillWidth))
-                                .animation(GVMotion.micro, value: progress)
+                                .animation(
+                                    GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion),
+                                    value: progress
+                                )
                         }
                     }
                     .frame(height: 2)
@@ -137,36 +182,64 @@ extension View {
 // MARK: - Compact deck plate
 
 extension View {
+    /// Native Liquid Glass grouping on iOS 26+, with a no-op container on
+    /// earlier systems. Grouping adjacent glass elements lets SwiftUI render
+    /// and merge them as one optical system instead of stacking independent
+    /// blur layers.
+    @ViewBuilder
+    func gvLiquidGlassContainer(spacing: CGFloat = 12) -> some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                self
+            }
+        } else {
+            self
+        }
+    }
+
+    /// A dark, frosted Liquid Glass surface. Interactive response is reserved
+    /// for controls; passive rails and deck plates leave it disabled.
+    func gvLiquidGlass(
+        radius: CGFloat,
+        tint: Color = Color.black.opacity(0.34),
+        interactive: Bool = false
+    ) -> some View {
+        gvMaterial(
+            .deck,
+            shape: .rounded(radius: radius),
+            tint: tint,
+            interactive: interactive
+        )
+    }
+
+    /// Associates a glass surface with a stable identity when its hierarchy
+    /// changes, enabling native morphing on iOS 26 without affecting fallback
+    /// layouts.
+    @ViewBuilder
+    func gvLiquidGlassID<ID: Hashable & Sendable>(_ id: ID, in namespace: Namespace.ID) -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffectID(id, in: namespace)
+        } else {
+            self
+        }
+    }
+
     /// The shared charcoal material for every bottom-sheet deck: gradient,
     /// top hairline, hairline stroke, depth shadow. One source so the effect,
     /// depth, AR and blob decks cannot drift apart again.
     func gvCompactDeckPlate() -> some View {
-        self
-            .padding(.horizontal, 10)
-            .padding(.top, 7)
-            .padding(.bottom, 8)
-            .background(
-                ZStack(alignment: .top) {
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.135, green: 0.135, blue: 0.143),
-                            Color(red: 0.078, green: 0.078, blue: 0.085)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    Rectangle()
-                        .fill(Color.white.opacity(0.06))
-                        .frame(height: 1 / UIScreen.main.scale)
-                        .frame(maxHeight: .infinity, alignment: .top)
-                }
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.white.opacity(0.07), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.62), radius: 12, y: 6)
+        modifier(GVCompactDeckPlateModifier())
+    }
+}
+
+private struct GVCompactDeckPlateModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, GVMetrics.stepRelated)
+            .padding(.top, GVMetrics.gap)
+            .padding(.bottom, GVMetrics.gap)
+            .gvMaterial(.deck, shape: .rounded(radius: GVMetrics.radiusPanel))
     }
 }
 
@@ -176,54 +249,129 @@ extension View {
 struct GVDeckChip: View {
     let label: String
     var symbol: String?
+    /// Icon-only chips must name their action independently of their visual
+    /// label; an empty `label` used to erase the SF Symbol's VoiceOver name.
+    var accessibilityLabel: String?
     var active = false
     var dimmed = false
     var tint: Color = .white
-    /// Tap-target height. The 20pt default was under finger-sized; decks that
-    /// need a primary control pass a taller value.
+    /// Drawn height. The button always receives a 44pt interaction frame even
+    /// when dense deck chrome is rendered smaller.
     var height: CGFloat = 24
     let id: String
     let action: () -> Void
+
+    private var spokenLabel: String {
+        if let accessibilityLabel, !accessibilityLabel.isEmpty {
+            return accessibilityLabel
+        }
+        if !label.isEmpty { return label }
+        switch symbol {
+        case "xmark": return "Close"
+        case "power", "power.dotted": return "Toggle effect"
+        case "star", "star.fill": return "Toggle favorite"
+        case "chevron.left": return "Move earlier"
+        case "chevron.right": return "Move later"
+        case "trash": return "Remove"
+        default: return "Control"
+        }
+    }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 if let symbol {
                     Image(systemName: symbol)
-                        .font(.system(size: GVMetrics.textMicro + 1.5, weight: .black))
+                        .font(.system(size: 11, weight: .medium))
                 }
                 Text(label)
-                    .gvMono(GVMetrics.textMicro, .black)
-                    .tracking(0.7)
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
             }
-            .foregroundStyle(active ? tint : GVTheme.bone.opacity(dimmed ? 0.32 : 0.78))
-            .shadow(color: active ? tint.opacity(0.55) : .clear, radius: 3)
-            .padding(.horizontal, symbol == nil ? 8 : 7)
+            .foregroundStyle(active ? tint : GVTheme.bone.opacity(dimmed ? 0.35 : 0.75))
+            .padding(.horizontal, symbol == nil ? 10 : 8)
             .frame(height: height)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(active ? tint.opacity(0.14) : Color(white: 0.155))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .stroke(
-                                active ? tint.opacity(0.85) : Color.white.opacity(0.09),
-                                lineWidth: active ? 1.1 : 0.8
-                            )
-                    )
-                    .shadow(color: active ? tint.opacity(0.3) : .clear, radius: 4)
-            )
-            .contentShape(Rectangle())
         }
-        .buttonStyle(GVPressStyle(scale: 0.92))
+        .buttonStyle(GVGlassChipStyle(active: active, dimmed: dimmed, tint: tint, height: height))
+        .frame(minHeight: GVMetrics.touchTarget)
+        .contentShape(Rectangle())
         .disabled(dimmed && !active)
-        .accessibilityLabel(label)
+        .accessibilityLabel(spokenLabel)
         .accessibilityIdentifier("workspace.chip.\(id)")
         .accessibilityValue(active ? "on" : "off")
     }
 }
 
+private struct GVGlassChipStyle: ButtonStyle {
+    let active: Bool
+    let dimmed: Bool
+    let tint: Color
+    let height: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .gvGlassChip(radius: 8, active: active || configuration.isPressed, tint: tint)
+            .frame(height: height)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(
+                GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion),
+                value: configuration.isPressed
+            )
+            .opacity(dimmed && !active ? 0.55 : 1)
+    }
+}
+
 // MARK: - Rail slider
+
+/// Compact pagination for parameter decks. It deliberately replaces horizontal
+/// parameter scrolling: every page is a complete, legible set of controls.
+struct GVParameterPager: View {
+    @Binding var page: Int
+    let pageCount: Int
+
+    var body: some View {
+        guard pageCount > 1 else { return AnyView(EmptyView()) }
+        return AnyView(
+            HStack(spacing: 8) {
+                Button {
+                    page = max(0, page - 1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(GVPressStyle(scale: 0.9))
+                .disabled(page == 0)
+                .accessibilityLabel("Previous parameter page")
+                .accessibilityHint("Shows parameter page \(max(page, 1)) of \(pageCount)")
+
+                Text("Page \(page + 1) of \(pageCount)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(GVTheme.ash)
+                    .monospacedDigit()
+
+                Button {
+                    page = min(pageCount - 1, page + 1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(GVPressStyle(scale: 0.9))
+                .disabled(page == pageCount - 1)
+                .accessibilityLabel("Next parameter page")
+                .accessibilityHint("Shows parameter page \(min(page + 2, pageCount)) of \(pageCount)")
+            }
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(GVTheme.bone)
+            .frame(height: 24)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Parameter page \(page + 1) of \(pageCount)")
+        )
+    }
+}
 
 /// One parameter as a compact vertical unit: label, drag track with a default
 /// detent notch, live value — plus a floating value bubble and soft haptic
@@ -264,13 +412,11 @@ struct GVRailSlider: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text(label)
-                .gvMono(GVMetrics.textMicro, .bold)
-                .tracking(0.5)
-                .foregroundStyle(isDragging ? Color.white : GVTheme.ash)
-                .shadow(color: isDragging ? .white.opacity(0.5) : .clear, radius: 3)
+            Text(label.capitalized)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(isDragging ? Color.white.opacity(0.92) : GVTheme.ash)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.8)
 
             GeometryReader { geometry in
                 let width = geometry.size.width
@@ -301,15 +447,15 @@ struct GVRailSlider: View {
                         )
                         .frame(width: max(6, width * fraction))
                         .shadow(
-                            color: .white.opacity(isDragging ? 0.6 : 0.24),
-                            radius: isDragging ? 5 : 2
+                            color: .white.opacity(isDragging ? 0.32 : 0.14),
+                            radius: isDragging ? 3 : 1
                         )
                     Circle()
                         .fill(Color.white)
                         .frame(width: 11, height: 11)
                         .shadow(
-                            color: .white.opacity(isDragging ? 0.95 : 0.45),
-                            radius: isDragging ? 7 : 3
+                            color: .white.opacity(isDragging ? 0.45 : 0.20),
+                            radius: isDragging ? 4 : 2
                         )
                         .offset(x: (width - 11) * fraction)
                 }
@@ -321,10 +467,8 @@ struct GVRailSlider: View {
             .frame(height: 16)
 
             Text(format(value))
-                .gvMono(GVMetrics.textSmall, .bold)
-                .tracking(0.3)
-                .foregroundStyle(isDragging ? Color.white : GVTheme.bone.opacity(0.82))
-                .shadow(color: isDragging ? .white.opacity(0.45) : .clear, radius: 3)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(isDragging ? Color.white.opacity(0.92) : GVTheme.bone.opacity(0.82))
         }
         .frame(width: 84)
         // Floating readout above the knob while the finger is down: the value
@@ -332,8 +476,7 @@ struct GVRailSlider: View {
         .overlay(alignment: .top) {
             if isDragging {
                 Text(format(value))
-                    .gvMono(GVMetrics.textMicro, .black)
-                    .tracking(0.4)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -342,10 +485,9 @@ struct GVRailSlider: View {
                             .fill(Color(white: 0.11).opacity(0.96))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.8)
+                                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.8)
                             )
-                            .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
-                            .shadow(color: .white.opacity(0.22), radius: 6)
+                            .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
                     )
                     .fixedSize()
                     .offset(x: bubbleOffsetX, y: -21)
@@ -356,7 +498,7 @@ struct GVRailSlider: View {
         .onTapGesture(count: 2) {
             value = defaultValue
         }
-        .animation(GVMotion.micro, value: isDragging)
+        .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: isDragging)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityValue(format(value))
@@ -377,7 +519,7 @@ struct GVRailSlider: View {
         return min(max(raw, -18), 84 - 40)
     }
 
-    private func dragGesture(width: CGFloat) -> some Gesture {
+    private func dragGesture(width _: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { gesture in
                 if !isDragging {

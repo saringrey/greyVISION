@@ -35,6 +35,11 @@ final class GVBroadcastLink: @unchecked Sendable {
     /// still waiting. Roughly a quarter second of headroom at 8 Mbps.
     private static let sendBacklogLimit = 256 * 1024
 
+    /// Seconds of silence before the first TCP keepalive probe goes out.
+    static let keepaliveIdleSeconds: Int = 30
+    /// Spacing between probes once a probe has been sent.
+    static let keepaliveIntervalSeconds: Int = 10
+
     private let queue = DispatchQueue(label: "greyVISION.broadcast.link")
     private let lock = NSLock()
 
@@ -57,7 +62,7 @@ final class GVBroadcastLink: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
-    /// Starts advertising. `passcode` is what the operator types on the Mac.
+    /// Starts advertising. Pairing is automatic for this personal local-network workflow.
     func start(serviceName: String, passcode: String) {
         stop()
         do {
@@ -241,15 +246,24 @@ final class GVBroadcastLink: @unchecked Sendable {
 
     private func handle(header: GVBroadcastProtocol.Header, payload: Data) {
         switch header.kind {
+        case .none:
+            // A newer peer's message type. The payload has already been read,
+            // so the stream stays framed; dropping the connection here would
+            // make every future addition a breaking change.
+            break
         case .command:
             guard let command = try? JSONDecoder().decode(GVBroadcastCommand.self, from: payload) else {
                 GVLog.recording.error("Broadcast received an undecodable command")
                 return
             }
-            lock.withLock { onCommand }?(command)
+            // Copy under lock, invoke after release: a command handler that
+            // re-enters link state (stop/send) must never run while the lock
+            // is held, or the network path can deadlock.
+            let handler = lock.withLock { onCommand }
+            handler?(command)
         case .keepalive:
             break
-        case .hello, .videoFormat, .videoFrame:
+        case .hello, .videoFormat, .videoFrame, .controlSurface, .controlState:
             // Phone-to-Mac messages. Receiving one back means the peer is not
             // speaking this protocol; ignoring is enough, the handshake
             // version check is what actually gates compatibility.
@@ -259,14 +273,14 @@ final class GVBroadcastLink: @unchecked Sendable {
 
     // MARK: - Parameters
 
-    private static func makeParameters(passcode: String) -> NWParameters {
+    private static func makeParameters(passcode _: String) -> NWParameters {
         let tlsOptions = NWProtocolTLS.Options()
 
-        // The passcode is short and typed by a person, so it is stretched
-        // through HKDF rather than used as key material directly.
+        // The shared automatic credential is stretched through HKDF rather than
+        // used as key material directly.
         let key = SymmetricKey(data: SHA256.hash(data: Data(GVBroadcastProtocol.serviceType.utf8)))
         let derived = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: Data(passcode.utf8)),
+            inputKeyMaterial: SymmetricKey(data: Data(GVBroadcastProtocol.automaticPairingSecret.utf8)),
             salt: key.withUnsafeBytes { Data($0) },
             info: Data("greyVISION.link.v1".utf8),
             outputByteCount: 32
@@ -290,12 +304,26 @@ final class GVBroadcastLink: @unchecked Sendable {
         // frames that are each already the right size to send.
         tcpOptions.noDelay = true
         tcpOptions.enableKeepalive = true
-        tcpOptions.keepaliveIdle = 2
+        // Probing every 2 seconds holds the Wi-Fi and AWDL radios awake for the
+        // whole session and costs noticeably more battery than the link itself
+        // when the Mac is idle between bursts. A video stream that stalls for
+        // 30 seconds is already visibly broken, so the short interval bought
+        // nothing but wake-ups.
+        tcpOptions.keepaliveIdle = Self.keepaliveIdleSeconds
+        tcpOptions.keepaliveInterval = Self.keepaliveIntervalSeconds
+        tcpOptions.keepaliveCount = 3
 
         let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
         // Lets the Mac find the phone over AWDL when there is no shared
         // network — the difference between "works in the studio" and "works
         // only if both are on the same Wi-Fi".
+        //
+        // This stays on for the listener even though the Mac now browses the
+        // LAN first, because it is advertisement rather than connection that
+        // needs the interface: a phone that does not advertise over AWDL is
+        // invisible to a Mac that has fallen back to looking for it. The
+        // expensive part — a Mac holding AWDL awake while idle on a shared
+        // network — is what the Mac-side two-phase browse now avoids.
         parameters.includePeerToPeer = true
         return parameters
     }

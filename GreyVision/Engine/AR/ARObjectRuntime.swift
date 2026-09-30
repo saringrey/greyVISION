@@ -606,12 +606,12 @@ final class ARObjectRuntime: ObservableObject {
         snapshot = .idle
     }
 
-    func refreshOrientation() {
-        let interfaceOrientation = UIApplication.shared.connectedScenes
+    func refreshOrientation(_ requestedOrientation: UIInterfaceOrientation? = nil) {
+        let interfaceOrientation = requestedOrientation ?? UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first(where: { $0.activationState == .foregroundActive })?
             .interfaceOrientation ?? .portrait
-        let orientation: CapturedFrameOrientation = switch interfaceOrientation {
+        let orientation: CapturedFrameOrientation? = switch interfaceOrientation {
         case .portrait:
             .portrait
         case .portraitUpsideDown:
@@ -621,8 +621,9 @@ final class ARObjectRuntime: ObservableObject {
         case .landscapeRight:
             .landscapeRight
         default:
-            .portrait
+            nil
         }
+        guard let orientation else { return }
         snapshot.orientation = orientation
         source.updateOrientation(orientation)
     }
@@ -750,6 +751,10 @@ final class ARObjectRuntime: ObservableObject {
     /// rendered frame exactly.
     func requestStartRecording() {
         startRequested = true
+    }
+
+    func cancelRecordingStart() {
+        startRequested = false
     }
 
     /// Dock REC toggle: starts (writer boots on the surface's next drawable
@@ -890,6 +895,7 @@ final class ARObjectRuntime: ObservableObject {
             return
         }
         var survivors: [ARObjectDescriptor] = []
+        survivors.reserveCapacity(objects.count)
         for object in objects where !object.isBlackHole {
             let delta = blackHole.position - object.position
             let distance = max(length(delta), 0.0001)

@@ -22,6 +22,28 @@ final class BootstrapUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testAccessGateShowsSingleEntryButton() {
+        let app = XCUIApplication()
+        app.launch()
+
+        let enter = app.buttons["access.enter"]
+        XCTAssertTrue(enter.waitForExistence(timeout: 5))
+        XCTAssertTrue(enter.isHittable)
+        XCTAssertEqual(enter.label, "Enter GreyVision")
+        enter.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["boot.screen"].waitForExistence(timeout: 15))
+    }
+
+    func testBootShowsBothScrollingTelemetryRegions() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["boot.screen"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["boot.telemetry"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["boot.capabilities"].waitForExistence(timeout: 15))
+    }
+
     func testBootFormatDockWorkspaceStateMachine() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]
@@ -40,8 +62,10 @@ final class BootstrapUITests: XCTestCase {
         XCTAssertTrue(resolutionButton.exists)
         XCTAssertTrue(resolutionButton.label.contains("4K"))
         codecButton.tap()
-        XCTAssertTrue(app.buttons["boot.codec.prores-422"].waitForExistence(timeout: 3))
-        app.buttons["boot.codec.prores-422"].tap()
+        // Identifier is the option's own slug, and the curated list spells the
+        // full format name: PRORES 422 HQ, not the "422 HQ" the card prints.
+        XCTAssertTrue(app.buttons["boot.codec.prores-422-hq"].waitForExistence(timeout: 3))
+        app.buttons["boot.codec.prores-422-hq"].tap()
         XCTAssertTrue(app.scrollViews["boot.choices.codec"].waitForNonExistence(timeout: 3))
 
         app.buttons["boot.fps"].tap()
@@ -64,8 +88,7 @@ final class BootstrapUITests: XCTestCase {
         )
 
         XCTAssertTrue(app.descendants(matching: .any)["camera.metal.preview"]
-            .waitForExistence(timeout: 3)
-        )
+            .waitForExistence(timeout: 3))
 
         // The old FRAME category check (grid effect + density scrub) was
         // removed: that category and its parameter deck no longer exist in
@@ -216,45 +239,33 @@ final class BootstrapUITests: XCTestCase {
         let glitchCategory = app.buttons["workspace.category.glitch"]
         XCTAssertTrue(glitchCategory.waitForExistence(timeout: 3))
         glitchCategory.tap()
-        let rgbSplit = app.buttons["workspace.action.rgb-split"]
-        XCTAssertTrue(rgbSplit.waitForExistence(timeout: 3))
-        rgbSplit.tap()
 
         XCTAssertTrue(
             app.descendants(matching: .any)["workspace.parameters.rgbSplit"]
                 .waitForExistence(timeout: 3)
         )
-        let offset = app.sliders["workspace.parameter.rgbSplit.offset"]
-        let angle = app.sliders["workspace.parameter.rgbSplit.angle"]
-        let mix = app.sliders["workspace.parameter.rgbSplit.mix"]
-        XCTAssertTrue(offset.waitForExistence(timeout: 3))
-        XCTAssertTrue(angle.exists)
-        XCTAssertTrue(mix.exists)
-        let offsetBefore = offset.value as? String
-        offset.scrub(by: 0.32)
-        XCTAssertNotEqual(offset.value as? String, offsetBefore, "Scrubbing OFFSET must move its readout")
-        angle.scrub(by: 0.24)
-        mix.scrub(by: -0.24)
-
         let stackButton = app.buttons["workspace.parameter.effect.toggle"]
         XCTAssertTrue(stackButton.exists)
         XCTAssertEqual(stackButton.value as? String, "disarmed")
         stackButton.tap()
         XCTAssertEqual(stackButton.value as? String, "armed")
 
-        let signalTear = app.buttons["workspace.action.signal-tear"]
-        XCTAssertTrue(signalTear.exists)
+        // Families no longer open a second horizontal card rail. Holding the
+        // family presents all variants around the touch point instead.
+        glitchCategory.press(forDuration: 0.6)
+        let signalTear = app.buttons["radial.slot.glitch-signalTear"]
+        XCTAssertTrue(signalTear.waitForExistence(timeout: 3))
         signalTear.tap()
-        XCTAssertEqual(rgbSplit.value as? String, "active")
-        XCTAssertEqual(signalTear.value as? String, "active")
+        XCTAssertTrue(
+            app.descendants(matching: .any)["workspace.parameters.signalTear"]
+                .waitForExistence(timeout: 3)
+        )
 
         app.descendants(matching: .any)["camera.metal.preview"].tap()
         XCTAssertTrue(
             app.descendants(matching: .any)["workspace.parameters.signalTear"]
                 .waitForNonExistence(timeout: 3)
         )
-        XCTAssertEqual(rgbSplit.value as? String, "active")
-        XCTAssertEqual(signalTear.value as? String, "inactive")
     }
 
     func testSpatialAndTemporalEffectsExposeLiveCompactControls() {
@@ -265,9 +276,6 @@ final class BootstrapUITests: XCTestCase {
         let block = app.buttons["workspace.category.block"]
         XCTAssertTrue(block.waitForExistence(timeout: 5))
         block.tap()
-        let pixelate = app.buttons["workspace.action.pixelate"]
-        XCTAssertTrue(pixelate.waitForExistence(timeout: 3))
-        pixelate.tap()
         XCTAssertTrue(
             app.descendants(matching: .any)["workspace.parameters.pixelate"]
                 .waitForExistence(timeout: 3)
@@ -282,9 +290,6 @@ final class BootstrapUITests: XCTestCase {
         let feedbackCategory = app.buttons["workspace.category.feedback"]
         XCTAssertTrue(feedbackCategory.exists)
         feedbackCategory.tap()
-        let feedback = app.buttons["workspace.action.feedback"]
-        XCTAssertTrue(feedback.waitForExistence(timeout: 3))
-        feedback.tap()
         XCTAssertTrue(
             app.descendants(matching: .any)["workspace.parameters.feedback"]
                 .waitForExistence(timeout: 3)

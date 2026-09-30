@@ -9,8 +9,7 @@ import SwiftUI
 struct GVPresetsDrawer: View {
     @EnvironmentObject private var store: GVPresetStore
     @Binding var setup: CaptureSetupDraft
-    @Binding var rgbSplitParameters: RGBSplitEffectParameters
-    @Binding var effectStack: CameraEffectStackParameters
+    @ObservedObject var editor: EffectEditingSession
     let onClose: () -> Void
 
     @State private var newName = ""
@@ -18,9 +17,13 @@ struct GVPresetsDrawer: View {
     @State private var renameText = ""
     @State private var importPresented = false
     @EnvironmentObject private var toasts: GVToastBox
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    // Hold-to-preview stash.
-    @State private var previewStash: (CaptureSetupDraft, RGBSplitEffectParameters, CameraEffectStackParameters)?
+    @State private var previewSetup: CaptureSetupDraft?
+    @State private var previewID: UUID?
+    @State private var previewTask: Task<Void, Never>?
+    @SwiftUI.GestureState private var isPreviewHeld = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -32,7 +35,17 @@ struct GVPresetsDrawer: View {
         .gvCompactDeckPlate()
         .padding(.horizontal, 6)
         .background(alignment: .top) { Color.clear }
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+        .onDisappear { cancelPreview() }
+        .onChange(of: isPreviewHeld) { _, held in
+            if !held, previewTask == nil { cancelPreview() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { cancelPreview() }
+        }
+        .onChange(of: importPresented) { _, presented in
+            if presented { cancelPreview() }
+        }
         .fileImporter(
             isPresented: $importPresented,
             allowedContentTypes: [.json],
@@ -47,19 +60,15 @@ struct GVPresetsDrawer: View {
 
     private var header: some View {
         HStack(spacing: 5) {
-            GVTerminalText(
-                text: "RECIPES // \(store.presets.count)",
-                size: GVMetrics.textSmall,
-                weight: .black,
-                tracking: 1.2,
-                alignment: .leading,
-                intensity: 1.1
-            )
+            Text("Presets · \(store.presets.count)")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(GVTheme.bone)
             Spacer(minLength: 6)
             GVDeckChip(label: "", symbol: "square.and.arrow.down", id: "preset.import") {
                 importPresented = true
             }
             GVDeckChip(label: "", symbol: "xmark", id: "preset.close") {
+                cancelPreview()
                 onClose()
             }
         }
@@ -67,27 +76,25 @@ struct GVPresetsDrawer: View {
 
     private var saveRow: some View {
         HStack(spacing: 6) {
-            TextField("NAME THIS LOOK", text: $newName)
+            TextField("Name this look", text: $newName)
                 .textFieldStyle(.plain)
-                .textInputAutocapitalization(.characters)
+                .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.done)
-                .gvMono(GVMetrics.textSmall, .bold)
-                .tracking(0.8)
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(GVTheme.bone)
                 .padding(.horizontal, 9)
                 .frame(height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(white: 0.10))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                        )
+                .gvGlassField(radius: 6)
+            GVDeckChip(label: "Save", symbol: "tray.and.arrow.down", active: true, tint: .white, id: "preset.save") {
+                cancelPreview()
+                store.save(
+                    name: newName,
+                    from: setup,
+                    rgb: editor.rgbSplitParameters,
+                    stack: editor.effectStack
                 )
-            GVDeckChip(label: "SAVE", symbol: "tray.and.arrow.down", active: true, tint: .white, id: "preset.save") {
-                store.save(name: newName, from: setup, rgb: rgbSplitParameters, stack: effectStack)
-                toasts.show("RECIPE SAVED // \(newName.isEmpty ? "UNTITLED" : newName.uppercased())")
+                toasts.show("Preset saved · \(newName.isEmpty ? "Untitled" : newName)")
                 newName = ""
             }
         }
@@ -95,7 +102,7 @@ struct GVPresetsDrawer: View {
 
     private var list: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 5) {
+            LazyVStack(spacing: 5) {
                 ForEach(store.presets) { preset in
                     if renamingID == preset.id {
                         renameRow(preset)
@@ -125,89 +132,100 @@ struct GVPresetsDrawer: View {
         HStack(spacing: 7) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(preset.name)
-                    .gvMono(GVMetrics.textSmall, .black)
-                    .tracking(1.0)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.white.opacity(0.92))
                     .lineLimit(1)
-                Text("\(preset.summary)   \(preset.codecShort) \u{00B7} \(preset.frameRate)FPS \u{00B7} \(preset.resolutionRaw)")
-                    .gvMono(GVMetrics.textMicro, .bold)
-                    .tracking(0.5)
+                Text("\(preset.summary) · \(preset.codecShort) · \(preset.frameRate)fps · \(preset.resolutionRaw)")
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(GVTheme.ash)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.85)
             }
             Spacer(minLength: 4)
 
             if preset.isFactory {
-                Text("FACTORY")
-                    .gvMono(6.5, .bold)
-                    .tracking(0.8)
-                    .foregroundStyle(GVTheme.acid.opacity(0.8))
+                Text("Factory")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(GVTheme.ash)
             }
 
             // HOLD TO PREVIEW — reapplies on release. The whole point of a
             // recipe browser is trying looks without committing.
-            Image(systemName: "eye")
+            Image(systemName: previewID == preset.id ? "eye.fill" : "eye")
                 .font(.system(size: GVMetrics.textSmall, weight: .bold))
                 .foregroundStyle(GVTheme.bone.opacity(0.75))
-                .frame(width: 30, height: 30)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
                 .gesture(holdToPreview(preset))
                 .accessibilityLabel("Hold to preview \(preset.name)")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityValue(previewID == preset.id ? "Previewing" : "")
+                .accessibilityAction {
+                    if previewID == preset.id {
+                        cancelPreview()
+                    } else {
+                        startPreview(preset)
+                        previewTask = Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(3))
+                            guard !Task.isCancelled else { return }
+                            cancelPreview()
+                        }
+                    }
+                }
+                .accessibilityAction(named: "End preview") { cancelPreview() }
 
             GVDeckChip(label: "", symbol: "arrow.down.to.line", id: "load.\(preset.id)") {
-                store.apply(preset, to: &setup, rgb: &rgbSplitParameters, stack: &effectStack)
-                toasts.show("LOADED // \(preset.name)")
+                cancelPreview()
+                editor.apply(preset, using: store, setup: &setup)
+                toasts.show("Loaded \(preset.name)")
             }
             .accessibilityLabel("Load \(preset.name)")
 
             Menu {
-                Button("RENAME") { renamingID = preset.id; renameText = preset.name }
-                Button("DUPLICATE") { store.duplicate(preset.id) }
-                Button("EXPORT…") {
+                Button("Rename") { renamingID = preset.id; renameText = preset.name }
+                Button("Duplicate") { store.duplicate(preset.id) }
+                Button("Export…") {
                     if let url = store.exportURL(preset) {
                         shareURL = url
+                    } else {
+                        shareURL = nil
+                        toasts.show("EXPORT FAILED")
                     }
                 }
-                Button("DELETE", role: .destructive) {
+                Button("Delete", role: .destructive) {
+                    cancelPreview()
                     store.delete(preset.id)
-                    toasts.show("DELETED // \(preset.name)")
+                    toasts.show("Deleted \(preset.name)")
                 }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: GVMetrics.textSmall, weight: .black))
                     .foregroundStyle(GVTheme.bone.opacity(0.7))
-                    .frame(width: 26, height: 30)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
+            .accessibilityLabel("Actions for \(preset.name)")
         }
         .padding(.horizontal, 9)
         .frame(height: 44)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(white: 0.10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.white.opacity(0.07), lineWidth: 1)
-                )
-        )
+        .gvGlassChip(radius: 8, active: false, tint: .white)
     }
 
     private func renameRow(_ preset: GVPreset) -> some View {
         HStack(spacing: 6) {
-            TextField("NAME", text: $renameText)
+            TextField("Name", text: $renameText)
                 .textFieldStyle(.plain)
-                .textInputAutocapitalization(.characters)
-                .gvMono(GVMetrics.textSmall, .bold)
+                .textInputAutocapitalization(.never)
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 8)
                 .frame(height: 30)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.08)))
-            GVDeckChip(label: "OK", active: true, id: "rename.ok.\(preset.id)") {
+                .gvGlassField(radius: 6)
+            GVDeckChip(label: "Done", active: true, id: "rename.ok.\(preset.id)") {
                 store.rename(preset.id, to: renameText)
                 renamingID = nil
             }
-            GVDeckChip(label: "ESC", id: "rename.esc.\(preset.id)") {
+            GVDeckChip(label: "Cancel", id: "rename.esc.\(preset.id)") {
                 renamingID = nil
             }
         }
@@ -215,16 +233,14 @@ struct GVPresetsDrawer: View {
 
     private var footerRow: some View {
         HStack(spacing: 6) {
-            Text("HOLD EYE TO PREVIEW \u{00B7} TAP ARROW TO LOAD")
-                .gvMono(GVMetrics.textMicro, .bold)
-                .tracking(0.8)
-                .foregroundStyle(GVTheme.ash.opacity(0.7))
+            Text("Hold the eye icon to preview · Tap the arrow to load")
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(GVTheme.ash.opacity(0.75))
             Spacer(minLength: 0)
             if let shareURL {
                 ShareLink(item: shareURL) {
-                    Text("SHARE READY")
-                        .gvMono(GVMetrics.textMicro, .bold)
-                        .tracking(0.8)
+                    Text("Share ready")
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(GVTheme.acid.opacity(0.9))
                 }
             }
@@ -235,18 +251,33 @@ struct GVPresetsDrawer: View {
 
     private func holdToPreview(_ preset: GVPreset) -> some Gesture {
         DragGesture(minimumDistance: 0)
+            .updating($isPreviewHeld) { _, held, _ in held = true }
             .onChanged { _ in
-                guard previewStash == nil else { return }
-                previewStash = (setup, rgbSplitParameters, effectStack)
-                store.apply(preset, to: &setup, rgb: &rgbSplitParameters, stack: &effectStack)
+                guard previewID != preset.id else { return }
+                startPreview(preset)
             }
-            .onEnded { _ in
-                guard let stash = previewStash else { return }
-                setup = stash.0
-                rgbSplitParameters = stash.1
-                effectStack = stash.2
-                previewStash = nil
-            }
+            .onEnded { _ in cancelPreview() }
+    }
+
+    private func startPreview(_ preset: GVPreset) {
+        previewTask?.cancel()
+        if previewSetup == nil { previewSetup = setup }
+        var previewCapture = setup
+        var rgb = editor.rgbSplitParameters
+        var stack = editor.effectStack
+        store.apply(preset, to: &previewCapture, rgb: &rgb, stack: &stack)
+        editor.beginPreview(CompositionSnapshot(stack: stack, rgb: rgb))
+        setup = previewCapture
+        previewID = preset.id
+    }
+
+    private func cancelPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        if let original = previewSetup { setup = original }
+        editor.endPreview()
+        previewSetup = nil
+        previewID = nil
     }
 }
 

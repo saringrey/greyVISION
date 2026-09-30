@@ -5,6 +5,7 @@ struct LogoTreatment: View {
     @State private var rotationInput = CGSize.zero
     @State private var isTouching = false
 
+    var imageName = "OfficialLogo"
     var decay: Float = 0.08
     var interactive = false
     var accessibilityIdentifier = "logo.mark"
@@ -21,15 +22,15 @@ struct LogoTreatment: View {
 
             ZStack {
                 logo(time: time)
-                    .blur(radius: 18)
-                    .opacity(0.22)
+                    .blur(radius: 12)
+                    .opacity(0.10)
                     .blendMode(.screen)
 
-                ForEach((1 ... 4).reversed(), id: \.self) { layer in
+                ForEach((1 ... 2).reversed(), id: \.self) { layer in
                     logo(time: time)
                         .saturation(0.24)
                         .brightness(-0.24)
-                        .opacity(0.34)
+                        .opacity(0.18)
                         .offset(
                             x: edgeX * CGFloat(layer) * 1.15,
                             y: edgeY * CGFloat(layer) * 1.15
@@ -38,18 +39,6 @@ struct LogoTreatment: View {
 
                 logo(time: time)
 
-                LogoCRTOverlay(time: time, intensity: reduceMotion ? 0.30 : 0.62)
-                    // Masked to the mark's own alpha. Unmasked, this Canvas
-                    // fills its whole bounding rect with scanlines, which is
-                    // what made the artwork read as a hard-edged square.
-                    .mask(
-                        Image("OfficialLogo")
-                            .resizable()
-                            .scaledToFit()
-                    )
-                    .blendMode(.overlay)
-                    .opacity(0.88)
-
                 RadialGradient(
                     colors: [.clear, .black.opacity(0.06), .black.opacity(0.58)],
                     center: .center,
@@ -57,52 +46,27 @@ struct LogoTreatment: View {
                     endRadius: 210
                 )
                 .mask(
-                    Image("OfficialLogo")
+                    Image(imageName)
                         .resizable()
                         .scaledToFit()
                 )
                 .blendMode(.multiply)
                 .allowsHitTesting(false)
-
-                DecayParticles(time: time, intensity: reduceMotion ? 0 : decay)
             }
             .rotation3DEffect(.degrees(Double(pitch)), axis: (x: 1, y: 0, z: 0), perspective: 0.68)
             .rotation3DEffect(.degrees(Double(yaw)), axis: (x: 0, y: 1, z: 0), perspective: 0.68)
             .scaleEffect((isTouching ? 1.025 : 1) * breathingScale)
-            // Feathered falloff so the blurred/offset ghost layers dissolve
-            // into the void instead of terminating on the layout bounds.
-            //
-            // Elliptical, and sized in fractions of the frame rather than in
-            // points. The radial version measured its radius against the
-            // *longer* side, so on a frame that was not much wider than it was
-            // tall the gradient was still around 90% opaque when it reached the
-            // top and bottom edges — the artwork was cut from near-full opacity
-            // straight to nothing, which is the horizontal seam that showed
-            // above the wordmark.
-            //
-            // An elliptical gradient at `endRadiusFraction` 0.5 reaches its
-            // last stop exactly at the edge midpoints on both axes, whatever
-            // the aspect ratio, so the falloff always completes inside the
-            // bounds and there is nothing left to cut.
-            .mask(
-                EllipticalGradient(
-                    stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.74),
-                        .init(color: .black.opacity(0.5), location: 0.90),
-                        .init(color: .clear, location: 1.0)
-                    ],
-                    center: .center,
-                    startRadiusFraction: 0,
-                    endRadiusFraction: 0.5
-                )
-            )
+            // Keep the composed mark genuinely unclipped. The logo is scaled by
+            // the splash layer above this view, so a frame-sized mask here would
+            // become a visible box as the gesture grows the artwork past its
+            // original bounds. Contrast comes from the silhouette halo behind
+            // the mark, not from fading the mark itself at a geometric edge.
         }
         .contentShape(Rectangle())
         .gesture(dragGesture)
         .allowsHitTesting(interactive)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("grey VISION rabbit mark")
+        .accessibilityLabel(imageName == "CreatorMark" ? "Grey creator artwork" : "grey VISION rabbit mark")
         .accessibilityHint(
             interactive ? "Press and drag to rotate the mark in depth. Tap to open creator links." : "Brand mark"
         )
@@ -115,24 +79,24 @@ struct LogoTreatment: View {
     }
 
     private func logo(time: Float) -> some View {
-        Image("OfficialLogo")
+        Image(imageName)
             .resizable()
             .interpolation(.high)
             .scaledToFit()
             .colorEffect(
                 ShaderLibrary.logoSignal(
                     .float(time),
-                    .float(reduceMotion ? 0.12 : 0.55)
+                    .float(0)
                 )
             )
             .distortionEffect(
                 ShaderLibrary.logoDisintegration(
                     .float(time),
-                    .float(reduceMotion ? 0 : decay)
+                    .float(0)
                 ),
                 maxSampleOffset: CGSize(width: 5, height: 2)
             )
-            .shadow(color: GVTheme.violetDeep.opacity(0.72), radius: 12)
+            .shadow(color: .black.opacity(0.24), radius: 6)
     }
 
     private var dragGesture: some Gesture {

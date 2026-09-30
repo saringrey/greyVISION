@@ -47,6 +47,21 @@ targets:
         excludes:
           # Spec/planning notes, not source.
           - ".kiro/**"
+          # Agent 3 prototypes overlap production composition and gesture
+          # models. Keep the delivery on disk without compiling duplicate
+          # same-module declarations into the shipping application.
+          - "Features/Interaction/GestureCoordinator.swift"
+          - "Features/Interaction/GestureRecordingAutomation.swift"
+          - "Features/Interaction/InteractionModule.swift"
+          - "Features/Interaction/MacroEngine.swift"
+          - "Features/Interaction/ModulationEngine.swift"
+          - "Features/Interaction/UIStateMachine.swift"
+          - "Features/Interaction/WildCardMutate.swift"
+          - "Features/Performance/**"
+          - "Features/Workspace/PresetSceneMorph.swift"
+          - "Features/Workspace/EffectBrowser.swift"
+          - "Engine/Capture/PerformanceMetadata.swift"
+          - "Engine/Capture/PerformanceRecorder.swift"
     info:
       path: GreyVision/Resources/Info.plist
       properties:
@@ -57,6 +72,15 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         UIRequiresFullScreen: true
         UIStatusBarHidden: true
+        # XcodeGen rewrites Resources/Info.plist on every generate, so bundled
+        # fonts have to be declared here — editing the plist by hand loses them
+        # at the next run.
+        # Path is the name alone, not Fonts/…: the resource is copied flat to
+        # the bundle root, and a UIAppFonts entry that does not resolve makes
+        # Font.custom fall back to the system face without erroring.
+        UIAppFonts:
+          - MadhouseSans.otf
+          - Code.ttf
         UILaunchScreen:
           UIColorName: LaunchBackground
         UISupportedInterfaceOrientations:
@@ -71,8 +95,8 @@ targets:
         NSBonjourServices:
           - _greyvision._tcp
         NSMicrophoneUsageDescription: grey//VISION uses microphone audio for recording and audio-reactive modulation when you enable it.
-        NSPhotoLibraryAddUsageDescription: grey//VISION saves captures to Photos only when you ask it to.
-        NSPhotoLibraryUsageDescription: grey//VISION saves captures to Photos only when you ask it to.
+        NSPhotoLibraryAddUsageDescription: grey//VISION saves your captures straight to your photo library.
+        NSPhotoLibraryUsageDescription: grey//VISION saves your captures straight to your photo library.
         ITSAppUsesNonExemptEncryption: false
     settings:
       base:

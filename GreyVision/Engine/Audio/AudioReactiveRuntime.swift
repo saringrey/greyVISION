@@ -10,6 +10,19 @@ enum AudioReactiveState: String, Sendable {
     case running
     case denied
     case failed
+
+    /// Spoken and toasted form. The intent bus reports this back to Shortcuts,
+    /// where `denied` has to read as a state an operator can act on rather
+    /// than as a raw case name.
+    var label: String {
+        switch self {
+        case .idle: "IDLE"
+        case .requestingPermission: "ASKING FOR THE MICROPHONE"
+        case .running: "RUNNING"
+        case .denied: "MICROPHONE DENIED"
+        case .failed: "AUDIO ENGINE UNAVAILABLE"
+        }
+    }
 }
 
 struct AudioReactiveSnapshot: Equatable, Sendable {

@@ -10,6 +10,130 @@ import Metal
 import XCTest
 
 final class CameraEffectTests: XCTestCase {
+    // NOTE: testBundledSplashGIFPreservesTimingAndLoops was removed with
+    // `GVSplashAnimation`. The GIF-backed splash was replaced by the dot
+    // lettering backdrop, the gif asset was never committed to this tree, and
+    // nothing in the app referenced the decoder — so the test asserted a
+    // resource that cannot exist. Restore it alongside the asset, not before.
+
+    func testRadialLayoutContract() {
+        let cases: [(CGSize, CGPoint, CGFloat)] = [
+            (CGSize(width: 390, height: 844), CGPoint(x: 78, y: 772), 84),
+            (CGSize(width: 390, height: 844), CGPoint(x: 356, y: 772), 64),
+            (CGSize(width: 844, height: 390), CGPoint(x: 760, y: 342), 64)
+        ]
+
+        for shelf in EffectCatalog.shelves {
+            let effects = shelf.effects.flatMap(EffectCatalog.variants)
+            let groups = EffectCatalog.radialSubcategories(title: shelf.label, effects: effects)
+            let displayed = groups.isEmpty ? effects : groups.flatMap(\.effects)
+            XCTAssertEqual(Set(displayed), Set(effects), shelf.label)
+            XCTAssertEqual(displayed.count, Set(displayed).count, shelf.label)
+
+            let counts = groups.isEmpty
+                ? [effects.count]
+                : [groups.count] + groups.map(\.effects.count)
+            for (viewport, anchor, itemSize) in cases {
+                for count in counts {
+                    let layout = GVRadialMenuLayout(
+                        invocationPoint: anchor,
+                        viewportSize: viewport,
+                        itemSize: itemSize,
+                        slotCount: count
+                    )
+                    XCTAssertEqual(layout.slotCenters.count, count, shelf.label)
+                    XCTAssertTrue(layout.slotFrames.allSatisfy { CGRect(origin: .zero, size: viewport).contains($0) })
+                    XCTAssertTrue(layout.slotFrames.allSatisfy { !$0.intersects(layout.thumbOcclusion) })
+                    for (index, frame) in layout.slotFrames.enumerated() {
+                        for other in layout.slotFrames.dropFirst(index + 1) {
+                            XCTAssertFalse(frame.insetBy(dx: -4, dy: -4).intersects(other))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func testPreviewRadialAvoidsNotchAndThumb() {
+        let layout = GVRadialMenuLayout(
+            invocationPoint: CGPoint(x: 281.4, y: 393.3),
+            viewportSize: CGSize(width: 402, height: 874),
+            itemSize: 84,
+            slotCount: 9,
+            safeAreaInsets: .init(top: 62, leading: 0, bottom: 34, trailing: 0)
+        )
+        XCTAssertEqual(layout.slotCenters.count, 9)
+        for frame in layout.slotFrames {
+            XCTAssertGreaterThanOrEqual(frame.minY, 82)
+            XCTAssertLessThanOrEqual(frame.maxY, 820)
+            XCTAssertFalse(frame.intersects(layout.thumbOcclusion))
+        }
+    }
+
+    func testPreviewRootFitsAtEveryCameraCorner() {
+        let families = GVRadialFamily.previewRoot()
+        XCTAssertEqual(families.map(\.title), ["COLOR", "TIME", "MOTION", "SIGNAL", "FORM", "SHADERS", "AUDIO"])
+        XCTAssertEqual(Set(families.flatMap(\.effects)),
+                       Set(EffectCatalog.shelves.flatMap(\.effects).flatMap(EffectCatalog.variants)))
+        let anchors = [
+            CGPoint(x: 30, y: 150), CGPoint(x: 372, y: 150),
+            CGPoint(x: 30, y: 650), CGPoint(x: 372, y: 650), CGPoint(x: 201, y: 400)
+        ]
+        for anchor in anchors {
+            let layout = GVRadialMenuLayout(invocationPoint: anchor,
+                                            viewportSize: CGSize(width: 402, height: 874), itemSize: 62,
+                                            slotCount: families.count,
+                                            safeAreaInsets: .init(top: 62, leading: 0, bottom: 34, trailing: 0),
+                                            centerOffset: GVRadialMenuLayout.previewCenterOffset)
+            XCTAssertEqual(layout.slotCenters.count, families.count, "\(anchor)")
+            XCTAssertTrue(layout.slotFrames.allSatisfy { $0.minY >= 82 && $0.maxY <= 820 })
+            XCTAssertTrue(layout.slotFrames.allSatisfy { !$0.intersects(layout.thumbOcclusion) })
+        }
+    }
+
+    func testSplashDotsNeverSwellIntoEachOther() {
+        XCTAssertFalse(GVSplashLettering.points.isEmpty)
+        for row in 0 ..< 20 {
+            for tick in 0 ..< 600 {
+                let radius = GVSplashLettering.dotRadius(at: Double(tick) / 60, row: row)
+                XCTAssertTrue((0.254 ... 0.306).contains(radius))
+                XCTAssertLessThan(radius * 2, 1)
+            }
+        }
+    }
+
+    /// The rows used to alternate by parity, which made every second row a
+    /// mirror of the first and locked any two rows of the same parity together
+    /// forever. Each row now draws its own heading, pace and offset.
+    func testSplashRowsTakeIndependentHeadingsAndPaces() {
+        let motions = (0 ..< 40).map(GVSplashLettering.motion(for:))
+        let repeated = (0 ..< 40).map(GVSplashLettering.motion(for:))
+
+        // Deterministic: the draw closure asks for these on every frame, so a
+        // row that re-rolled its heading per tick would strobe.
+        for (first, second) in zip(motions, repeated) {
+            XCTAssertEqual(first.direction, second.direction)
+            XCTAssertEqual(first.speed, second.speed)
+            XCTAssertEqual(first.phase, second.phase)
+        }
+
+        XCTAssertEqual(Set(motions.map(\.direction)), [CGFloat(1), CGFloat(-1)],
+                       "the field must contain both headings")
+
+        // Parity decides nothing now: at least one row shares a heading with the
+        // row two below it, which the even/odd split made impossible.
+        XCTAssertTrue(
+            (0 ..< 38).contains { motions[$0].direction == motions[$0 + 2].direction }
+        )
+
+        XCTAssertGreaterThan(Set(motions.map(\.speed)).count, 20, "rows must not share one pace")
+
+        for motion in motions {
+            XCTAssertTrue((9 ... 30).contains(motion.speed))
+            XCTAssertTrue(motion.phase >= 0 && motion.phase < 1)
+        }
+    }
+
     func testEffectRegistryHasUniqueImplementedModesAndLiveParameters() {
         let styleEffects = WorkspaceAdjustableEffect.allCases.filter { $0.styleMode != nil }
         let temporalEffects = WorkspaceAdjustableEffect.allCases.filter { $0.temporalMode != nil }
@@ -42,6 +166,26 @@ final class CameraEffectTests: XCTestCase {
             XCTAssertTrue((0 ... 1).contains(parameters.blend), effect.label)
             XCTAssertFalse(parameters.isEnabled)
         }
+    }
+
+    func testShaderShowcaseIsACompleteStandaloneFamily() {
+        let shaders = WorkspaceAdjustableEffect.shaderCategoryEffects
+        XCTAssertEqual(Set(shaders.compactMap(\.styleMode)), Set(UInt32(104) ... UInt32(139)))
+        XCTAssertEqual(shaders.count, 36)
+        XCTAssertEqual(Set(shaders).count, shaders.count)
+        XCTAssertEqual(shaders.first, .cyberGrid, "The first shader mode must be reachable from SHADERS")
+        XCTAssertTrue(
+            Set(shaders).isDisjoint(with: WorkspaceAdjustableEffect.timeCategoryEffects),
+            "SHADERS must not be buried in or duplicated by TIME"
+        )
+        XCTAssertTrue(WorkspaceAdjustableEffect.curatedCategoryEffectGroups.contains(shaders))
+    }
+
+    func testPredictionDriftOwnsTheNextTemporalModeAndDatamoshRailEntry() {
+        XCTAssertEqual(WorkspaceAdjustableEffect.predictionDrift.temporalMode, 43)
+        XCTAssertTrue(WorkspaceAdjustableEffect.datamoshCategoryEffects.contains(.predictionDrift))
+        XCTAssertTrue(WorkspaceAdjustableEffect.temporalRenderOrder.contains(.predictionDrift))
+        XCTAssertEqual(WorkspaceAdjustableEffect.predictionDrift.parameterLabels, ["DRIFT", "DECAY", "TEAR"])
     }
 
     /// Guards the exposure lock's contract.
@@ -303,7 +447,9 @@ final class CameraEffectStackSlotTests: XCTestCase {
         }
 
         let placement = WorkspaceAdjustableEffect.defaultPlacementOrder
-        XCTAssertEqual(placement.count, metal.count + temporal.count)
+        XCTAssertEqual(placement.count, metal.count + temporal.count + 2)
+        XCTAssertTrue(placement.contains(.fluid))
+        XCTAssertTrue(placement.contains(.reactionGarden))
         XCTAssertEqual(Set(placement).count, placement.count)
     }
 

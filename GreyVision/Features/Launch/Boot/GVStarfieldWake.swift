@@ -1,15 +1,22 @@
 import CoreMotion
 import SwiftUI
 
-/// Progressive sensor-discovery star field.
+/// The splash star field.
 ///
-/// Rather than fading a field in globally, points are woken in deterministic
-/// clusters: two or three isolated returns first, then a nearby cluster, then
-/// increasingly distant contacts. Individual points blink once, drift, streak
-/// vertically, drop out and reappear elsewhere.
+/// Previously this modelled *sensor contacts* rather than stars: 46 points
+/// drawn as rectangles, each blinking out on a duty cycle and teleporting to a
+/// new column when it re-acquired. That reads as a radar sweep, which is what
+/// it was written to be — it never read as a sky.
 ///
-/// Everything is drawn in a single `Canvas` pass and the whole view is removed
-/// once the boot sequence completes, so no GPU work survives the splash.
+/// It is a star field now. Points hold their position for the whole sequence,
+/// are drawn as round dots with a halo on the brightest few, and twinkle by
+/// modulating brightness rather than by disappearing. Density is up from 46 to
+/// 240, which is what actually makes it read as depth rather than as scattered
+/// marks.
+///
+/// Everything is still one `Canvas` pass, still deterministic, and the whole
+/// view is still removed once the boot sequence completes, so no GPU work
+/// survives the splash.
 struct GVStarfieldWake: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -24,54 +31,59 @@ struct GVStarfieldWake: View {
         Canvas(rendersAsynchronously: false) { context, size in
             guard progress > 0, size.width > 0, size.height > 0 else { return }
 
-            for point in GVStarfieldWake.points {
-                let wake = point.wakeThreshold
-                guard progress >= wake else { continue }
+            for star in GVStarfieldWake.points {
+                // Stars arrive in waves so the sky fills in rather than
+                // switching on, but once a star is out it stays out.
+                guard progress >= star.wakeThreshold else { continue }
+                let local = min((progress - star.wakeThreshold) / max(1 - star.wakeThreshold, 0.0001), 1)
 
-                let local = min((progress - wake) / max(1 - wake, 0.0001), 1)
-                let life = elapsed * point.rate + point.phase
+                // Twinkle modulates brightness between roughly half and full.
+                // The old duty cycle dropped points to nothing, which is what
+                // made the field flicker instead of shimmer.
+                let twinkle = reduceMotion
+                    ? 1
+                    : 0.72 + 0.28 * sin(elapsed * star.twinkleRate + star.phase)
 
-                // Points drop out and re-acquire somewhere else.
-                let cycle = life.truncatingRemainder(dividingBy: 1)
-                let acquired = cycle < point.duty
-                guard acquired || reduceMotion else { continue }
+                let alpha = min(star.brightness * local * twinkle, 1)
+                guard alpha > 0.012 else { continue }
 
-                let reacquisitions = floor(life)
-                let jump = reduceMotion
-                    ? 0
-                    : GVStarfieldWake.hash(point.seed &+ UInt64(max(reacquisitions, 0)))
-                let x = ((point.x + jump * 0.31).truncatingRemainder(dividingBy: 1)) * size.width
-                let drift = reduceMotion ? 0 : sin(life * 1.7 + point.phase) * point.drift
-                let y = (point.y * size.height + drift * size.height)
-                    .truncatingRemainder(dividingBy: size.height)
-
-                let parallax = CGSize(
-                    width: tilt.width * point.depth * 9,
-                    height: tilt.height * point.depth * 7
-                )
-
-                // A single blink as the point is first acquired.
-                let blink = local < 0.22 ? (local < 0.11 ? 0.25 : 1.35) : 1
-                let fade = acquired ? min(cycle / max(point.duty, 0.0001) * 4, 1) : 1
-                let alpha = min(point.brightness * local * blink * fade, 1)
-                guard alpha > 0.01 else { continue }
-
-                let dimension = point.size
-                let streaking = !reduceMotion && point.streaks && cycle > point.duty * 0.62
-                let height = streaking ? dimension * 9 : dimension
+                // Parallax halved again — near star ~1.8pt at full tilt.
+                let x = star.x * size.width + tilt.width * star.depth * 1.8
+                let y = star.y * size.height + tilt.height * star.depth * 1.4
+                let diameter = star.size
 
                 let rect = CGRect(
-                    x: x + parallax.width,
-                    y: y + parallax.height,
-                    width: dimension,
-                    height: height
+                    x: x - diameter / 2,
+                    y: y - diameter / 2,
+                    width: diameter,
+                    height: diameter
                 )
-                context.fill(
-                    Path(rect),
-                    with: .color(point.isViolet
-                        ? GVTheme.violet.opacity(alpha * 0.82)
-                        : Color.white.opacity(alpha))
-                )
+
+                // Halo on the nearest, brightest few. Drawn under the core so
+                // the dot keeps a hard centre inside a soft bloom.
+                if star.hasHalo {
+                    let haloDiameter = diameter * 4.5
+                    let halo = CGRect(
+                        x: x - haloDiameter / 2,
+                        y: y - haloDiameter / 2,
+                        width: haloDiameter,
+                        height: haloDiameter
+                    )
+                    context.fill(
+                        Path(ellipseIn: halo),
+                        with: .radialGradient(
+                            Gradient(colors: [
+                                star.tint.opacity(alpha * 0.30),
+                                star.tint.opacity(0)
+                            ]),
+                            center: CGPoint(x: x, y: y),
+                            startRadius: 0,
+                            endRadius: haloDiameter / 2
+                        )
+                    )
+                }
+
+                context.fill(Path(ellipseIn: rect), with: .color(star.tint.opacity(alpha)))
             }
         }
         .blendMode(.screen)
@@ -79,53 +91,46 @@ struct GVStarfieldWake: View {
         .accessibilityHidden(true)
     }
 
-    private static func hash(_ value: UInt64) -> Double {
-        let mixed = (value &* 6_364_136_223_846_793_005) &+ 1_442_695_040_888_963_407
-        return Double((mixed >> 33) % 100_000) / 100_000
-    }
-
-    fileprivate struct Point: Sendable {
+    fileprivate struct Star: Sendable {
         let x: Double
         let y: Double
         let size: CGFloat
         let brightness: Double
         let wakeThreshold: Double
-        let rate: Double
+        let twinkleRate: Double
         let phase: Double
-        let duty: Double
-        let drift: Double
         let depth: Double
-        let streaks: Bool
-        let isViolet: Bool
-        let seed: UInt64
+        let hasHalo: Bool
+        let tint: Color
     }
 
-    /// Deterministic field. Density is intentionally restrained — 46 points.
-    fileprivate static let points: [Point] = {
+    /// Deterministic sky.
+    fileprivate static let points: [Star] = {
         var generator = GVWakeGenerator(seed: 0x5645_4E47_4956_0001)
-        return (0 ..< 46).map { index in
-            // The first three contacts wake almost immediately and in isolation,
-            // the next cluster shortly after, then the distant field.
-            let threshold = switch index {
-            case 0 ..< 3: 0.02 + Double(index) * 0.03
-            case 3 ..< 11: 0.20 + generator.next() * 0.14
-            default: 0.38 + generator.next() * 0.60
-            }
+        return (0 ..< 240).map { _ in
+            // Depth drives size, brightness and parallax together, so near
+            // stars are big, bright and move most — the one correlation that
+            // makes a flat point cloud read as a volume.
             let depth = generator.next()
-            return Point(
+            let near = depth > 0.93
+
+            // A handful of violet stars, matching the splash palette. Kept
+            // rare: a two-tone sky stops looking like a sky.
+            let isViolet = generator.next() > 0.93
+
+            return Star(
                 x: generator.next(),
                 y: generator.next(),
-                size: CGFloat(0.8 + depth * 1.5),
-                brightness: 0.22 + depth * 0.62,
-                wakeThreshold: min(threshold, 0.99),
-                rate: 0.06 + generator.next() * 0.16,
+                size: CGFloat(0.7 + depth * depth * 2.6),
+                brightness: 0.16 + depth * 0.74,
+                // Front-loaded so a scatter of stars is already out early and
+                // the rest fill in behind them.
+                wakeThreshold: min(pow(generator.next(), 1.6) * 0.92, 0.95),
+                twinkleRate: 0.5 + generator.next() * 2.1,
                 phase: generator.next() * 6.28,
-                duty: 0.62 + generator.next() * 0.3,
-                drift: (generator.next() - 0.5) * 0.03,
                 depth: depth,
-                streaks: generator.next() > 0.86,
-                isViolet: generator.next() > 0.78,
-                seed: UInt64(index &* 7919 &+ 13)
+                hasHalo: near,
+                tint: isViolet ? GVTheme.violet : .white
             )
         }
     }()
@@ -226,26 +231,44 @@ struct GVAtmosphericBloom: View {
 @MainActor
 final class GVBootMotion: ObservableObject {
     @Published private(set) var tilt = CGSize.zero
+    /// Smoothed tilt — raw deviceMotion jitters and would make the shader
+    /// shiver. A simple lerp keeps the field fluid without adding a filter
+    /// that lags behind a deliberate tip.
+    @Published private(set) var smoothedTilt = CGSize.zero
 
     private let manager = CMMotionManager()
+    private var displayLink: CADisplayLink?
 
     func start() {
         guard manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
-        manager.deviceMotionUpdateInterval = 1 / 20
+        // 10 Hz + even heavier damping — halved reactivity again.
+        manager.deviceMotionUpdateInterval = 1 / 10
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
             let roll = min(max(motion.attitude.roll, -0.7), 0.7) / 0.7
             let pitch = min(max(motion.attitude.pitch + 0.6, -0.7), 0.7) / 0.7
-            tilt = CGSize(width: roll, height: pitch)
+            let target = CGSize(width: roll, height: pitch)
+            tilt = target
+            smoothedTilt = CGSize(
+                width: smoothedTilt.width * 0.97 + target.width * 0.03,
+                height: smoothedTilt.height * 0.97 + target.height * 0.03
+            )
         }
     }
 
     /// Motion updates are stopped explicitly by `BootView` when the sequence
-    /// finishes or the view disappears; there is no nonisolated teardown path.
+    /// departs or the view disappears; there is no nonisolated teardown path.
+    /// Stopping on `isReady` was too early — the splash is still visible and
+    /// the shader would freeze while the operator is still looking at it.
     func stop() {
         guard manager.isDeviceMotionActive else { return }
         manager.stopDeviceMotionUpdates()
-        tilt = .zero
+        displayLink?.invalidate()
+        displayLink = nil
+        withAnimation(.easeOut(duration: 0.6)) {
+            tilt = .zero
+            smoothedTilt = .zero
+        }
     }
 }
 

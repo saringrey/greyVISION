@@ -42,13 +42,14 @@ struct CameraFluidParameters {
 /// quarter-res grid keeps the whole schedule inside a couple of milliseconds
 /// while the composite samples it bilinearly at full res.
 final class CameraFluidSolver {
-    /// Longest edge of the simulation grid. 256 is the smallest size at which
-    /// vortices still read as vortices rather than as blobs.
-    private static let gridLimit = 256
-    /// Jacobi iterations per frame. Below ~20 the field stays visibly
-    /// divergent and the fluid looks like smearing; above ~40 the cost stops
-    /// buying visible quality.
-    private static let pressureIterations = 24
+    /// Longest edge of the simulation grid, and the Jacobi iteration count.
+    ///
+    /// These used to be constants. They are now supplied by the render-quality
+    /// governor, because a grid the solver was tuned for is part of what makes
+    /// the fluid look right — shrinking the texture while leaving the solve
+    /// depth alone buys a little and looks like a worse bug.
+    private var gridLimit: Int = 256
+    private var pressureIterationCount: Int = 24
 
     private let device: MTLDevice
     private let advect: MTLComputePipelineState
@@ -128,9 +129,11 @@ final class CameraFluidSolver {
         touch: SIMD4<Float>,
         parameters: CameraFluidParameters,
         blend: Float,
-        deltaTime: Float
+        deltaTime: Float,
+        quality: GVRenderQuality
     ) -> Bool {
-        guard ensureTextures(for: source) else { return false }
+        guard applyQuality(edge: quality.simulationEdge, iterations: quality.pressureIterations),
+              ensureTextures(for: source) else { return false }
         guard let velocityA, let velocityB, let dyeA, let dyeB,
               let divergenceTexture, let pressureA, let pressureB
         else { return false }
@@ -168,7 +171,7 @@ final class CameraFluidSolver {
         clear(commandBuffer, texture: pressureA)
         var readPressure = pressureA
         var writePressure = pressureB
-        for _ in 0 ..< Self.pressureIterations {
+        for _ in 0 ..< pressureIterationCount {
             encodePass(
                 commandBuffer, pressure, label: "Fluid Pressure",
                 textures: [readPressure, divergenceTexture, writePressure], uniforms: &uniforms
@@ -275,6 +278,7 @@ final class CameraFluidSolver {
             audio: .zero,
             touch: .zero,
             touchImpact: .zero,
+            touchDrag: .zero,
             audioDynamics: .zero,
             blob0: .zero,
             blob1: .zero,
@@ -368,9 +372,21 @@ final class CameraFluidSolver {
         )
     }
 
+    /// Adopts a new quality rung, resetting the fields when the grid actually
+    /// changes size so the new one starts from clean rather than from
+    /// undefined contents at a resolution it was never written for.
+    private func applyQuality(edge: Int, iterations: Int) -> Bool {
+        guard edge > 0, iterations > 0 else { return false }
+        let edgeChanged = edge != gridLimit
+        gridLimit = edge
+        pressureIterationCount = iterations
+        if edgeChanged { reset() }
+        return true
+    }
+
     private func ensureTextures(for source: MTLTexture) -> Bool {
         let aspect = Double(source.height) / Double(max(source.width, 1))
-        let width = min(Self.gridLimit, source.width)
+        let width = min(gridLimit, source.width)
         let height = max(Int(Double(width) * aspect), 1)
         if gridSize.width == width, gridSize.height == height, velocityA != nil {
             return true

@@ -28,7 +28,7 @@ enum GVEffectGlyphKind {
             .trails
         case .echo, .frameHoldSmear, .rollingTime, .slitScan:
             .echo
-        case .datamosh, .liquidMosh, .heavyMosh, .dataBend, .pixelShift, .signalTear:
+        case .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .dataBend, .pixelShift, .signalTear:
             .datamosh
         case .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort, .sortBrush:
             .pixelSort

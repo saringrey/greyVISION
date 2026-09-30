@@ -1,125 +1,181 @@
 import SwiftUI
 
-/// Seamless splash backdrop.
+/// Screen-resolution dot lettering preserves the GIF's scrolling rows without
+/// stretching its low-resolution, heavily swollen frames across the display.
 ///
-/// The previous composition layered a radial gradient that terminated at
-/// `0.76 * max(width, height)` over a grid field masked by a fixed 420 pt
-/// circle. Both terminations landed inside the visible frame on most devices,
-/// producing a hard ring that read as two images butted together.
-///
-/// This version derives every radius from the actual geometry, extends past the
-/// corner diagonal, and uses multi-stop ramps so there is no discontinuity
-/// anywhere in the frame.
+/// Every row scrolls on its own heading, at its own pace, from its own offset.
+/// The rows used to alternate by parity — even rows one way, odd the other —
+/// which meant the field was really two bands sliding past each other, and any
+/// two rows with the same parity were locked together forever. A row can now
+/// follow the row above it, oppose it, or crawl against a faster neighbour,
+/// which is what a terminal failing to hold its own text actually looks like.
 struct GVSplashBackdrop: View {
-    /// 0 = void, 1 = fully surfaced. Drives the whole backdrop's presence.
-    let presence: Double
-    /// Extra bloom, typically driven by a live signal.
-    var energy: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var start = Date()
 
     var body: some View {
-        GeometryReader { geometry in
-            // Corner-to-corner distance from centre: past this, nothing is
-            // visible, so every ramp must complete beyond it.
-            let diagonal = hypot(geometry.size.width, geometry.size.height) * 0.5
-            let reach = max(diagonal * 1.35, 1)
-
-            // Eased presence. The bloom *grows* out of the centre rather than
-            // cross-fading in at full size: fading a full-screen violet disc up
-            // from black reads as a slab arriving, which is exactly what this
-            // avoids. Radius leads, amplitude follows.
-            let eased = presence * presence * (3 - 2 * presence)
-            let radius = reach * (0.06 + eased * 0.94)
-            let amplitude = pow(eased, 1.8)
-
-            ZStack {
-                GVTheme.void
-
-                // Core violet bloom. Many small steps so the falloff never
-                // bands or rings, and a low peak so it never reads as a shape.
-                RadialGradient(
-                    stops: [
-                        .init(color: BootPalette.deep.opacity((0.20 + energy * 0.08) * amplitude), location: 0.00),
-                        .init(color: BootPalette.deep.opacity((0.150 + energy * 0.06) * amplitude), location: 0.14),
-                        .init(color: BootPalette.deep.opacity(0.092 * amplitude), location: 0.28),
-                        .init(color: BootPalette.deep.opacity(0.052 * amplitude), location: 0.42),
-                        .init(color: BootPalette.deep.opacity(0.027 * amplitude), location: 0.56),
-                        .init(color: BootPalette.deep.opacity(0.012 * amplitude), location: 0.70),
-                        .init(color: BootPalette.deep.opacity(0.004 * amplitude), location: 0.84),
-                        .init(color: .clear, location: 1.00)
-                    ],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: radius
-                )
-
-                // A second, wider and weaker wash on a different scale. Two
-                // overlapping ramps hide any residual step in either one.
-                RadialGradient(
-                    stops: [
-                        .init(color: BootPalette.glow.opacity(0.042 * amplitude), location: 0.00),
-                        .init(color: BootPalette.glow.opacity(0.020 * amplitude), location: 0.38),
-                        .init(color: BootPalette.glow.opacity(0.006 * amplitude), location: 0.68),
-                        .init(color: .clear, location: 1.00)
-                    ],
-                    center: UnitPoint(x: 0.5, y: 0.42),
-                    startRadius: 0,
-                    endRadius: radius * 1.7
-                )
-                .blendMode(.screen)
-
-                // Vertical settling across the full height. The previous version
-                // held clear between 0.34 and 0.66, and those two stops were
-                // visible as horizontal bands across the violet.
-                LinearGradient(
-                    stops: [
-                        .init(color: .black.opacity(0.34 * amplitude), location: 0.00),
-                        .init(color: .black.opacity(0.14 * amplitude), location: 0.22),
-                        .init(color: .black.opacity(0.03 * amplitude), location: 0.44),
-                        .init(color: .black.opacity(0.03 * amplitude), location: 0.58),
-                        .init(color: .black.opacity(0.18 * amplitude), location: 0.80),
-                        .init(color: .black.opacity(0.44 * amplitude), location: 1.00)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-
-                // Fine dither breaks up any remaining gradient banding.
-                GVBackdropDither()
-                    .opacity(0.055 * amplitude)
+        TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion || scenePhase != .active)) { timeline in
+            let time = reduceMotion ? 0 : timeline.date.timeIntervalSince(start)
+            Canvas { context, size in
+                let pitch = size.width / 76
+                let rowHeight = pitch * 10
+                let period = CGFloat(GVSplashLettering.columns) * pitch
+                guard pitch > 0 else { return }
+                let rowCount = Int(ceil(size.height / rowHeight)) + 1
+                var highlights: [(path: Path, opacity: Double)] = []
+                for row in 0 ..< rowCount {
+                    var dots = Path()
+                    var litDots = Path()
+                    let highlight = GVSplashLettering.highlight(at: time, row: row)
+                    let strength = reduceMotion ? 0 : highlight.strength
+                    let flicker = reduceMotion ? 1 : GVSplashLettering.rowBrightness(at: time, row: row, count: rowCount)
+                    let motion = GVSplashLettering.motion(for: row)
+                    // Normalised into one period: a negative remainder would
+                    // still draw correctly through the copies below, but
+                    // keeping the offset positive means every row is covered by
+                    // the same two copies either side of it.
+                    let travel = CGFloat(time) * motion.direction * motion.speed + motion.phase * period
+                    let wrapped = travel.truncatingRemainder(dividingBy: period)
+                    let offset = wrapped < 0 ? wrapped + period : wrapped
+                    let radius = pitch * GVSplashLettering.dotRadius(at: time, row: row)
+                    for copy in -2 ... 2 {
+                        for point in GVSplashLettering.points {
+                            let x = point.x * pitch + offset + CGFloat(copy) * period
+                            let y = CGFloat(row) * rowHeight + point.y * pitch + pitch
+                            guard x >= -radius, x <= size.width + radius else { continue }
+                            let isLit = Int(point.x) / 6 == highlight.character
+                            let dotRadius = radius * (1 + (isLit ? 0.12 * strength : 0))
+                            let rect = CGRect(x: x - dotRadius, y: y - dotRadius,
+                                              width: dotRadius * 2, height: dotRadius * 2)
+                            dots.addEllipse(in: rect)
+                            if isLit { litDots.addEllipse(in: rect) }
+                        }
+                    }
+                    context.fill(dots, with: .color(.white.opacity(0.70 * flicker)))
+                    highlights.append((litDots, strength * flicker))
+                    context.fill(litDots, with: .color(.white.opacity(strength * flicker)))
+                }
+                if !reduceMotion {
+                    // One blur pass for the whole field, not a surface per row.
+                    context.drawLayer { glow in
+                        glow.addFilter(.blur(radius: pitch * 0.65))
+                        for highlight in highlights {
+                            glow.fill(highlight.path, with: .color(.white.opacity(0.65 * highlight.opacity)))
+                        }
+                    }
+                }
+            }
+            .background(GVTheme.void)
+            .overlay(alignment: .top) {
+                HStack {
+                    Text("BUILD 0.1.0")
+                    Spacer()
+                    Text("ARE YOU HAPPY?")
+                }
+                .gvMono(10, .medium)
+                .tracking(1.2)
+                .foregroundStyle(GVTheme.bone)
+                .padding(.horizontal, GVMetrics.stepMajor)
+                .padding(.top, GVMetrics.stepRelated)
+                .padding(.bottom, GVMetrics.stepInternal)
+                .background(GVTheme.void)
             }
         }
-        .ignoresSafeArea()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(GVTheme.void)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 }
 
-/// Static ordered dither. Gradients over near-black band badly on OLED; a
-/// fixed, non-animating noise field removes it without adding motion.
-private struct GVBackdropDither: View {
-    var body: some View {
-        Canvas(rendersAsynchronously: false) { context, size in
-            var state: UInt64 = 0x4756_4449_5448_4552
-            let step: CGFloat = 3
-            var y: CGFloat = 0
-            while y < size.height {
-                var x: CGFloat = 0
-                while x < size.width {
-                    state = (state &* 6_364_136_223_846_793_005) &+ 1_442_695_040_888_963_407
-                    let value = Double((state >> 33) % 1000) / 1000
-                    if value > 0.86 {
-                        context.fill(
-                            Path(CGRect(x: x, y: y, width: 1, height: 1)),
-                            with: .color(.white.opacity(value * 0.5))
-                        )
-                    }
-                    x += step
-                }
-                y += step
+/// One row's heading, pace and start offset.
+///
+/// A table rather than a draw: a row that re-rolled its direction on every tick
+/// would flicker between headings sixty times a second, which reads as a fault
+/// rather than as a scroll.
+struct GVSplashRowMotion {
+    /// `+1` or `-1`. Rows are free to repeat a neighbour's heading — that is
+    /// what makes the field look random rather than striped.
+    let direction: CGFloat
+    /// Columns travelled per second. Rows disagree so the panel never locks
+    /// into the old even/odd mirror.
+    let speed: CGFloat
+    /// Start position as a fraction of one text period, so two rows heading the
+    /// same way do not sit in the same place.
+    let phase: CGFloat
+}
+
+enum GVSplashLettering {
+    // Five-column dot glyphs; no frame decoding or raster enlargement per tick.
+    private static let glyphs: [Character: [Int]] = [
+        "G": [14, 17, 16, 23, 17, 17, 14], "R": [30, 17, 17, 30, 20, 18, 17],
+        "E": [31, 16, 16, 30, 16, 16, 31], "Y": [17, 17, 10, 4, 4, 4, 4],
+        "/": [1, 2, 2, 4, 8, 8, 16], "V": [17, 17, 17, 17, 17, 10, 4],
+        "I": [14, 4, 4, 4, 4, 4, 14], "S": [15, 16, 16, 14, 1, 1, 30],
+        "O": [14, 17, 17, 17, 17, 17, 14], "N": [17, 25, 25, 21, 19, 19, 17]
+    ]
+    static let text = "GREY // VISION "
+    static let columns = text.count * 6
+    private static let characters = text.enumerated().compactMap { $0.element == " " ? nil : $0.offset }
+
+    static func highlight(at time: Double, row: Int) -> (character: Int, strength: Double) {
+        let clock = max(time, 0) / 2.8 + Double(motion(for: row).phase)
+        let cycle = Int(floor(clock))
+        let phase = clock - floor(clock)
+        // Step five visits every non-space glyph before repeating.
+        let index = (cycle * 5 + row * 7) % characters.count
+        return (characters[index], pow(sin(.pi * phase), 2))
+    }
+
+    static func rowBrightness(at time: Double, row: Int, count: Int) -> Double {
+        guard count > 0 else { return 1 }
+        let clock = max(time, 0) / 4
+        let cycle = Int(floor(clock))
+        let phase = clock - floor(clock)
+        // A single soft dip, on a different row each window; never a strobe.
+        let selected = (cycle + Int(motion(for: cycle / count).phase * Double(count))) % count
+        guard row == selected, phase < 0.12 else { return 1 }
+        return 1 - 0.28 * sin(.pi * phase / 0.12)
+    }
+
+    static let points: [CGPoint] = text.enumerated().flatMap { index, letter in
+        (glyphs[letter] ?? []).enumerated().flatMap { row, bits in
+            (0 ..< 5).compactMap { column in
+                bits & (1 << (4 - column)) != 0
+                    ? CGPoint(x: index * 6 + column, y: row) : nil
             }
         }
-        .blendMode(.overlay)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+    }
+
+    /// Per-row heading, pace and offset.
+    ///
+    /// SplitMix64's finaliser over the row index: cheap, deterministic, and it
+    /// decorrelates neighbouring indices, so row 3 and row 4 bear no relation
+    /// to each other the way `row % 2` left them. Determinism is the point —
+    /// this is called from inside the draw closure on every frame, and a fresh
+    /// `Int.random` per tick would re-aim the whole field sixty times a second.
+    static func motion(for row: Int) -> GVSplashRowMotion {
+        var hash = UInt64(bitPattern: Int64(row)) &+ 0x9E37_79B9_7F4A_7C15
+        hash = (hash ^ (hash >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        hash = (hash ^ (hash >> 27)) &* 0x94D0_49BB_1331_11EB
+        hash ^= hash >> 31
+
+        return GVSplashRowMotion(
+            direction: (hash & 1) == 0 ? 1 : -1,
+            // 9...30 columns a second. Wide enough that a fast row visibly
+            // overtakes a slow one; never so wide that a row strobes.
+            speed: 9 + CGFloat((hash >> 8) & 0xFF) / 255 * 21,
+            phase: CGFloat((hash >> 24) & 0xFFFF) / 65535
+        )
+    }
+
+    static func dotRadius(at time: Double, row: Int) -> CGFloat {
+        // Radius stays below half the dot pitch: adjacent dots never merge.
+        // The swell is phased off the row's own motion rather than off its
+        // index, so the size wave does not travel straight down the panel while
+        // the rows it passes are scrolling in six different directions.
+        let phase = Double(motion(for: row).phase) * 2 * .pi
+        return 0.28 + 0.025 * sin(time * 1.4 + phase)
     }
 }

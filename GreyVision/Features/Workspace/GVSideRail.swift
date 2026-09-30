@@ -20,7 +20,7 @@ struct GVSideRail: View {
     var body: some View {
         let snapshot = cameraRuntime.snapshot
         let tokens: [String] = edge == .leading
-            ? ["CAM 01", GVCameraLabels.lens(snapshot)]
+            ? ["CAM 01", railDeviceLabel]
             : [String(format: "GV.%06d", abs(snapshot.deviceID.hashValue % 1_000_000))]
 
         return VStack(alignment: edge == .leading ? .leading : .trailing, spacing: GVMetrics.stepMicro) {
@@ -34,5 +34,24 @@ struct GVSideRail: View {
             }
         }
         .accessibilityHidden(true)
+    }
+
+    /// Mirrors the controls header: DUAL, DUAL WIDE, WIDE, TRIPLE or FRONT,
+    /// derived from the snapshot's raw device type.
+    private var railDeviceLabel: String {
+        if cameraRuntime.snapshot.position == .front {
+            return "FRONT"
+        }
+        let raw = cameraRuntime.snapshot.deviceType.lowercased()
+        if raw.contains("dual-wide") {
+            return "DUAL WIDE"
+        }
+        if raw.contains("dual") {
+            return "DUAL"
+        }
+        if raw.contains("triple") {
+            return "TRIPLE"
+        }
+        return "WIDE"
     }
 }

@@ -7,9 +7,18 @@ import UIKit
 final class CameraRuntime: ObservableObject {
     @Published private(set) var snapshot = CameraRuntimeSnapshot.idle
     @Published private(set) var capabilities = CameraCapabilities.synthetic
+    /// The operator's render-quality choice. Ladder definitions live in
+    /// `GVRenderQuality`; this only carries the selection. Kept off the
+    /// snapshot because it is a preference rather than a fact about the
+    /// capture session, and because the Metal surface reads it on every
+    /// SwiftUI pass to decide the refresh-rate ceiling.
+    @Published var renderQuality: GVRenderQuality = .automatic
 
     private let controller: CameraController
     private var activeConfiguration: CaptureConfiguration?
+    private var torchPulseTask: Task<Void, Never>?
+    private var nativeStopContinuation: CheckedContinuation<Bool, Never>?
+    private var nativeFinishedResult: Bool?
 
     var captureSession: AVCaptureSession {
         controller.captureSession
@@ -21,6 +30,7 @@ final class CameraRuntime: ObservableObject {
     @Published private(set) var recordingStartedAt: Date?
     @Published private(set) var recordingMessage: String?
     @Published private(set) var screenshotMessage: String?
+    @Published private(set) var isFrameFrozen = false
 
     let recordingMailbox = CameraRecordingMailbox()
     let screenshotMailbox = CameraScreenshotMailbox()
@@ -29,24 +39,15 @@ final class CameraRuntime: ObservableObject {
         controller.latestFrameMailbox
     }
 
-    /// The workspace record control: starts the writer (it boots on the
-    /// renderer's next frame with the real effect size) or stops and exports
-    /// the clip to Photos.
+    /// Recording is now delegated to GVRecordingTransaction.
+    /// This method is kept for any legacy callers but does nothing.
+    @available(*, deprecated, message: "Use GVRecordingTransaction.toggleRecording instead")
     func toggleRecording() {
-        if isRecording || recordingMailbox.isStartPending {
-            recordingMailbox.requestStop()
-        } else {
-            let codec = snapshot.requestedVideoCodec.avVideoCodecType ?? .hevc
-            let fps = snapshot.framesPerSecond
-            recordingMailbox.requestStart(codecRawValue: codec.rawValue, fps: fps)
-        }
+        // No-op: recording is owned by GVRecordingTransaction
     }
 
     /// Called by the renderer when the writer actually comes online / finishes.
-    ///
-    /// The button reflects the writer, not the tap. Latching the control on tap
-    /// would show a take in progress during the frame or two before the writer
-    /// resolves the real effect size, and would keep showing one if it failed.
+    /// Forwards to the transaction so it owns the single source of truth.
     func setRecordingActive(_ active: Bool) {
         isRecording = active
         recordingStartedAt = active ? .now : nil
@@ -57,6 +58,72 @@ final class CameraRuntime: ObservableObject {
 
     func setRecordingMessage(_ message: String) {
         recordingMessage = message
+    }
+
+    /// Starts the AVFoundation sensor path used exclusively by ProRes RAW.
+    /// The processed renderer remains online as a 4:2:2 preview proxy, but no
+    /// demosaiced/effected frame is substituted into the RAW movie.
+    func startNativeRAWRecording(codec: AVVideoCodecType) async -> Bool {
+        nativeFinishedResult = nil
+        return await withCheckedContinuation { continuation in
+            controller.startNativeRAWRecording(
+                codec: codec,
+                onStarted: { [weak self] started in
+                    Task { @MainActor in
+                        guard let self else {
+                            continuation.resume(returning: false)
+                            return
+                        }
+                        if started {
+                            self.isRecording = true
+                            self.recordingStartedAt = .now
+                            self.recordingMessage = "RECORD // SENSOR RAW"
+                        }
+                        continuation.resume(returning: started)
+                    }
+                },
+                onFinished: { [weak self] result in
+                    Task { @MainActor in
+                        await self?.handleNativeRAWFinished(result)
+                    }
+                }
+            )
+        }
+    }
+
+    func stopNativeRAWRecording() async -> Bool {
+        if let nativeFinishedResult {
+            self.nativeFinishedResult = nil
+            return nativeFinishedResult
+        }
+        return await withCheckedContinuation { continuation in
+            nativeStopContinuation = continuation
+            controller.stopNativeRAWRecording()
+        }
+    }
+
+    private func handleNativeRAWFinished(_ result: NativeCaptureResult) async {
+        isRecording = false
+        recordingStartedAt = nil
+        let saved: Bool
+        switch result {
+        case let .success(url):
+            saved = await withCheckedContinuation { continuation in
+                GVPhotoLibrary.saveVideo(at: url) { didSave in
+                    continuation.resume(returning: didSave)
+                }
+            }
+            recordingMessage = saved ? "RECORD // RAW SAVED TO PHOTOS" : "RECORD // RAW SAVE FAILED"
+        case let .failure(reason):
+            saved = false
+            recordingMessage = "RECORD // \(reason.uppercased())"
+        }
+        if let continuation = nativeStopContinuation {
+            nativeStopContinuation = nil
+            continuation.resume(returning: saved)
+        } else {
+            nativeFinishedResult = saved
+        }
     }
 
     /// Reported by the renderer when the writer could not start or the export
@@ -90,27 +157,9 @@ final class CameraRuntime: ObservableObject {
             // present; without it the camera reads back black.
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         }
-        if let cgImage = image.cgImage {
-            recordCapture(still: cgImage)
-        }
         GVScreenCapture.save(image) { [weak self] message in
             Task { @MainActor in self?.screenshotMessage = message }
         }
-    }
-
-    @Published private(set) var lastCapture: GVLastCapture?
-
-    func recordCapture(still image: CGImage) {
-        lastCapture = GVLastCapture(mediaType: .still(image: image), thumbnail: UIImage(cgImage: image))
-    }
-
-    func recordCapture(video url: URL) {
-        let asset = AVAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        let cgImage = try? generator.copyCGImage(at: .zero, actualTime: nil)
-        let thumbnail = cgImage.map { UIImage(cgImage: $0) }
-        lastCapture = GVLastCapture(mediaType: .video(url: url), thumbnail: thumbnail)
     }
 
     private static var keyWindow: UIWindow? {
@@ -148,6 +197,13 @@ final class CameraRuntime: ObservableObject {
     @discardableResult
     func start(configuration: CaptureConfiguration) async -> Bool {
         activeConfiguration = configuration
+        isFrameFrozen = false
+        torchPulseTask?.cancel()
+        torchPulseTask = nil
+        if snapshot.torchEnabled {
+            snapshot.torchEnabled = false
+            controller.setTorchEnabled(false)
+        }
         snapshot.position = configuration.position
         snapshot.errorMessage = nil
         snapshot.interruptionReason = nil
@@ -177,7 +233,6 @@ final class CameraRuntime: ObservableObject {
                 torchAvailable: false,
                 torchEnabled: false,
                 whiteBalanceLocked: false,
-                availableLensCount: 0,
                 interruptionReason: nil,
                 errorMessage: nil
             )
@@ -193,8 +248,15 @@ final class CameraRuntime: ObservableObject {
             }
             guard !Task.isCancelled else { return false }
 
+            let microphoneGranted = await requestMicrophonePermission()
+            if !microphoneGranted {
+                GVLog.capture.warning("Microphone permission denied; recording will be video-only")
+            }
+            guard !Task.isCancelled else { return false }
+
             snapshot.state = .configuring
             do {
+                refreshVideoRotation()
                 let info = try await controller.start(configuration: configuration)
                 guard !Task.isCancelled else {
                     await controller.stop()
@@ -218,6 +280,9 @@ final class CameraRuntime: ObservableObject {
             await controller.stop()
         #endif
         activeConfiguration = nil
+        isFrameFrozen = false
+        torchPulseTask?.cancel()
+        torchPulseTask = nil
         snapshot = .idle
     }
 
@@ -226,6 +291,9 @@ final class CameraRuntime: ObservableObject {
             controller.stopSoon()
         #endif
         activeConfiguration = nil
+        isFrameFrozen = false
+        torchPulseTask?.cancel()
+        torchPulseTask = nil
         snapshot = .idle
     }
 
@@ -236,6 +304,7 @@ final class CameraRuntime: ObservableObject {
     func setZoom(_ zoom: Double) {
         guard !snapshot.isSynthetic else { return }
         let clamped = min(max(zoom, snapshot.minimumZoom), snapshot.maximumZoom)
+        guard clamped != snapshot.zoom else { return }
         snapshot.zoom = clamped
         controller.setZoom(clamped)
     }
@@ -243,6 +312,7 @@ final class CameraRuntime: ObservableObject {
     func setExposureBias(_ bias: Double) {
         guard !snapshot.isSynthetic else { return }
         let clamped = min(max(bias, snapshot.minimumExposureBias), snapshot.maximumExposureBias)
+        guard clamped != snapshot.exposureBias else { return }
         snapshot.exposureBias = clamped
         controller.setExposureBias(clamped)
     }
@@ -288,12 +358,36 @@ final class CameraRuntime: ObservableObject {
 
     func setTorchEnabled(_ enabled: Bool) {
         guard snapshot.torchAvailable, !snapshot.isSynthetic else { return }
+        guard enabled != snapshot.torchEnabled else { return }
         snapshot.torchEnabled = enabled
         controller.setTorchEnabled(enabled)
     }
 
+    /// A short torch burst for an intentional in-camera flash, without adding
+    /// a persistent light mode to the compact camera deck.
+    func pulseTorch() {
+        guard snapshot.torchAvailable, !snapshot.isSynthetic else { return }
+        torchPulseTask?.cancel()
+        snapshot.torchEnabled = true
+        controller.setTorchEnabled(true)
+        torchPulseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            self?.snapshot.torchEnabled = false
+            self?.controller.setTorchEnabled(false)
+        }
+    }
+
+    /// Holds the last rendered frame until the operator releases it from the
+    /// explicit camera control. This replaces the undiscoverable hold gesture.
+    func toggleFrameFreeze() {
+        guard snapshot.state == .running else { return }
+        isFrameFrozen.toggle()
+    }
+
     func setFocusLocked(_ locked: Bool) {
         guard snapshot.state == .running, !snapshot.isSynthetic else { return }
+        guard locked != snapshot.focusLocked else { return }
         snapshot.focusLocked = locked
         controller.setFocusLocked(locked)
     }
@@ -314,45 +408,40 @@ final class CameraRuntime: ObservableObject {
 
     func setWhiteBalanceLocked(_ locked: Bool) {
         guard snapshot.state == .running, !snapshot.isSynthetic else { return }
+        guard locked != snapshot.whiteBalanceLocked else { return }
         snapshot.whiteBalanceLocked = locked
         controller.setWhiteBalanceLocked(locked)
     }
 
-    func cycleLens() async -> Bool {
-        guard var configuration = activeConfiguration else { return false }
-        let lenses = capabilities.devices(at: configuration.position)
-        guard lenses.count > 1 else { return false }
-        let currentIndex = lenses.firstIndex { $0.id == snapshot.deviceID } ?? 0
-        let followingIndex = lenses.index(after: currentIndex)
-        let nextIndex = followingIndex == lenses.endIndex ? lenses.startIndex : followingIndex
-        configuration.preferredDeviceID = lenses[nextIndex].id
-        return await start(configuration: configuration)
-    }
-
-    func refreshVideoRotation() {
+    func refreshVideoRotation(_ requestedOrientation: UIInterfaceOrientation? = nil) {
         guard !snapshot.isSynthetic else { return }
-        let interfaceOrientation = UIApplication.shared.connectedScenes
+        let interfaceOrientation = requestedOrientation ?? UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first(where: { $0.activationState == .foregroundActive })?
             .interfaceOrientation ?? .portrait
 
-        let rotation: (CGFloat, CapturedFrameOrientation) = switch interfaceOrientation {
+        let rotation: (CGFloat, CapturedFrameOrientation)? = switch interfaceOrientation {
         case .portrait:
             (90, .portrait)
         case .portraitUpsideDown:
             (270, .portraitUpsideDown)
+        // UIInterfaceOrientation is expressed from the viewer's perspective,
+        // while AVCaptureConnection rotates from the camera sensor. The two
+        // landscape cases are opposite; using the matching case flips the feed.
         case .landscapeLeft:
-            (0, .landscapeLeft)
+            (180, .landscapeLeft)
         case .landscapeRight:
-            (180, .landscapeRight)
+            (0, .landscapeRight)
         default:
-            (90, .portrait)
+            nil
         }
+        guard let rotation else { return }
         controller.updateVideoRotation(angle: rotation.0, orientation: rotation.1)
     }
 
     private func snapshot(from info: ActiveCameraInfo) -> CameraRuntimeSnapshot {
-        CameraRuntimeSnapshot(
+        let codecAvailable = info.availableVideoCodecs.contains(info.requestedVideoCodec)
+        return CameraRuntimeSnapshot(
             state: .running,
             sourceLabel: info.deviceName.uppercased(),
             formatLabel: "\(info.dimensions.label) / \(info.framesPerSecond) FPS",
@@ -362,14 +451,11 @@ final class CameraRuntime: ObservableObject {
             framesPerSecond: info.framesPerSecond,
             requestedVideoCodec: info.requestedVideoCodec,
             availableVideoCodecs: info.availableVideoCodecs,
-            isRequestedVideoCodecAvailable: info.availableVideoCodecs.contains(info.requestedVideoCodec),
-            codecAvailabilityReason: info.availableVideoCodecs.contains(info.requestedVideoCodec)
-                ? nil
-                : "ACTIVE FORMAT DOES NOT ADVERTISE \(info.requestedVideoCodec.rawValue)",
+            isRequestedVideoCodecAvailable: codecAvailable,
+            codecAvailabilityReason: codecAvailable ? nil : "ACTIVE FORMAT DOES NOT ADVERTISE \(info.requestedVideoCodec.rawValue)",
             isSynthetic: false,
             hdrEnabled: info.hdrEnabled,
-            // Mirrors the controller's widest-stop default.
-            zoom: info.minimumZoom < 1.0 ? 0.5 : 1,
+            zoom: 1,
             minimumZoom: info.minimumZoom,
             maximumZoom: info.maximumZoom,
             exposureBias: 0,
@@ -378,7 +464,6 @@ final class CameraRuntime: ObservableObject {
             torchAvailable: info.torchAvailable,
             torchEnabled: false,
             whiteBalanceLocked: info.whiteBalanceLocked,
-            availableLensCount: info.capabilities.devices(at: info.position).count,
             interruptionReason: nil,
             errorMessage: nil
         )
@@ -409,6 +494,23 @@ final class CameraRuntime: ObservableObject {
         case .notDetermined:
             return await withCheckedContinuation { continuation in
                 AVCaptureDevice.requestAccess(for: .video) { granted in
+                    continuation.resume(returning: granted)
+                }
+            }
+        case .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func requestMicrophonePermission() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                AVCaptureDevice.requestAccess(for: .audio) { granted in
                     continuation.resume(returning: granted)
                 }
             }

@@ -12,6 +12,7 @@ import SwiftUI
 /// stay readable either way, which is the only thing a panel exists to do.
 struct GVAdaptivePlate: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     let statsMailbox: CameraRenderStatsMailbox
     /// Which measured band this panel actually sits in. A panel under the
@@ -29,12 +30,26 @@ struct GVAdaptivePlate: ViewModifier {
             let opacity = quiet + (loud - quiet) * load
 
             content
-                .background(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(Color.black.opacity(opacity))
-                )
+                .background { adaptiveBackground(opacity: opacity) }
+                .overlay { adaptiveBorder }
                 .animation(.easeInOut(duration: 0.45), value: load)
         }
+    }
+
+    private func adaptiveBackground(opacity: Double) -> some View {
+        let tint = Color.black.opacity(opacity)
+
+        return ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(tint)
+        }
+    }
+
+    private var adaptiveBorder: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.035), lineWidth: GVMetrics.hairline)
     }
 }
 

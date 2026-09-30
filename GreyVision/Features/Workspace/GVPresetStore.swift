@@ -8,9 +8,9 @@ import SwiftUI
 /// RGB split and the whole effect stack. Depth/AR state is deliberately NOT
 /// included — those are sensor modes with hardware preconditions, not looks.
 struct GVPreset: Identifiable, Codable, Equatable {
-    var id: UUID = UUID()
+    var id: UUID = .init()
     var name: String
-    var createdAt: Date = Date()
+    var createdAt: Date = .init()
     var isFactory: Bool = false
 
     var codecRaw: String
@@ -21,19 +21,17 @@ struct GVPreset: Identifiable, Codable, Equatable {
 
     /// One-line summary for the drawer row.
     var summary: String {
-        let active = stack.activeEffects.map(\.0.label)
+        let active = stack.orderedSlots.compactMap { $0.parameters.isEnabled ? $0.effect.label : nil }
         let rgb = rgbSplit.isEnabled ? ["RGB"] : []
         let parts = (rgb + active).prefix(4)
         return parts.isEmpty ? "EMPTY PLATE" : parts.joined(separator: " \u{00B7} ")
     }
 }
 
-/// Named recipes plus automatic last-session recovery.
+/// Named recipes.
 ///
 /// Recipes live as one JSON document in Application Support so they can be
-/// exported by handing over the file. The last session is a separate file the
-/// workspace rewrites whenever its composition changes, which is what makes
-/// relaunch restore the exact prior look without any explicit save step.
+/// exported by handing over the file.
 @MainActor
 final class GVPresetStore: ObservableObject {
     @Published private(set) var presets: [GVPreset] = []
@@ -51,6 +49,10 @@ final class GVPresetStore: ObservableObject {
     private static var sessionURL: URL { directory.appendingPathComponent("last-session.json") }
 
     private init() {
+        // Last-session recovery is intentionally unsupported: every launch
+        // starts from the clean instrument state. Remove legacy recovery data
+        // so an older build cannot leave a composition behind.
+        try? FileManager.default.removeItem(at: Self.sessionURL)
         loadFromDisk()
         if presets.isEmpty {
             seedFactoryRecipes()
@@ -114,41 +116,17 @@ final class GVPresetStore: ObservableObject {
         persist()
     }
 
-    // MARK: - Session recovery
-
-    func writeLastSession(setup: CaptureSetupDraft, rgb: RGBSplitEffectParameters, stack: CameraEffectStackParameters) {
-        let preset = GVPreset(
-            name: "LAST SESSION",
-            codecRaw: setup.videoCodec.rawValue,
-            frameRate: setup.frameRate.rawValue,
-            resolutionRaw: setup.resolution.rawValue,
-            rgbSplit: rgb,
-            stack: stack
-        )
-        guard let data = try? JSONEncoder().encode(preset) else { return }
-        try? data.write(to: Self.sessionURL, options: .atomic)
-    }
-
-    /// Returns true when a prior session existed and was applied.
-    @discardableResult
-    func restoreLastSession(to setup: inout CaptureSetupDraft, rgb: inout RGBSplitEffectParameters, stack: inout CameraEffectStackParameters) -> Bool {
-        guard let data = try? Data(contentsOf: Self.sessionURL),
-              let preset = try? JSONDecoder().decode(GVPreset.self, from: data)
-        else { return false }
-        apply(preset, to: &setup, rgb: &rgb, stack: &stack)
-        return true
-    }
-
     /// Applies a recipe in one move — no intermediate half-applied states.
     func apply(_ preset: GVPreset, to setup: inout CaptureSetupDraft, rgb: inout RGBSplitEffectParameters, stack: inout CameraEffectStackParameters) {
         if let codec = CaptureSetupDraft.VideoCodec(rawValue: preset.codecRaw),
-           codec.isOperatingSystemAvailable || !CaptureSetupDraft.VideoCodec.curated.contains(codec) {
+           codec.isOperatingSystemAvailable || !CaptureSetupDraft.VideoCodec.curated.contains(codec)
+        {
             setup.videoCodec = codec
         }
         if let rate = CaptureSetupDraft.FrameRate(rawValue: preset.frameRate) {
             setup.frameRate = rate
         }
-        if let resolution = CaptureSetupDraft.Resolution(rawValue: preset.resolutionRaw), resolution.isSelectable {
+        if let resolution = CaptureSetupDraft.Resolution(rawValue: preset.resolutionRaw) {
             setup.resolution = resolution
         }
         rgb = preset.rgbSplit
@@ -158,15 +136,53 @@ final class GVPresetStore: ObservableObject {
     // MARK: - Export / import
 
     func exportURL(_ preset: GVPreset) -> URL? {
-        let url = Self.directory.appendingPathComponent("\(preset.name).gvrecipe.json")
-        guard let data = try? JSONEncoder().encode(preset) else { return nil }
-        do { try data.write(to: url, options: .atomic); return url } catch { return nil }
+        let slug = Self.filesystemSafeSlug(preset.name)
+        let url = Self.directory.appendingPathComponent("\(slug).gvrecipe.json")
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(preset)
+        } catch {
+            GVLog.app.error("Recipe export encode failed for \(preset.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            GVLog.app.error("Recipe export write failed for \(preset.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Filesystem-safe slug independent of the display name: path separators
+    /// and invalid filename characters can otherwise fail export or escape
+    /// the recipe directory.
+    static func filesystemSafeSlug(_ name: String) -> String {
+        let upper = name.uppercased()
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_ "))
+        let filtered = upper.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }.map(String.init).joined()
+        let collapsed = filtered.split(separator: " ").joined(separator: "-")
+        let trimmed = collapsed.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+            .prefix(40)
+        return trimmed.isEmpty ? "RECIPE" : String(trimmed)
     }
 
     func importPreset(from url: URL) -> String? {
-        guard let data = try? Data(contentsOf: url),
-              var preset = try? JSONDecoder().decode(GVPreset.self, from: data)
-        else { return "IMPORT FAILED // UNREADABLE RECIPE" }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            GVLog.app.error("Recipe import read failed: \(error.localizedDescription, privacy: .public)")
+            return "IMPORT FAILED // UNREADABLE RECIPE"
+        }
+        let decoded: GVPreset
+        do {
+            decoded = try JSONDecoder().decode(GVPreset.self, from: data)
+        } catch {
+            GVLog.app.error("Recipe import decode failed: \(error.localizedDescription, privacy: .public)")
+            return "IMPORT FAILED // UNREADABLE RECIPE"
+        }
+        var preset = decoded
         preset.id = UUID()
         preset.isFactory = false
         preset.name = (preset.name + " IMPORT").prefix(30).uppercased()
@@ -178,15 +194,37 @@ final class GVPresetStore: ObservableObject {
     // MARK: - Disk
 
     private func persist() {
-        guard let data = try? JSONEncoder().encode(presets) else { return }
-        try? data.write(to: Self.presetsURL, options: .atomic)
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(presets)
+        } catch {
+            GVLog.app.error("Recipe persist encode failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        do {
+            try data.write(to: Self.presetsURL, options: .atomic)
+        } catch {
+            GVLog.app.error("Recipe persist write failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func loadFromDisk() {
-        guard let data = try? Data(contentsOf: Self.presetsURL),
-              let decoded = try? JSONDecoder().decode([GVPreset].self, from: data)
-        else { return }
-        presets = decoded
+        let data: Data
+        do {
+            data = try Data(contentsOf: Self.presetsURL)
+        } catch {
+            // No saved file yet is not an error; anything else is logged but
+            // never clobbers the in-memory (factory-seeded) presets.
+            if (error as NSError).code != NSFileReadNoSuchFileError {
+                GVLog.app.error("Recipe load read failed: \(error.localizedDescription, privacy: .public)")
+            }
+            return
+        }
+        do {
+            presets = try JSONDecoder().decode([GVPreset].self, from: data)
+        } catch {
+            GVLog.app.error("Recipe load decode failed — keeping in-memory presets: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Four safe demonstrations that show the range without ever producing an

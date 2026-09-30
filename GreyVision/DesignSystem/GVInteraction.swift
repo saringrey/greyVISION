@@ -6,24 +6,37 @@ import UIKit
 /// Compresses slightly on touch-down, brightens, then releases with a small
 /// spring. The glow contracts inward while held rather than expanding, so
 /// pressing reads as mechanical travel instead of a highlight.
+/// Enhanced with cybercore press pulse shader.
 struct GVPressButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Compression at full press.
-    var scale = 0.965
+    var scale = 0.96
     /// Fires a restrained haptic on touch-down. Reserve for meaningful actions.
     var haptic = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? scale : 1))
-            .brightness(configuration.isPressed ? 0.06 : 0)
+            .brightness(configuration.isPressed ? 0.08 : 0)
+            .colorEffect(
+                ShaderLibrary.pressPulse(
+                    .float(Float(Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600))),
+                    .float2(44, 44),
+                    .float(configuration.isPressed && !reduceMotion ? 1.0 : 0.0),
+                    .float3(
+                        GVTheme.interactionPulseRGB.x,
+                        GVTheme.interactionPulseRGB.y,
+                        GVTheme.interactionPulseRGB.z
+                    )
+                )
+            )
             .animation(
                 reduceMotion
                     ? nil
                     : configuration.isPressed
-                    ? .easeOut(duration: 0.08)
-                    : .spring(response: 0.28, dampingFraction: 0.55),
+                    ? GVMotion.snap
+                    : GVMotion.press,
                 value: configuration.isPressed
             )
             .onChange(of: configuration.isPressed) { _, pressed in

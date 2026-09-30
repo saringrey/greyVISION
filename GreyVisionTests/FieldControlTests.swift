@@ -130,12 +130,12 @@ final class FieldControlTests: XCTestCase {
     func testCodecChoicesComeFromTheDevice() {
         let shape = GVFieldControl.shape(
             for: .codec,
-            snapshot: snapshot(codecs: [.hevc, .proRes422]),
+            snapshot: snapshot(codecs: [.hevc, .proRes422HQ, .proRes422]),
             exposure: telemetry(),
             setup: CaptureSetupDraft()
         )
         guard case let .discrete(discrete) = shape else { return XCTFail("Codec must offer a list") }
-        XCTAssertEqual(discrete.options.map(\.id), ["HEVC", "PRORES 422"])
+        XCTAssertEqual(discrete.options.map(\.id), ["HEVC", "PRORES 422 HQ"])
         XCTAssertEqual(discrete.selectedID, CaptureSetupDraft().videoCodec.rawValue)
     }
 }

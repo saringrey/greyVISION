@@ -13,16 +13,20 @@ enum CameraMetalShaderNames {
     static let syntheticLinear = "gvCameraSyntheticLinear"
     static let rgbSplit = "gvCameraRGBSplit"
     static let styleEffect = "gvCameraStyleEffect"
+    static let styleEffectGeneric = "gvCameraStyleEffectGeneric"
     static let temporalEffect = "gvCameraTemporalEffect"
     static let flowLuma = "gvFlowLuma"
     static let flowEstimate = "gvFlowEstimate"
     static let flowAccumulate = "gvFlowAccumulate"
+    static let flowClear = "gvFlowClear"
     static let historyTap = "gvCameraHistoryTap"
     static let compositeWatermark = "gvCameraCompositeWatermark"
     static let signalFracture = "gvCameraSignalFracture"
+    static let moshClearState = "gvMoshClearState"
     static let bandLuma = "gvCameraBandLuma"
     static let previewVertex = "gvCameraPreviewVertex"
     static let previewFragment = "gvCameraPreviewFragment"
+    static let styleModeFunctionConstantIndex = 0
 }
 
 /// Live render statistics surfaced to the camera HUD.
@@ -45,6 +49,7 @@ struct CameraRenderStats: Sendable, Equatable {
     /// operator's stack is not fully on screen, which they are otherwise left
     /// to infer from the picture.
     var shedEffects: Int = 0
+    var reducedDetail = false
 
     static let idle = CameraRenderStats()
 }
@@ -74,15 +79,17 @@ final class CameraRecordingMailbox: @unchecked Sendable {
     private var startRequested = false
     private var active = false
     private var activeSession: GVRealtimeRecordingSession?
-    
+
     private var requestedCodecRawValue: String = AVVideoCodecType.h264.rawValue
     private var requestedFPS: Int = 30
-    
-    func requestStart(codecRawValue: String, fps: Int) {
+    private var requestedBurnHUD = false
+
+    func requestStart(codecRawValue: String, fps: Int, burnHUD: Bool = false) {
         lock.withLock {
             startRequested = true
             requestedCodecRawValue = codecRawValue
             requestedFPS = fps
+            requestedBurnHUD = burnHUD
         }
     }
 
@@ -101,10 +108,10 @@ final class CameraRecordingMailbox: @unchecked Sendable {
         lock.withLock { startRequested }
     }
 
-    func consumeStartRequest() -> (Bool, String, Int) {
+    func consumeStartRequest() -> (Bool, String, Int, Bool) {
         lock.withLock {
             defer { startRequested = false }
-            return (startRequested, requestedCodecRawValue, requestedFPS)
+            return (startRequested, requestedCodecRawValue, requestedFPS, requestedBurnHUD)
         }
     }
 
@@ -124,71 +131,6 @@ final class CameraRecordingMailbox: @unchecked Sendable {
             guard active, let session = activeSession else { return }
             session.appendAudio(sampleBuffer: sampleBuffer)
         }
-    }
-}
-
-/// Recognises simple one-finger sigils from the recorded stroke: resampled to
-/// a fixed count, then classified by closure and direction reversals. Circle,
-/// star and zigzag unlock the hidden signature sequence.
-private enum SigilStrokeClassifier {
-    static func classify(_ raw: [SIMD2<Float>]) -> String? {
-        guard raw.count >= 10 else { return nil }
-        let points = resample(raw, to: 40)
-        guard points.count == 40 else { return nil }
-        let closed = simd_length(points[0] - points[points.count - 1]) < 0.32
-        let reversals = directionReversals(points)
-        if closed, reversals <= 3 {
-            return "CIRCLE"
-        }
-        if reversals >= 5 {
-            return "STAR"
-        }
-        if reversals == 1 || reversals == 2 {
-            return "ZIGZAG"
-        }
-        return nil
-    }
-
-    private static func resample(_ points: [SIMD2<Float>], to count: Int) -> [SIMD2<Float>] {
-        var cumulative: [Float] = [0]
-        cumulative.reserveCapacity(points.count)
-        for index in 1 ..< points.count {
-            cumulative.append(cumulative[index - 1] + simd_length(points[index] - points[index - 1]))
-        }
-        let total = cumulative.last ?? 0
-        guard total > 0.0001 else { return [] }
-        var result: [SIMD2<Float>] = []
-        result.reserveCapacity(count)
-        var targetIndex = 1
-        for sample in 0 ..< count {
-            let target = total * Float(sample) / Float(count - 1)
-            while targetIndex < cumulative.count - 1, cumulative[targetIndex] < target {
-                targetIndex += 1
-            }
-            let segmentStart = cumulative[targetIndex - 1]
-            let segmentLength = cumulative[targetIndex] - segmentStart
-            let fraction = segmentLength > 0.0001 ? (target - segmentStart) / segmentLength : 0
-            result.append(points[targetIndex - 1] + (points[targetIndex] - points[targetIndex - 1]) * fraction)
-        }
-        return result
-    }
-
-    private static func directionReversals(_ points: [SIMD2<Float>]) -> Int {
-        guard points.count >= 3 else { return 0 }
-        var reversals = 0
-        var previousCross: Float = 0
-        for index in 1 ..< points.count - 1 {
-            let segmentA = points[index] - points[index - 1]
-            let segmentB = points[index + 1] - points[index]
-            let cross = segmentA.x * segmentB.y - segmentA.y * segmentB.x
-            if abs(cross) > 0.0005 {
-                if previousCross != 0, (previousCross > 0) != (cross > 0) {
-                    reversals += 1
-                }
-                previousCross = cross
-            }
-        }
-        return reversals
     }
 }
 
@@ -230,6 +172,10 @@ struct CameraStyleEffectUniforms {
     var audio: SIMD4<Float>
     var touch: SIMD4<Float>
     var touchImpact: SIMD4<Float>
+    /// Raw drag vector: xy = pointer velocity in screen fractions per second,
+    /// w = 1 while the finger is down and moving. Must sit right after
+    /// `touchImpact` to mirror GVCameraEffectUniforms in CameraShaders.metal.
+    var touchDrag: SIMD4<Float>
     var audioDynamics: SIMD4<Float>
     var blob0: SIMD4<Float>
     var blob1: SIMD4<Float>
@@ -303,6 +249,12 @@ final class CameraTouchMailbox: @unchecked Sendable {
 enum CameraTouchEvent {
     case began(SIMD2<Float>, SIMD2<Float>)
     case moved(SIMD2<Float>, SIMD2<Float>)
+    case ended(SIMD2<Float>)
+}
+
+enum CameraOverlayPinchEvent {
+    case began(CGFloat)
+    case changed(CGFloat)
     case ended
 }
 
@@ -315,15 +267,21 @@ struct CameraMetalSurface: UIViewRepresentable {
     let audioIntensity: Float
     let blobFields: [SIMD4<Float>]
     let scanlineParameters: ScanlineEffectParameters
+    var overlays: SIMD4<Float> = .zero
     let fracture: SignalFractureController
     /// Live link to the Mac virtual camera, or nil when it is not armed.
     let broadcast: GVBroadcastEngine?
     let statsMailbox: CameraRenderStatsMailbox
     let onPreviewTap: @MainActor @Sendable () -> Void
     let onFocus: @MainActor (CGPoint) -> Void
+    let onSpectrumOverlayDrag: @MainActor @Sendable (SIMD2<Float>) -> Void
+    let onSpectrumOverlayPinch: @MainActor @Sendable (CameraOverlayPinchEvent) -> Void
+    /// True when a preview drag or pinch on a spectrum overlay starts, false
+    /// when it ends. Lets the editor bracket the gesture as one undo step.
+    let onOverlayGesturePhase: @MainActor @Sendable (Bool) -> Void
     let onFailure: @MainActor () -> Void
-    let onSigil: @MainActor (String) -> Void
-    let sigilsEnabled: Bool
+    /// Recording transaction for lifecycle callbacks from the renderer.
+    let recordingTransaction: GVRecordingTransaction?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -331,25 +289,32 @@ struct CameraMetalSurface: UIViewRepresentable {
             fracture: fracture,
             statsMailbox: statsMailbox,
             recordingMailbox: runtime.recordingMailbox,
-            onRecordingStateChange: { [weak runtime] active in
-                Task { @MainActor [weak runtime] in
+            onRecordingStateChange: { [weak recordingTransaction, weak runtime] active in
+                Task { @MainActor [weak recordingTransaction, weak runtime] in
+                    // The runtime's isRecording is what isTakeLive reads, so
+                    // without this the UI never enters the take state and the
+                    // record toggle can never reach stop() — the writer runs
+                    // unfinalized and no video is ever saved.
                     runtime?.setRecordingActive(active)
+                    recordingTransaction?.handleRecordingStateChange(active)
                 }
             },
-            onRecordingMessage: { [weak runtime] reason in
-                Task { @MainActor [weak runtime] in
-                    runtime?.setRecordingMessage(reason)
+            onRecordingMessage: { [weak recordingTransaction] reason in
+                Task { @MainActor [weak recordingTransaction] in
+                    recordingTransaction?.handleRecordingMessage(reason)
                 }
             },
             screenshotMailbox: runtime.screenshotMailbox,
-            onScreenshotMessage: { [weak runtime] message in
-                Task { @MainActor [weak runtime] in
-                    runtime?.setScreenshotMessage(message)
+            onScreenshotMessage: { [weak recordingTransaction] message in
+                Task { @MainActor [weak recordingTransaction] in
+                    recordingTransaction?.handleScreenshotMessage(message)
                 }
             },
-            onSigil: onSigil,
             onPreviewTap: onPreviewTap,
             onFocus: onFocus,
+            onSpectrumOverlayDrag: onSpectrumOverlayDrag,
+            onSpectrumOverlayPinch: onSpectrumOverlayPinch,
+            onOverlayGesturePhase: onOverlayGesturePhase,
             onFailure: onFailure
         )
     }
@@ -372,22 +337,29 @@ struct CameraMetalSurface: UIViewRepresentable {
     }
 
     func updateUIView(_ view: CameraMetalView, context: Context) {
-        view.sigilsEnabled = sigilsEnabled
         context.coordinator.renderer?.setBroadcastEngine(broadcast)
+        context.coordinator.renderer?.setTemporalHoldActive(runtime.isFrameFrozen)
         context.coordinator.renderer?.update(
             rgbSplitParameters: rgbSplitParameters,
             effectStack: effectStack,
             isSynthetic: runtime.snapshot.isSynthetic,
+            sourceIdentifier: runtime.snapshot.deviceID ?? "camera",
             audioSnapshot: audioSnapshot,
             audioIntensity: audioIntensity,
             blobFields: blobFields,
             scanlineParameters: scanlineParameters,
+            overlays: overlays,
             screenScale: Float(view.contentScaleFactor)
         )
         view.accessibilityLabel = runtime.snapshot.isSynthetic
             ? "Deterministic Metal simulator camera source"
             : "Metal camera preview. Tap to focus."
-        view.preferredFramesPerSecond = min(max(runtime.snapshot.framesPerSecond, 30), 120)
+        let sessionRate = min(max(runtime.snapshot.framesPerSecond, 30), 120)
+        view.preferredFramesPerSecond = min(sessionRate, GVRenderQuality.resolve(
+            runtime.renderQuality,
+            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+        ).maximumFramesPerSecond)
+        coordinator.renderer?.setRenderQuality(runtime.renderQuality)
         view.isPaused = runtime.snapshot.state != .running
     }
 
@@ -395,8 +367,9 @@ struct CameraMetalSurface: UIViewRepresentable {
         view.isPaused = true
         view.delegate = nil
         view.onTap = nil
-        view.onHoldChanged = nil
         view.onFracture = nil
+        view.onTouchChanged = nil
+        view.onOverlayPinch = nil
         coordinator.fracture.reset()
         coordinator.statsMailbox.clear()
         coordinator.renderer?.setBroadcastEngine(nil)
@@ -415,9 +388,11 @@ struct CameraMetalSurface: UIViewRepresentable {
         let onRecordingMessage: @Sendable (String) -> Void
         let screenshotMailbox: CameraScreenshotMailbox
         let onScreenshotMessage: @Sendable (String) -> Void
-        let onSigil: @MainActor (String) -> Void
         let onPreviewTap: @MainActor @Sendable () -> Void
         let onFocus: @MainActor (CGPoint) -> Void
+        let onSpectrumOverlayDrag: @MainActor @Sendable (SIMD2<Float>) -> Void
+        let onSpectrumOverlayPinch: @MainActor @Sendable (CameraOverlayPinchEvent) -> Void
+        let onOverlayGesturePhase: @MainActor @Sendable (Bool) -> Void
         let onFailure: @MainActor () -> Void
         fileprivate var renderer: CameraMetalRenderer?
 
@@ -430,9 +405,11 @@ struct CameraMetalSurface: UIViewRepresentable {
             onRecordingMessage: @escaping @Sendable (String) -> Void,
             screenshotMailbox: CameraScreenshotMailbox,
             onScreenshotMessage: @escaping @Sendable (String) -> Void,
-            onSigil: @escaping @MainActor (String) -> Void,
             onPreviewTap: @escaping @MainActor @Sendable () -> Void,
             onFocus: @escaping @MainActor (CGPoint) -> Void,
+            onSpectrumOverlayDrag: @escaping @MainActor @Sendable (SIMD2<Float>) -> Void,
+            onSpectrumOverlayPinch: @escaping @MainActor @Sendable (CameraOverlayPinchEvent) -> Void,
+            onOverlayGesturePhase: @escaping @MainActor @Sendable (Bool) -> Void,
             onFailure: @escaping @MainActor () -> Void
         ) {
             self.mailbox = mailbox
@@ -444,9 +421,11 @@ struct CameraMetalSurface: UIViewRepresentable {
             self.onRecordingMessage = onRecordingMessage
             self.screenshotMailbox = screenshotMailbox
             self.onScreenshotMessage = onScreenshotMessage
-            self.onSigil = onSigil
             self.onPreviewTap = onPreviewTap
             self.onFocus = onFocus
+            self.onSpectrumOverlayDrag = onSpectrumOverlayDrag
+            self.onSpectrumOverlayPinch = onSpectrumOverlayPinch
+            self.onOverlayGesturePhase = onOverlayGesturePhase
             self.onFailure = onFailure
         }
 
@@ -498,9 +477,6 @@ struct CameraMetalSurface: UIViewRepresentable {
                 onPreviewTap()
                 onFocus(devicePoint)
             }
-            view.onHoldChanged = { [weak renderer] isHolding in
-                renderer?.setTemporalHoldActive(isHolding)
-            }
             view.onFracture = { [fracture] event in
                 switch event {
                 case let .began(pointA, pointB):
@@ -513,21 +489,24 @@ struct CameraMetalSurface: UIViewRepresentable {
                     fracture.cancelled()
                 }
             }
-            view.onSigil = { [onSigil] kind in
-                Task { @MainActor in
-                    onSigil(kind)
-                }
-            }
-            view.onTouchChanged = { [touchMailbox] event in
+            view.onTouchChanged = { [touchMailbox, onSpectrumOverlayDrag, onOverlayGesturePhase] event in
                 switch event {
                 case let .began(position, velocity):
+                    // Bracket the drag so the editor records one undo entry
+                    // for the whole move rather than one per frame.
+                    onOverlayGesturePhase(true)
                     touchMailbox.began(position: position, velocity: velocity)
+                    onSpectrumOverlayDrag(position)
                 case let .moved(position, velocity):
                     touchMailbox.moved(position: position, velocity: velocity)
-                case .ended:
+                    onSpectrumOverlayDrag(position)
+                case let .ended(position):
                     touchMailbox.ended()
+                    onSpectrumOverlayDrag(position)
+                    onOverlayGesturePhase(false)
                 }
             }
+            view.onOverlayPinch = onSpectrumOverlayPinch
         }
     }
 }
@@ -543,26 +522,14 @@ enum CameraFractureEvent {
 @MainActor
 final class CameraMetalView: MTKView {
     var onTap: ((CGPoint, CGSize) -> Void)?
-    var onHoldChanged: ((Bool) -> Void)?
     var onFracture: ((CameraFractureEvent) -> Void)?
     var onTouchChanged: ((CameraTouchEvent) -> Void)?
-    /// Fired when a drawn sigil is recognised; carries the sigil kind.
-    var onSigil: ((String) -> Void)?
-    /// Operator preference from the settings deck. When off, strokes are still
-    /// tracked for touch-reactive effects but never classified.
-    var sigilsEnabled = false
-    private var isHolding = false
-    private var sigilStroke: [SIMD2<Float>] = []
+    var onOverlayPinch: ((CameraOverlayPinchEvent) -> Void)?
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device)
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         addGestureRecognizer(tap)
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(handleHold(_:)))
-        hold.minimumPressDuration = 0.12
-        hold.allowableMovement = 96
-        hold.cancelsTouchesInView = false
-        addGestureRecognizer(hold)
         let fracture = SignalFractureGestureRecognizer(
             target: self,
             action: #selector(handleFracture(_:))
@@ -574,6 +541,9 @@ final class CameraMetalView: MTKView {
         touch.maximumNumberOfTouches = 1
         touch.cancelsTouchesInView = false
         addGestureRecognizer(touch)
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handleOverlayPinch(_:)))
+        pinch.cancelsTouchesInView = false
+        addGestureRecognizer(pinch)
     }
 
     @available(*, unavailable)
@@ -587,30 +557,9 @@ final class CameraMetalView: MTKView {
     }
 
     @objc
-    private func handleHold(_ recognizer: UILongPressGestureRecognizer) {
-        switch recognizer.state {
-        case .began, .changed:
-            guard !isHolding else { return }
-            isHolding = true
-            onHoldChanged?(true)
-        case .ended, .cancelled, .failed:
-            guard isHolding else { return }
-            isHolding = false
-            onHoldChanged?(false)
-        default:
-            break
-        }
-    }
-
-    @objc
     private func handleFracture(_ recognizer: SignalFractureGestureRecognizer) {
         switch recognizer.state {
         case .began:
-            // A second finger supersedes any in-flight press-and-hold.
-            if isHolding {
-                isHolding = false
-                onHoldChanged?(false)
-            }
             onFracture?(.began(recognizer.normalizedA, recognizer.normalizedB))
         case .changed:
             onFracture?(.moved(recognizer.normalizedA, recognizer.normalizedB))
@@ -636,28 +585,27 @@ final class CameraMetalView: MTKView {
             Float(velocity.x / bounds.width),
             Float(velocity.y / bounds.height)
         )
-        // Sigil strokes are only recorded while a press-and-hold is active.
-        // A plain tap or drag must stay a focus/touch interaction — otherwise
-        // ordinary use keeps tripping the hidden sequence.
         switch recognizer.state {
         case .began:
-            sigilStroke = isHolding ? [normalized] : []
             onTouchChanged?(.began(normalized, normalizedVelocity))
         case .changed:
-            if isHolding {
-                sigilStroke.append(normalized)
-            } else {
-                // Hold was never established, or was released mid-drag: discard
-                // the partial stroke rather than classifying half of one.
-                sigilStroke.removeAll(keepingCapacity: true)
-            }
             onTouchChanged?(.moved(normalized, normalizedVelocity))
         case .ended, .cancelled, .failed:
-            if isHolding, sigilsEnabled, let kind = SigilStrokeClassifier.classify(sigilStroke) {
-                onSigil?(kind)
-            }
-            sigilStroke = []
-            onTouchChanged?(.ended)
+            onTouchChanged?(.ended(normalized))
+        default:
+            break
+        }
+    }
+
+    @objc
+    private func handleOverlayPinch(_ recognizer: UIPinchGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            onOverlayPinch?(.began(recognizer.scale))
+        case .changed:
+            onOverlayPinch?(.changed(recognizer.scale))
+        case .ended, .cancelled, .failed:
+            onOverlayPinch?(.ended)
         default:
             break
         }
@@ -673,6 +621,7 @@ private struct CameraPreviewUniforms {
     var viewport: SIMD4<Float>
     var scanlines: SIMD4<Float>
     var scanlineFlags: SIMD4<Float>
+    var overlays: SIMD4<Float>
 }
 
 private struct CameraFractureUniforms {
@@ -683,52 +632,76 @@ private struct CameraFractureUniforms {
     var options: SIMD4<UInt32>
 }
 
-private extension [(WorkspaceAdjustableEffect, CameraEffectParameters)] {
-    /// Returns the stack with the `count` most expensive effects removed,
-    /// keeping the render order of everything that remains.
-    ///
-    /// Most expensive, not cheapest. This only runs once the frame budget is
-    /// already blown, and shedding the cheap nodes recovers almost nothing
-    /// while still visibly changing the picture — the operator pays the whole
-    /// cost of the drop and gets none of the milliseconds back.
-    ///
-    /// Ties break toward the later slot so the effect placed first survives,
-    /// and at least one effect always remains: a stack that empties itself
-    /// under load reads as a crash, not as degradation.
-    func droppingMostExpensive(count: Int) -> [Element] {
-        let limit = Swift.min(count, self.count - 1)
-        guard limit > 0 else { return self }
-        let shed = Set(
-            enumerated()
-                .sorted {
-                    $0.element.0.estimatedCost == $1.element.0.estimatedCost
-                        ? $0.offset > $1.offset
-                        : $0.element.0.estimatedCost > $1.element.0.estimatedCost
-                }
-                .prefix(limit)
-                .map(\.offset)
-        )
-        return enumerated()
-            .filter { !shed.contains($0.offset) }
-            .map(\.element)
-    }
-}
+private typealias CameraAudioSpectrum = (
+    SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>
+)
 
 private struct CameraRenderSettings {
     let rgbSplit: RGBSplitEffectParameters
     let effectStack: CameraEffectStackParameters
     let isSynthetic: Bool
+    let sourceIdentifier: String
     let temporalHoldActive: Bool
     let audio: SIMD4<Float>
+    let audioDynamics: SIMD4<Float>
+    let audioSpectrum: CameraAudioSpectrum
     let blobs: [SIMD4<Float>]
     let scanlines: ScanlineEffectParameters
+    let overlays: SIMD4<Float>
 }
 
-private struct CameraSourceGeometry {
+private struct CameraSourceGeometry: Equatable {
     var width = 1
     var height = 1
     var orientation = CapturedFrameOrientation.portrait
     var isMirrored = false
+}
+
+/// Identity of the frame source for the purposes of resetting accumulated
+/// state. A comparable value rather than an interpolated string: the renderer
+/// used to build a `String` every frame just to compare it with the previous
+/// one, which is an allocation and a full string comparison at display rate.
+private struct CameraSourceSignature: Equatable {
+    let identifier: String
+    let isSynthetic: Bool
+    let width: Int
+    let height: Int
+    let orientation: CapturedFrameOrientation
+    let isMirrored: Bool
+
+    init(identifier: String, isSynthetic: Bool, geometry: CameraSourceGeometry) {
+        self.identifier = identifier
+        self.isSynthetic = isSynthetic
+        width = geometry.width
+        height = geometry.height
+        orientation = geometry.orientation
+        isMirrored = geometry.isMirrored
+    }
+}
+
+/// Derives a per-frame value from the composition only when the composition
+/// has actually changed.
+///
+/// The renderer needs two derived facts every frame: which temporal effects
+/// are live, and what the graph as a whole requires. Both are pure functions
+/// of the slot list, and the slot list only changes when the operator edits
+/// something — so deriving them per frame was two array allocations and a
+/// union fold sixty to a hundred and twenty times a second for a constant.
+private struct CameraCompositionCache<Value> {
+    private var revision: UInt64 = .min
+    private var value: Value
+
+    init(defaultValue: Value) {
+        value = defaultValue
+    }
+
+    mutating func resolve(for stack: CameraEffectStackParameters, using make: (CameraEffectStackParameters) -> Value) -> Value {
+        if stack.revision != revision {
+            revision = stack.revision
+            value = make(stack)
+        }
+        return value
+    }
 }
 
 private final class CameraFrameTextureLease: @unchecked Sendable {
@@ -756,26 +729,166 @@ private final class CameraFrameTextureLease: @unchecked Sendable {
 /// Split out of the renderer, which is file-private, so the decision can be
 /// asserted in a test rather than eyeballed on a device that is not in the room.
 enum CameraChainResolution {
+    /// - Parameter renderScale: the governor's longest-edge multiplier. Below
+    ///   1 the whole chain is rendered smaller and the final blit scales it
+    ///   back up. This is the only lever the governor is allowed to pull that
+    ///   does not change *which* effects run — skipping a visible slot would
+    ///   hand the operator a different image than the one they composed.
     static func resolve(
         sourceWidth: Int,
         sourceHeight: Int,
         drawablePixels: Double,
-        fullResolution: Bool
+        fullResolution: Bool,
+        renderScale: Double = 1
     ) -> (width: Int, height: Int) {
         let sourcePixels = Double(sourceWidth * sourceHeight)
         guard !fullResolution, drawablePixels > 0, sourcePixels > drawablePixels else {
-            return (sourceWidth, sourceHeight)
+            return scaled(sourceWidth, sourceHeight, by: renderScale)
         }
 
         // 1.25x, because aspect-fill crops: the covering scale needs more
         // texels than the drawable's bare area implies.
-        let scale = min(1, (drawablePixels * 1.25 / sourcePixels).squareRoot())
-        // Even dimensions. Chroma is subsampled and the recorder's encoder
-        // rejects odd sizes; keeping the rule everywhere avoids a class of
-        // one-pixel bug that only appears at one resolution.
+        let fit = min(1, (drawablePixels * 1.25 / sourcePixels).squareRoot())
+        return scaled(
+            sourceWidth,
+            sourceHeight,
+            by: min(fit, max(renderScale, 0.5))
+        )
+    }
+
+    /// Applies the governor's scale, keeping both edges even. Chroma is
+    /// subsampled and the recorder's encoder rejects odd sizes; keeping the
+    /// rule in one place avoids a class of one-pixel bug that only appears at
+    /// one resolution.
+    private static func scaled(_ sourceWidth: Int, _ sourceHeight: Int, by scale: Double) -> (width: Int, height: Int) {
+        guard scale < 1 else { return (sourceWidth, sourceHeight) }
         let width = max(Int((Double(sourceWidth) * scale).rounded()) & ~1, 16)
         let height = max(Int((Double(sourceHeight) * scale).rounded()) & ~1, 16)
         return (width, height)
+    }
+}
+
+private enum CameraRenderGraphStage: Equatable {
+    case rgbSplit
+    case style(WorkspaceAdjustableEffect)
+    case fluid
+    case reactionDiffusion
+    case temporal(WorkspaceAdjustableEffect)
+}
+
+private struct CameraRenderGraphFrameState {
+    let settings: CameraRenderSettings
+    let time: Float
+    let deltaTime: Float
+    let holdSeconds: Float
+    let touch: SIMD4<Float>
+    let touchImpact: SIMD4<Float>
+    let touchDrag: SIMD4<Float>
+    let historyTaps: [MTLTexture]
+    let worldMatrix: simd_float3x3
+    let temporalRing: CameraTemporalEngine?
+    let shouldFreezeTemporalHistory: Bool
+    /// The quality rung the governor settled on this frame. Read by the
+    /// simulation nodes so a downshift actually changes the solve rather than
+    /// only the field edges.
+    let quality: GVRenderQuality
+}
+
+private final class CameraRenderGraphNode: RenderEffect {
+    let identifier: String
+    weak var owner: CameraMetalRenderer?
+    var stage = CameraRenderGraphStage.rgbSplit
+    var isEnabled = true
+    var mix: Float = 1
+    var parameterDefinitions: [ParameterDefinition] = []
+    var parameterState = EffectParameterState()
+    var mask = EffectMaskInput.none
+    var cameraParameters = CameraEffectParameters()
+    var rgbSplitParameters: RGBSplitEffectParameters?
+    var fluidSolver: CameraFluidSolver?
+    var reactionSolver: CameraReactionDiffusion?
+    var lastFluidTime: TimeInterval = 0
+    /// Stateful mosh data belongs to the Slot, not to the renderer. A shared
+    /// pair made DATAMOSH, LIQUID MOSH and duplicate Slots overwrite one
+    /// another's vectors whenever they appeared in the same Composition.
+    var moshStateA: MTLTexture?
+    var moshStateB: MTLTexture?
+    var moshStateReadsA = true
+    /// Previous output of this specific Slot. The renderer-wide history is the
+    /// previous final Composition and makes stacked mosh Slots feed one
+    /// another; differential transport needs its own prediction surface.
+    var moshHistory: MTLTexture?
+    var moshHistoryNeedsSeed = true
+
+    var displayName: String {
+        switch stage {
+        case .rgbSplit: "RGB Split"
+        case let .style(effect), let .temporal(effect): effect.rawValue
+        case .fluid: "Fluid"
+        case .reactionDiffusion: "Reaction Garden"
+        }
+    }
+
+    var kind: RenderEffectKind {
+        switch stage {
+        case .rgbSplit, .style: .stateless
+        case .fluid, .reactionDiffusion: .composite
+        case .temporal: .temporal
+        }
+    }
+
+    init(identifier: String, owner: CameraMetalRenderer) {
+        self.identifier = identifier
+        self.owner = owner
+    }
+
+    func configure(
+        stage: CameraRenderGraphStage,
+        parameters: CameraEffectParameters,
+        rgbSplit: RGBSplitEffectParameters?,
+        mix: Float
+    ) {
+        if self.stage != stage {
+            releaseResources()
+        }
+        self.stage = stage
+        cameraParameters = parameters
+        rgbSplitParameters = rgbSplit
+        self.mix = min(max(mix.isFinite ? mix : 0, 0), 1)
+        isEnabled = true
+    }
+
+    func prepare(_: RenderPreparationContext) throws {}
+
+    func process(_ request: EffectRenderRequest) throws {
+        guard let owner else {
+            throw RenderEffectError.unavailable("Camera renderer released")
+        }
+        try owner.processGraphNode(self, request: request)
+    }
+
+    func reset(reason _: EffectResetReason) {
+        fluidSolver?.reset()
+        reactionSolver?.reset()
+        lastFluidTime = 0
+        moshStateA = nil
+        moshStateB = nil
+        moshStateReadsA = true
+        moshHistory = nil
+        moshHistoryNeedsSeed = true
+    }
+
+    func releaseResources() {
+        fluidSolver?.reset()
+        reactionSolver?.reset()
+        fluidSolver = nil
+        reactionSolver = nil
+        lastFluidTime = 0
+        moshStateA = nil
+        moshStateB = nil
+        moshStateReadsA = true
+        moshHistory = nil
+        moshHistoryNeedsSeed = true
     }
 }
 
@@ -791,16 +904,32 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private let onScreenshotMessage: @Sendable (String) -> Void
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
+    private let renderTexturePool: TexturePool
+    private let renderTemporalBuffers: TemporalBufferBank
+    private let renderMotionField: MotionField
+    private let renderGraph: RenderGraph
     private let yuvPipeline: MTLComputePipelineState
     private let syntheticPipeline: MTLComputePipelineState
     private let rgbSplitPipeline: MTLComputePipelineState
+    /// Generic, uniform-switched fallback. It renders the correct mode while a
+    /// function-constant specialization is compiling off the render thread.
     private let styleEffectPipeline: MTLComputePipelineState
+    private let stylePipelineCacheLock = NSLock()
+    private var styleEffectPipelines: [UInt32: MTLComputePipelineState] = [:]
+    private var pendingStylePipelineModes = Set<UInt32>()
+    private var failedStylePipelineModes = Set<UInt32>()
+    private let stylePipelineCompilationQueue = DispatchQueue(
+        label: "greyvision.camera.style-pipelines",
+        qos: .userInitiated
+    )
     private let temporalEffectPipeline: MTLComputePipelineState
     private let historyTapPipeline: MTLComputePipelineState
+    private let moshClearStatePipeline: MTLComputePipelineState
     private let compositeWatermarkPipeline: MTLComputePipelineState
     private let flowLumaPipeline: MTLComputePipelineState
     private let flowEstimatePipeline: MTLComputePipelineState
     private let flowAccumulatePipeline: MTLComputePipelineState
+    private let flowClearPipeline: MTLComputePipelineState
     /// Optional: a device that cannot build it loses adaptive chrome, not the
     /// camera. Everything else in this init is a hard requirement.
     private let bandLumaPipeline: MTLComputePipelineState?
@@ -823,12 +952,15 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private let previewPipeline: MTLRenderPipelineState
     private let textureCache: CVMetalTextureCache
     private let temporalFrames: TemporalFrameBuffer
-    private var temporalPrimed = false
     private let settingsLock = NSLock()
     private let geometryLock = NSLock()
     private let statsLock = NSLock()
 
     private var gpuMillisecondsAverage: Double = 0
+    private var effectQuality = CameraEffectQuality()
+    /// The operator's pinned tier, written on the main thread and adopted by
+    /// the governor on the render thread before it runs.
+    private var requestedQuality: GVRenderQuality = .automatic
     private var renderedFrameNumber: UInt64 = 0
     private var historyTapSnapshot = 0
     /// How many style effects the governor actually shed this frame. Written
@@ -850,36 +982,46 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private var rgbSplitParameters = RGBSplitEffectParameters()
     private var effectStack = CameraEffectStackParameters()
     private var isSynthetic = false
+    private var sourceIdentifier = "camera"
     private var temporalHoldActive = false
     private var audio = SIMD4<Float>.zero
     private var audioDynamics = SIMD4<Float>.zero
-    private var audioSpectrum: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero)
+    private var audioSpectrum: CameraAudioSpectrum = (.zero, .zero, .zero, .zero)
     private var blobFields: [SIMD4<Float>] = []
     private var scanlineParameters = ScanlineEffectParameters()
+    private var overlays = SIMD4<Float>.zero
     private var screenScale: Float = 3
     private var syntheticTarget: MTLTexture?
     private var temporalLumaTarget: MTLTexture?
-    
+
     /// Live link to the Mac virtual camera. Nil unless the operator armed it.
     private var broadcastEngine: GVBroadcastEngine?
     private let broadcastPool = GVBroadcastFramePool()
     private var recordingSession: GVRealtimeRecordingSession?
     private var recordingStartTime: TimeInterval?
     private var hasFailedSession = false
-    private var overBudgetStreak = 0
-    private var underBudgetStreak = 0
-    private var effectBudgetDrops = 0
     private var sourceGeometry = CameraSourceGeometry()
+    private var temporalSourceSignature: CameraSourceSignature?
+    private var temporalEffectCache = CameraCompositionCache<[(
+        WorkspaceAdjustableEffect,
+        CameraEffectParameters
+    )]>(defaultValue: [])
+    private var requirementCache = CameraCompositionCache<CameraEffectResourceRequirements>(defaultValue: [])
     private var linearTexture: MTLTexture?
     private var effectTextureA: MTLTexture?
     private var effectTextureB: MTLTexture?
     private var historyTexture: MTLTexture?
     private var hasLinearFrame = false
     private var hasHistoryFrame = false
-    /// Built lazily the first time the fluid effect runs; released when it is
-    /// switched off so an unused solver holds no grid memory.
-    private var fluidSolver: CameraFluidSolver?
-    private var lastFluidTime: Double = 0
+    private var graphNodes: [UUID: CameraRenderGraphNode] = [:]
+    private lazy var rgbGraphNode = CameraRenderGraphNode(
+        identifier: "camera.rgbSplit",
+        owner: self
+    )
+    private var renderFrameIndex: UInt64 = 0
+    private var previousRenderTime: TimeInterval?
+    private var temporalHoldBeganAt: TimeInterval?
+    private var graphFrameState: CameraRenderGraphFrameState?
     private let shaderLibrary: MTLLibrary?
 
     init?(
@@ -900,13 +1042,15 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
               let yuvFunction = library.makeFunction(name: CameraMetalShaderNames.yuvToLinear),
               let syntheticFunction = library.makeFunction(name: CameraMetalShaderNames.syntheticLinear),
               let rgbSplitFunction = library.makeFunction(name: CameraMetalShaderNames.rgbSplit),
-              let styleEffectFunction = library.makeFunction(name: CameraMetalShaderNames.styleEffect),
+              let styleEffectFunction = library.makeFunction(name: CameraMetalShaderNames.styleEffectGeneric),
               let temporalEffectFunction = library.makeFunction(name: CameraMetalShaderNames.temporalEffect),
               let historyTapFunction = library.makeFunction(name: CameraMetalShaderNames.historyTap),
+              let moshClearStateFunction = library.makeFunction(name: CameraMetalShaderNames.moshClearState),
               let compositeWatermarkFunction = library.makeFunction(name: CameraMetalShaderNames.compositeWatermark),
               let flowLumaFunction = library.makeFunction(name: CameraMetalShaderNames.flowLuma),
               let flowEstimateFunction = library.makeFunction(name: CameraMetalShaderNames.flowEstimate),
               let flowAccumulateFunction = library.makeFunction(name: CameraMetalShaderNames.flowAccumulate),
+              let flowClearFunction = library.makeFunction(name: CameraMetalShaderNames.flowClear),
               let fractureFunction = library.makeFunction(name: CameraMetalShaderNames.signalFracture),
               let previewVertex = library.makeFunction(name: CameraMetalShaderNames.previewVertex),
               let previewFragment = library.makeFunction(name: CameraMetalShaderNames.previewFragment),
@@ -916,10 +1060,12 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
               let styleEffectPipeline = try? device.makeComputePipelineState(function: styleEffectFunction),
               let temporalEffectPipeline = try? device.makeComputePipelineState(function: temporalEffectFunction),
               let historyTapPipeline = try? device.makeComputePipelineState(function: historyTapFunction),
+              let moshClearStatePipeline = try? device.makeComputePipelineState(function: moshClearStateFunction),
               let compositeWatermarkPipeline = try? device.makeComputePipelineState(function: compositeWatermarkFunction),
               let flowLumaPipeline = try? device.makeComputePipelineState(function: flowLumaFunction),
               let flowEstimatePipeline = try? device.makeComputePipelineState(function: flowEstimateFunction),
               let flowAccumulatePipeline = try? device.makeComputePipelineState(function: flowAccumulateFunction),
+              let flowClearPipeline = try? device.makeComputePipelineState(function: flowClearFunction),
               let fracturePipeline = try? device.makeComputePipelineState(function: fractureFunction)
         else {
             return nil
@@ -953,16 +1099,23 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         self.device = device
         shaderLibrary = library
         self.commandQueue = commandQueue
+        let renderTexturePool = TexturePool(device: device)
+        self.renderTexturePool = renderTexturePool
+        renderTemporalBuffers = TemporalBufferBank(device: device)
+        renderMotionField = MotionField()
+        renderGraph = RenderGraph(texturePool: renderTexturePool)
         self.yuvPipeline = yuvPipeline
         self.syntheticPipeline = syntheticPipeline
         self.rgbSplitPipeline = rgbSplitPipeline
         self.styleEffectPipeline = styleEffectPipeline
         self.temporalEffectPipeline = temporalEffectPipeline
         self.historyTapPipeline = historyTapPipeline
+        self.moshClearStatePipeline = moshClearStatePipeline
         self.compositeWatermarkPipeline = compositeWatermarkPipeline
         self.flowLumaPipeline = flowLumaPipeline
         self.flowEstimatePipeline = flowEstimatePipeline
         self.flowAccumulatePipeline = flowAccumulatePipeline
+        self.flowClearPipeline = flowClearPipeline
         bandLumaPipeline = library.makeFunction(name: CameraMetalShaderNames.bandLuma)
             .flatMap { try? device.makeComputePipelineState(function: $0) }
         // Three bands of four uints: sum, count, bright count, pad.
@@ -976,6 +1129,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         temporalFrames = TemporalFrameBuffer(device: device, divisor: 3)
         temporalEngine = CameraTemporalEngine(device: device)
         super.init()
+        renderGraph.failurePolicy = .bypass
+        renderGraph.onFailure = { identifier, message in
+            GVLog.rendering.error("Render graph bypassed \(identifier): \(message)")
+        }
         commandQueue.label = "greyVISION Camera Command Queue"
         GVLog.rendering.notice("Camera Metal renderer initialized")
     }
@@ -985,16 +1142,23 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         rgbSplitParameters: RGBSplitEffectParameters,
         effectStack: CameraEffectStackParameters,
         isSynthetic: Bool,
+        sourceIdentifier: String,
         audioSnapshot: AudioReactiveSnapshot,
         audioIntensity: Float,
         blobFields: [SIMD4<Float>],
         scanlineParameters: ScanlineEffectParameters,
+        overlays: SIMD4<Float> = .zero,
         screenScale: Float
     ) {
+        let activeStyleModes = effectStack.orderedSlots.compactMap { slot -> UInt32? in
+            guard slot.parameters.sanitized.isEnabled else { return nil }
+            return slot.effect.styleMode
+        }
         settingsLock.withLock {
             self.rgbSplitParameters = rgbSplitParameters.sanitized
             self.effectStack = effectStack
             self.isSynthetic = isSynthetic
+            self.sourceIdentifier = sourceIdentifier
             let audioGain = min(max(audioIntensity, 0), 1)
             audio = audioSnapshot.metalBands * audioGain
             audioDynamics = audioSnapshot.metalDynamics * audioGain
@@ -1007,13 +1171,31 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             )
             self.blobFields = blobFields
             self.scanlineParameters = scanlineParameters
+            self.overlays = overlays
             self.screenScale = screenScale
+        }
+        // Never compile a 140-arm specialization on the main or render thread.
+        // The generic kernel remains correct until this cache entry is ready.
+        for mode in Set(activeStyleModes) {
+            scheduleStylePipelineSpecialization(for: mode)
         }
     }
 
     func setTemporalHoldActive(_ isActive: Bool) {
         settingsLock.withLock {
             temporalHoldActive = isActive
+        }
+    }
+
+    /// The tier the operator pinned in the workspace settings.
+    ///
+    /// Separate from `update(...)` for the same reason the broadcast engine
+    /// is: it changes when the operator chooses, not sixty times a second.
+    /// Without it the setting is written to preferences and shown in the badge
+    /// while the chain keeps rendering on the governor's own idea of quality.
+    func setRenderQuality(_ quality: GVRenderQuality) {
+        settingsLock.withLock {
+            requestedQuality = quality
         }
     }
 
@@ -1048,10 +1230,14 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 rgbSplit: rgbSplitParameters,
                 effectStack: effectStack,
                 isSynthetic: isSynthetic,
+                sourceIdentifier: sourceIdentifier,
                 temporalHoldActive: temporalHoldActive,
                 audio: audio,
+                audioDynamics: audioDynamics,
+                audioSpectrum: audioSpectrum,
                 blobs: blobFields,
-                scanlines: scanlineParameters
+                scanlines: scanlineParameters,
+                overlays: overlays
             )
         }
         let touchState = touchMailbox.latest
@@ -1060,6 +1246,12 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             touchState.position.y,
             min(length(touchState.velocity) * 0.75, 2),
             touchState.isActive ? 1 : 0
+        )
+        let touchDragVector = SIMD4<Float>(
+            touchState.velocity.x,
+            touchState.velocity.y,
+            0,
+            touchState.isActive && length(touchState.velocity) > 0.001 ? 1 : 0
         )
         let touchImpactVector: SIMD4<Float>
         if let impactPosition = touchState.impactPosition, let impactTime = touchState.impactTime {
@@ -1071,26 +1263,32 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         var frameLease: CameraFrameTextureLease?
 
         if settings.isSynthetic {
-            let size = syntheticTextureSize(for: view.drawableSize)
-            guard ensureWorkingTextures(width: size.width, height: size.height),
-                  let linearTexture
-            else {
-                return
-            }
-            encodeSyntheticFrame(
-                into: linearTexture,
-                commandBuffer: commandBuffer,
-                time: Float(ProcessInfo.processInfo.systemUptime)
-            )
-            geometryLock.withLock {
-                sourceGeometry = CameraSourceGeometry(
-                    width: size.width,
-                    height: size.height,
-                    orientation: .portrait,
-                    isMirrored: false
+            if !settings.temporalHoldActive || !hasLinearFrame {
+                let size = syntheticTextureSize(for: view.drawableSize)
+                guard ensureWorkingTextures(width: size.width, height: size.height),
+                      let linearTexture
+                else {
+                    return
+                }
+                encodeSyntheticFrame(
+                    into: linearTexture,
+                    commandBuffer: commandBuffer,
+                    time: Float(ProcessInfo.processInfo.systemUptime)
                 )
+                geometryLock.withLock {
+                    sourceGeometry = CameraSourceGeometry(
+                        width: size.width,
+                        height: size.height,
+                        orientation: .portrait,
+                        isMirrored: false
+                    )
+                }
+                hasLinearFrame = true
             }
-            hasLinearFrame = true
+        } else if settings.temporalHoldActive && hasLinearFrame {
+            // Frame is held/frozen: reuse the existing linearTexture and geometry,
+            // continuing to run effects and interactive shaders on top of the frozen capture.
+            _ = mailbox.consumeLatest() // Clear queue so we don't build backlog
         } else if let frame = mailbox.consumeLatest() {
             guard let textures = makeTextures(frame: frame) else { return }
             frameLease = textures
@@ -1120,127 +1318,134 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             hasLinearFrame = true
         }
 
-        guard hasLinearFrame, let linearTexture else { return }
-        var presentedTexture = linearTexture
-        var writeToFirstTexture = true
-        if settings.rgbSplit.isEnabled, let effectTextureA {
-            encodeRGBSplit(
-                settings.rgbSplit,
-                source: linearTexture,
-                destination: effectTextureA,
-                commandBuffer: commandBuffer
-            )
-            presentedTexture = effectTextureA
-            writeToFirstTexture = false
-        }
+        guard hasLinearFrame, let linearTexture,
+              let effectTextureA, let effectTextureB
+        else { return }
 
-        let effectTime = Float(ProcessInfo.processInfo.systemUptime)
-        let activeEffects = settings.effectStack.activeEffects
-        let survivingEffects = activeEffects.droppingMostExpensive(count: adaptiveEffectDropCount())
-        // Published so the HUD can say the stack is being shed. Measured from
-        // what actually survived rather than from the governor's counter — the
-        // counter can ask for three drops on a two-effect stack.
-        statsLock.withLock { shedEffectSnapshot = activeEffects.count - survivingEffects.count }
-        for (effect, parameters) in survivingEffects {
-            guard let destination = writeToFirstTexture ? effectTextureA : effectTextureB else {
-                break
+        let renderTime = ProcessInfo.processInfo.systemUptime
+        let effectTime = Float(renderTime)
+        let deltaTime = min(max(renderTime - (previousRenderTime ?? renderTime - 1 / 60), 1 / 240), 0.25)
+        previousRenderTime = renderTime
+        let holdSeconds: Float
+        if settings.temporalHoldActive {
+            if temporalHoldBeganAt == nil {
+                temporalHoldBeganAt = renderTime
             }
-            encodeStyleEffect(
-                effect,
-                parameters: parameters,
-                source: presentedTexture,
-                destination: destination,
-                commandBuffer: commandBuffer,
-                time: effectTime,
-                audio: settings.audio,
-                touch: touchVector,
-                touchImpact: touchImpactVector,
-                blobs: settings.blobs
-            )
-            presentedTexture = destination
-            writeToFirstTexture.toggle()
+            holdSeconds = Float(max(renderTime - (temporalHoldBeganAt ?? renderTime), 0))
+        } else {
+            temporalHoldBeganAt = nil
+            holdSeconds = 0
         }
+        renderFrameIndex &+= 1
 
-        // Fluid runs as its own multi-pass stage rather than as a style mode:
-        // it owns persistent velocity/dye/pressure grids that the single-pass
-        // style kernel has nowhere to keep.
-        let fluidParameters = settings.effectStack[.fluid]
-        if fluidParameters.isEnabled {
-            if fluidSolver == nil, let library = shaderLibrary {
-                fluidSolver = CameraFluidSolver(device: device, library: library)
-            }
-            if let fluidSolver, let destination = writeToFirstTexture ? effectTextureA : effectTextureB {
-                let now = ProcessInfo.processInfo.systemUptime
-                // Clamped: a hitch or a backgrounded frame must not advect the
-                // field by a huge step and blow the simulation apart.
-                let delta = lastFluidTime > 0
-                    ? Float(min(max(now - lastFluidTime, 1.0 / 120.0), 1.0 / 20.0))
-                    : Float(1.0 / 60.0)
-                lastFluidTime = now
-
-                let didRun = fluidSolver.encode(
-                    commandBuffer: commandBuffer,
-                    source: presentedTexture,
-                    destination: destination,
-                    touch: touchVector,
-                    parameters: CameraFluidParameters(
-                        drag: fluidParameters.primary,
-                        persistence: fluidParameters.secondary,
-                        swirl: fluidParameters.tertiary
-                    ),
-                    blend: Float(fluidParameters.blend),
-                    deltaTime: delta
-                )
-                if didRun {
-                    presentedTexture = destination
-                    writeToFirstTexture.toggle()
+        // Reset memory when source geometry changes even if working texture
+        // dimensions happen to stay equal (rotation or front/back switching).
+        let geometry = geometryLock.withLock { sourceGeometry }
+        // Compared as a value, not as a string. This used to interpolate a
+        // `\(sourceIdentifier)-\(isSynthetic)-\(width)x\(height)-...`
+        // signature every frame and compare it against a stored `String?` —
+        // a heap allocation and a full string comparison at 60–120 Hz, purely
+        // to notice that the camera had not rotated since last frame.
+        let sourceSignature = CameraSourceSignature(
+            identifier: settings.sourceIdentifier,
+            isSynthetic: settings.isSynthetic,
+            geometry: geometry
+        )
+        if let previous = temporalSourceSignature, previous != sourceSignature {
+            graphNodes.values.forEach { $0.reset(reason: .sourceChanged) }
+            flowField.reset()
+            temporalEngine.reset()
+            temporalFrames.release()
+            hasHistoryFrame = false
+        }
+        temporalSourceSignature = sourceSignature
+        // Both of these walk the slot list, and both are derived purely from
+        // the composition. Recomputing them every frame meant two array
+        // allocations and a union fold per frame for a value that only changes
+        // when the operator edits something. Cached against the stack's own
+        // revision, which every mutation advances.
+        let temporalEffects = temporalEffectCache.resolve(for: settings.effectStack) { stack in
+            stack.activeTemporalEffects.filter { $0.1.blend > 0 }
+        }
+        let requirements = requirementCache.resolve(for: settings.effectStack) { stack in
+            stack.orderedSlots.reduce(into: CameraEffectResourceRequirements()) { result, slot in
+                if slot.parameters.isEnabled, slot.parameters.blend > 0 {
+                    result.formUnion(slot.effect.cameraResourceRequirements)
                 }
             }
-        } else if fluidSolver != nil {
-            fluidSolver?.reset()
-            fluidSolver = nil
-            lastFluidTime = 0
         }
-
-        // The shared frame ring is prepared before the temporal pass, not
-        // after it, so temporal effects can sample genuinely older frames.
-        // Ageing still happens at the end of the frame, which preserves the
-        // existing guarantee that a tap can never contain this frame's own
-        // output. One ring serves the damage effects and the fracture path;
-        // there is deliberately no second history system.
-        // Optical flow is estimated before the effect chain, from the clean
-        // source, so motion is measured on the camera image rather than on
-        // whatever the previous effect did to it. Feeding a corrupted frame
-        // back into the estimator would make the field chase its own output.
-        let flowReady = flowField.prepare(
-            sourceWidth: presentedTexture.width,
-            sourceHeight: presentedTexture.height
+        let needsSharedHistory = temporalEffects.contains { !$0.0.cameraResourceRequirements.contains(.slotHistory) }
+        if needsSharedHistory {
+            if historyTexture?.width != linearTexture.width || historyTexture?.height != linearTexture.height {
+                let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float,
+                                                                          width: linearTexture.width, height: linearTexture.height, mipmapped: false)
+                descriptor.storageMode = .private
+                descriptor.usage = [.shaderRead, .shaderWrite]
+                historyTexture = device.makeTexture(descriptor: descriptor)
+                historyTexture?.label = "greyVISION Temporal History"
+                hasHistoryFrame = false
+            }
+        } else {
+            historyTexture = nil
+            hasHistoryFrame = false
+        }
+        let fractureState = resolvedFractureState()
+        let needsFlow = requirements.contains(.opticalFlow)
+        let needsRing = requirements.contains(.timestampedHistory)
+        let needsTaps = requirements.contains(.legacyHistoryTaps) || fractureState.phase.isEngaged
+        if !needsFlow, flowField.current != nil { flowField.reset() }
+        if !needsRing, temporalEngine.texture != nil { temporalEngine.reset() }
+        if !needsTaps, !temporalFrames.textures.isEmpty { temporalFrames.release() }
+        let thermal = ProcessInfo.processInfo.thermalState
+        // Adopt the pinned tier before the governor runs, so a pinned choice is
+        // the rung the governor starts from rather than something it undoes.
+        effectQuality.applyRequestedTier(settingsLock.withLock { requestedQuality })
+        effectQuality.update(stats: statsMailbox.latest, fps: view.preferredFramesPerSecond,
+                             thermalPressure: thermal == .serious || thermal == .critical)
+        // Shared inputs are estimated once from the clean camera image.
+        let flowReady = needsFlow && flowField.prepare(
+            sourceWidth: linearTexture.width,
+            sourceHeight: linearTexture.height,
+            maximumEdge: effectQuality.flowEdge
         )
+        // The flow field needs the OR of every mosh-style mode's hold bits
+        // so MOTION LOCK is set when any of them are running while frozen.
+        let freezeEffectBits = temporalEffects.reduce(into: UInt32(0)) { acc, slot in
+            guard slot.0.freezesHistoryOnHold, slot.0.temporalMode != nil else { return }
+            acc |= holdStyle(for: slot.0, freezeActive: settings.temporalHoldActive)
+        }
         if flowReady {
             encodeFlow(
-                source: presentedTexture,
+                source: linearTexture,
                 settings: settings,
+                holdStyle: freezeEffectBits,
+                holdSeconds: holdSeconds,
                 commandBuffer: commandBuffer
             )
         }
+        renderMotionField.bindPrimaryVectorTexture(flowReady ? flowField.persistent : nil)
+        renderMotionField.setVector(touchState.velocity, for: .touch)
+        renderMotionField.update(deltaTime: deltaTime)
 
         // Timestamped ring. Recorded from the clean source before effects so
         // history holds the camera image, not the previous frame's corruption
         // fed back into itself.
-        let temporalReady = temporalEngine.prepare(
-            sourceWidth: presentedTexture.width,
-            sourceHeight: presentedTexture.height
+        let temporalReady = needsRing && temporalEngine.prepare(
+            sourceWidth: linearTexture.width,
+            sourceHeight: linearTexture.height
         )
         if temporalReady, temporalEngine.shouldRecord() {
-            encodeTemporalRecord(source: presentedTexture, commandBuffer: commandBuffer)
+            encodeTemporalRecord(source: linearTexture, commandBuffer: commandBuffer)
         }
 
-        let ringReady = temporalFrames.prepare(
-            sourceWidth: presentedTexture.width,
-            sourceHeight: presentedTexture.height
+        let ringReady = needsTaps && temporalFrames.prepare(
+            sourceWidth: linearTexture.width,
+            sourceHeight: linearTexture.height
         )
+        if ringReady, !temporalFrames.isPrimed {
+            encodeHistoryTaps(source: linearTexture, commandBuffer: commandBuffer)
+        }
         let historyTaps = ringReady ? temporalFrames.textures : []
-        let temporalEffects = settings.effectStack.activeTemporalEffects
         // The attitude sensor only runs while a world-anchored mode is armed.
         // Leaving it on for every session would burn power for an effect that
         // is not being used.
@@ -1256,42 +1461,88 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let worldMatrix = needsWorld
             ? worldReprojection.update(
                 pose: worldPoseMailbox.latest,
-                aspect: Float(presentedTexture.width) / Float(max(presentedTexture.height, 1))
+                aspect: Float(linearTexture.width) / Float(max(linearTexture.height, 1))
             )
             : matrix_identity_float3x3
         let shouldFreezeTemporalHistory = settings.temporalHoldActive &&
             temporalEffects.contains(where: \.0.freezesHistoryOnHold)
-        if !temporalEffects.isEmpty, hasHistoryFrame, let historyTexture {
-            for (effect, parameters) in temporalEffects {
-                guard let destination = writeToFirstTexture ? effectTextureA : effectTextureB else {
-                    break
-                }
-                encodeTemporalEffect(
-                    effect,
-                    parameters: parameters,
-                    source: presentedTexture,
-                    history: historyTexture,
-                    historyTaps: historyTaps,
-                    flow: flowField.persistent,
-                    worldMatrix: worldMatrix,
-                    ring: temporalReady ? temporalEngine : nil,
-                    destination: destination,
-                    commandBuffer: commandBuffer,
-                    time: effectTime,
-                    holdActive: shouldFreezeTemporalHistory && effect.freezesHistoryOnHold,
-                    audio: settings.audio,
-                    touch: touchVector,
-                    touchImpact: touchImpactVector,
-                    blobs: settings.blobs
-                )
-                presentedTexture = destination
-                writeToFirstTexture.toggle()
-            }
-        }
+
+        let effectDimensions = RenderDimensions(width: linearTexture.width, height: linearTexture.height)
+        let frame = FrameContext(
+            frameIndex: renderFrameIndex,
+            timestamp: renderTime,
+            deltaTime: deltaTime,
+            sourceTexture: linearTexture,
+            previousSourceTexture: nil,
+            resolutions: RenderResolutionSet(
+                capture: RenderDimensions(width: max(geometry.width, 1), height: max(geometry.height, 1)),
+                preview: RenderDimensions(
+                    width: max(Int(view.drawableSize.width), 1),
+                    height: max(Int(view.drawableSize.height), 1)
+                ),
+                effects: effectDimensions,
+                output: effectDimensions
+            ),
+            orientation: RenderOrientationState(
+                source: geometry.orientation,
+                render: geometry.orientation,
+                display: geometry.orientation,
+                record: geometry.orientation,
+                isMirrored: geometry.isMirrored
+            ),
+            colorPipeline: .cameraSDR,
+            cameraMetadata: CameraFrameMetadata(
+                presentationTime: CMTime(seconds: renderTime, preferredTimescale: 600),
+                exposureDurationSeconds: nil,
+                iso: nil,
+                lensPosition: nil,
+                whiteBalanceTemperature: nil,
+                sourceIdentifier: settings.isSynthetic ? "synthetic" : "camera"
+            ),
+            temporalBuffers: renderTemporalBuffers,
+            motionField: renderMotionField.snapshot(),
+            interaction: RenderInteractionState(
+                position: touchState.position,
+                velocity: touchState.velocity,
+                drag: touchState.velocity,
+                impactPosition: touchState.impactPosition,
+                impactAge: touchState.impactTime.map { max(renderTime - $0, 0) },
+                isActive: touchState.isActive
+            ),
+            modulation: .empty,
+            commandBuffer: commandBuffer
+        )
+        graphFrameState = CameraRenderGraphFrameState(
+            settings: settings,
+            time: effectTime,
+            deltaTime: Float(deltaTime),
+            holdSeconds: holdSeconds,
+            touch: touchVector,
+            touchImpact: touchImpactVector,
+            touchDrag: touchDragVector,
+            historyTaps: historyTaps,
+            worldMatrix: worldMatrix,
+            temporalRing: temporalReady ? temporalEngine : nil,
+            shouldFreezeTemporalHistory: shouldFreezeTemporalHistory,
+            quality: effectQuality.resolvedTier
+        )
+        configureRenderGraph(
+            settings: settings,
+            includeTemporalEffects: hasHistoryFrame && historyTexture != nil
+        )
+        // A Composition is authoritative. Never skip visible Slots as a
+        // performance tradeoff; optimisation must not alter the image.
+        statsLock.withLock { shedEffectSnapshot = 0 }
+        let graphResult = renderGraph.process(
+            input: linearTexture,
+            frame: frame,
+            scratchTextures: (effectTextureA, effectTextureB)
+        )
+        var presentedTexture = graphResult.texture
 
         let shouldWriteHistory = !hasHistoryFrame ||
-            (!shouldFreezeTemporalHistory && !temporalEffects.contains(where: { $0.0 == .freeze }))
-        if temporalEffects.isEmpty {
+            (!shouldFreezeTemporalHistory && !temporalEffects.contains(where: { $0.0 == WorkspaceAdjustableEffect.freeze }))
+        if !needsSharedHistory {
             hasHistoryFrame = false
         } else if let historyTexture, shouldWriteHistory {
             encodeHistoryCopy(
@@ -1308,18 +1559,18 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let historySource = presentedTexture
         let hasHistory = ringReady
         publishHistoryFootprint()
-        let fractureState = resolvedFractureState()
-        let fractureDestination = writeToFirstTexture ? effectTextureA : effectTextureB
-        if hasHistory, fractureState.phase.isEngaged, let destination = fractureDestination {
+        let fractureDestination = ObjectIdentifier(presentedTexture) == ObjectIdentifier(effectTextureA)
+            ? effectTextureB
+            : effectTextureA
+        if hasHistory, fractureState.phase.isEngaged {
             encodeSignalFracture(
                 fractureState,
                 source: presentedTexture,
-                destination: destination,
+                destination: fractureDestination,
                 drawableSize: view.drawableSize,
                 commandBuffer: commandBuffer
             )
-            presentedTexture = destination
-            writeToFirstTexture.toggle()
+            presentedTexture = fractureDestination
         }
         if hasHistory {
             encodeHistoryTaps(source: historySource, commandBuffer: commandBuffer)
@@ -1337,7 +1588,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 Float(presentedTexture.height)
             ),
             scanlines: scanlineValues.0,
-            scanlineFlags: scanlineValues.1
+            scanlineFlags: scanlineValues.1,
+            overlays: settings.overlays
         )
         encoder.label = "greyVISION Camera Preview"
         encoder.setRenderPipelineState(previewPipeline)
@@ -1352,15 +1604,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
 
         // Camera recording: the effect stack output is blitted into the
         // writer's pixel-buffer pool, then appended once the GPU finishes.
-        // Pay the history-ring allocation on frame ONE, not mid-take when the
-        // first temporal effect arms.
-        if !temporalPrimed {
-            temporalPrimed = true
-            _ = temporalFrames.prepare(sourceWidth: presentedTexture.width,
-                                       sourceHeight: presentedTexture.height)
-        }
-
-        let (shouldStart, codecRawValue, fps) = recordingMailbox.consumeStartRequest()
+        let (shouldStart, codecRawValue, fps, burnHUD) = recordingMailbox.consumeStartRequest()
         if shouldStart, recordingSession == nil {
             startRecording(
                 size: CGSize(
@@ -1368,7 +1612,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                     height: CGFloat(presentedTexture.height)
                 ),
                 codecRawValue: codecRawValue,
-                fps: fps
+                fps: fps,
+                burnHUD: burnHUD
             )
         }
         var screenshotLease: CameraScreenshotLease?
@@ -1410,7 +1655,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                     encoder.setTexture(presentedTexture, index: 0)
                     encoder.setTexture(lease.texture, index: 1)
                     dispatch(encoder, pipeline: historyTapPipeline, texture: lease.texture)
-                    
+
                     encoder.endEncoding()
                 }
                 recordLease = lease
@@ -1443,12 +1688,13 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let retainedBroadcastLease = broadcastLease
         let retainedScreenshotLease = screenshotLease
         commandBuffer.present(drawable)
+        let reducedDetail = effectQuality.reducedDetail
         commandBuffer.addCompletedHandler { [weak self] buffer in
             _ = retainedLease
             if let bandSlot {
                 self?.readBandLuma(slot: bandSlot)
             }
-            self?.recordCompletion(buffer)
+            self?.recordCompletion(buffer, reducedDetail: reducedDetail)
             if let screenshot = retainedScreenshotLease {
                 self?.finalizeScreenshot(screenshot)
             }
@@ -1463,6 +1709,252 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             retainedRecordLease?.session.append(pixelBuffer, timestamp: recordTimestamp)
         }
         commandBuffer.commit()
+    }
+
+    private func configureRenderGraph(
+        settings: CameraRenderSettings,
+        includeTemporalEffects: Bool
+    ) {
+        var effects: [any RenderEffect] = []
+        var activeSlotIDs = Set<UUID>()
+
+        if settings.rgbSplit.isEnabled {
+            rgbGraphNode.configure(
+                stage: .rgbSplit,
+                parameters: CameraEffectParameters(),
+                rgbSplit: settings.rgbSplit,
+                mix: Float(settings.rgbSplit.mix)
+            )
+            effects.append(rgbGraphNode)
+        }
+
+        for slot in settings.effectStack.orderedSlots {
+            let parameters = slot.parameters.sanitized
+            guard parameters.isEnabled, parameters.blend > 0 else { continue }
+
+            let stage: CameraRenderGraphStage
+            if slot.effect == .fluid {
+                stage = .fluid
+            } else if slot.effect == .reactionGarden {
+                stage = .reactionDiffusion
+            } else if slot.effect.styleMode != nil {
+                stage = .style(slot.effect)
+            } else if slot.effect.temporalMode != nil, includeTemporalEffects || slot.effect.cameraResourceRequirements.contains(.slotHistory) {
+                stage = .temporal(slot.effect)
+            } else {
+                continue
+            }
+
+            activeSlotIDs.insert(slot.id)
+            let node: CameraRenderGraphNode
+            if let existing = graphNodes[slot.id] {
+                node = existing
+            } else {
+                node = CameraRenderGraphNode(identifier: "slot.\(slot.id.uuidString)", owner: self)
+                graphNodes[slot.id] = node
+            }
+            node.configure(
+                stage: stage,
+                parameters: parameters,
+                rgbSplit: nil,
+                mix: Float(parameters.blend)
+            )
+            effects.append(node)
+        }
+
+        let staleSlotIDs = graphNodes.keys.filter { !activeSlotIDs.contains($0) }
+        for id in staleSlotIDs {
+            graphNodes.removeValue(forKey: id)?.releaseResources()
+        }
+        renderGraph.replaceEffects(effects)
+    }
+
+    fileprivate func processGraphNode(
+        _ node: CameraRenderGraphNode,
+        request: EffectRenderRequest
+    ) throws {
+        guard let state = graphFrameState else {
+            throw RenderEffectError.processingFailed("Missing camera graph frame state")
+        }
+
+        switch node.stage {
+        case .rgbSplit:
+            guard let parameters = node.rgbSplitParameters else {
+                throw RenderEffectError.processingFailed("Missing RGB split parameters")
+            }
+            encodeRGBSplit(
+                parameters,
+                source: request.input,
+                destination: request.output,
+                commandBuffer: request.frame.commandBuffer
+            )
+
+        case let .style(effect):
+            encodeStyleEffect(
+                effect,
+                parameters: node.cameraParameters,
+                source: request.input,
+                destination: request.output,
+                commandBuffer: request.frame.commandBuffer,
+                time: state.time,
+                audio: state.settings.audio,
+                audioDynamics: state.settings.audioDynamics,
+                audioSpectrum: state.settings.audioSpectrum,
+                touch: state.touch,
+                touchImpact: state.touchImpact,
+                touchDrag: state.touchDrag,
+                blobs: state.settings.blobs
+            )
+
+        case .fluid:
+            if node.fluidSolver == nil, let shaderLibrary {
+                node.fluidSolver = CameraFluidSolver(device: device, library: shaderLibrary)
+            }
+            guard let solver = node.fluidSolver else {
+                throw RenderEffectError.unavailable("Fluid solver unavailable")
+            }
+            let now = request.frame.timestamp
+            let delta = node.lastFluidTime > 0
+                ? Float(min(max(now - node.lastFluidTime, 1.0 / 120.0), 1.0 / 20.0))
+                : Float(1.0 / 60.0)
+            node.lastFluidTime = now
+            let parameters = node.cameraParameters
+            guard solver.encode(
+                commandBuffer: request.frame.commandBuffer,
+                source: request.input,
+                destination: request.output,
+                touch: state.touch,
+                parameters: CameraFluidParameters(
+                    drag: parameters.primary,
+                    persistence: parameters.secondary,
+                    swirl: parameters.tertiary
+                ),
+                blend: Float(parameters.blend),
+                deltaTime: delta,
+                quality: state.quality
+            ) else {
+                throw RenderEffectError.processingFailed("Fluid solver did not encode")
+            }
+
+        case .reactionDiffusion:
+            if node.reactionSolver == nil, let shaderLibrary {
+                node.reactionSolver = CameraReactionDiffusion(device: device, library: shaderLibrary)
+            }
+            guard let solver = node.reactionSolver,
+                  solver.encode(commandBuffer: request.frame.commandBuffer,
+                                source: request.input, destination: request.output,
+                                parameters: node.cameraParameters, touch: state.touch,
+                                time: request.frame.timestamp, held: state.settings.temporalHoldActive,
+                                maximumEdge: effectQuality.simulationEdge)
+            else {
+                throw RenderEffectError.processingFailed("Reaction Garden did not encode")
+            }
+
+        case let .temporal(effect):
+            // Mosh slots seed and own their recursive image; other temporal
+            // algorithms share the composition history allocated on demand.
+            let historyTexture = historyTexture ?? request.input
+            let freezeForEffect = state.shouldFreezeTemporalHistory && effect.freezesHistoryOnHold
+            let modeValue = effect.temporalMode ?? 0
+            let requiresMoshState = isMoshMode(modeValue)
+            let moshState = requiresMoshState
+                ? prepareMoshState(
+                    for: node,
+                    width: request.output.width,
+                    height: request.output.height,
+                    commandBuffer: request.frame.commandBuffer
+                )
+                : nil
+            if requiresMoshState, moshState == nil {
+                // Never bind full-resolution image history as the writeable
+                // block-state fallback: that aliases a sampled texture and
+                // corrupts the very reference the effect is trying to carry.
+                throw RenderEffectError.resourceAllocationFailed("Mosh Slot state unavailable")
+            }
+            let moshHistory = requiresMoshState
+                ? prepareMoshHistory(
+                    for: node,
+                    width: request.output.width,
+                    height: request.output.height
+                )
+                : nil
+            if requiresMoshState, moshHistory == nil {
+                throw RenderEffectError.resourceAllocationFailed("Mosh Slot history unavailable")
+            }
+            if let moshHistory, node.moshHistoryNeedsSeed {
+                encodeHistoryCopy(
+                    source: request.input,
+                    destination: moshHistory,
+                    commandBuffer: request.frame.commandBuffer
+                )
+                node.moshHistoryNeedsSeed = false
+            }
+            encodeTemporalEffect(
+                effect,
+                parameters: node.cameraParameters,
+                source: request.input,
+                history: moshHistory ?? historyTexture,
+                historyTaps: state.historyTaps,
+                flow: request.frame.motionField.vectorTexture,
+                worldMatrix: state.worldMatrix,
+                ring: state.temporalRing,
+                destination: request.output,
+                commandBuffer: request.frame.commandBuffer,
+                time: state.time,
+                holdActive: freezeForEffect,
+                holdStyle: holdStyle(for: effect, freezeActive: freezeForEffect),
+                holdSeconds: state.holdSeconds,
+                deltaTime: state.deltaTime,
+                audio: state.settings.audio,
+                audioDynamics: state.settings.audioDynamics,
+                audioSpectrum: state.settings.audioSpectrum,
+                touch: state.touch,
+                touchImpact: state.touchImpact,
+                touchDrag: state.touchDrag,
+                moshState: moshState,
+                blobs: state.settings.blobs
+            )
+            // Mosh modes write into the output half of the ping-pong pair; swap
+            // so the next frame reads what this one just produced.
+            if moshState != nil {
+                node.moshStateReadsA.toggle()
+            }
+            if let moshHistory {
+                // Capture this Slot's output after its kernel, before a later
+                // Slot mutates the Composition. Command encoders are ordered
+                // within the buffer, so no second full-frame ping-pong pair is
+                // necessary here.
+                encodeHistoryCopy(
+                    source: request.output,
+                    destination: moshHistory,
+                    commandBuffer: request.frame.commandBuffer
+                )
+            }
+        }
+    }
+
+    /// Bitmask the mosh engine reads as `holdStyle` while a hold is active.
+    /// Each mosh variant opts into a subset of the four behaviours encoded in
+    /// the shader: motion lock, feedback runaway, frame starvation, and vector
+    /// drift. The defaults were tuned against the same sliders as the live
+    /// paths so the held state is the same image family at a different clock.
+    private func holdStyle(for effect: WorkspaceAdjustableEffect, freezeActive: Bool) -> UInt32 {
+        guard freezeActive else { return 0 }
+        switch effect {
+        case .datamosh, .heavyMosh, .vectorCodebook, .motionTransplant, .bitplaneLatch:
+            // MOTION LOCK keeps vectors on their captured course; FEEDBACK
+            // RUNAWAY pulls refresh chance toward zero so a held frame
+            // consumes itself.
+            return 0b0010 | 0b0100
+        case .liquidMosh:
+            return 0b0100
+        case .moshBrush, .predictionDrift:
+            // VECTOR DRIFT lets the frozen prediction field keep mutating, so
+            // the smear does not collapse to a single displacement.
+            return 0b0100 | 0b10000
+        default:
+            return 0
+        }
     }
 
     /// Wraps a fresh CPU-visible pixel buffer for a screenshot. The lease must
@@ -1530,27 +2022,12 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             bytesPerRow: bytesPerRow,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        ), let image = context.makeImage(), let png = UIImage(cgImage: image).pngData() else {
+        ), let image = context.makeImage() else {
             onScreenshotMessage("SCREENSHOT // ENCODE FAILED")
             return
         }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("greyvision-shot-\(Int(Date().timeIntervalSince1970)).png")
-        do {
-            try png.write(to: url)
-        } catch {
-            onScreenshotMessage("SCREENSHOT // WRITE FAILED")
-            return
-        }
-        PHPhotoLibrary.shared().performChanges {
-            PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: url)
-        } completionHandler: { [onScreenshotMessage] success, error in
-            if success {
-                onScreenshotMessage("SCREENSHOT // SAVED TO PHOTOS")
-            } else {
-                onScreenshotMessage("SCREENSHOT // SAVE FAILED")
-                GVLog.recording.error("Screenshot save failed: \(error?.localizedDescription ?? "unknown")")
-            }
+        GVScreenCapture.save(UIImage(cgImage: image)) { [onScreenshotMessage] message in
+            onScreenshotMessage(message)
         }
     }
 
@@ -1574,11 +2051,17 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let pixelBuffer: CVPixelBuffer
     }
 
-    /// Prepares a pooled pixel buffer for the link, or nil when nothing is
-    /// attached or the pool is exhausted because the encoder is behind.
+    /// Prepares a Full HD bounded-size pooled pixel buffer for the link. The local
+    /// preview may be 4K/60, but copying and encoding a second 4K frame stream
+    /// can saturate the shared GPU/video path and stall the phone interface.
     private func makeBroadcastLease(texture source: MTLTexture) -> CameraBroadcastLease? {
+        let longEdge = max(source.width, source.height)
+        let scale = min(1.0, 1920.0 / Double(longEdge))
+        let width = max(2, (Int(Double(source.width) * scale) / 2) * 2)
+        let height = max(2, (Int(Double(source.height) * scale) / 2) * 2)
+
         guard let engine = settingsLock.withLock({ broadcastEngine }), engine.isConnected,
-              let pixelBuffer = broadcastPool.buffer(width: source.width, height: source.height),
+              let pixelBuffer = broadcastPool.buffer(width: width, height: height),
               let textures = makeRecordingTexture(pixelBuffer: pixelBuffer)
         else {
             return nil
@@ -1617,13 +2100,16 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     ) -> (CVMetalTexture, MTLTexture)? {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
+        let metalFormat: MTLPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_64RGBAHalf
+            ? .rgba16Float
+            : .bgra8Unorm
         var lease: CVMetalTexture?
         let result = CVMetalTextureCacheCreateTextureFromImage(
             kCFAllocatorDefault,
             textureCache,
             pixelBuffer,
             nil,
-            .bgra8Unorm,
+            metalFormat,
             width,
             height,
             0,
@@ -1638,24 +2124,45 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         return (lease, texture)
     }
 
-    private func startRecording(size: CGSize, codecRawValue: String, fps: Int) {
+    private func startRecording(size: CGSize, codecRawValue: String, fps _: Int, burnHUD: Bool) {
         guard size.width > 0, size.height > 0 else { return }
-        
+
+        // Capture current orientation from source geometry
+        let geometry = geometryLock.withLock { sourceGeometry }
+        let videoOrientation: CGImagePropertyOrientation
+        let isMirrored = geometry.isMirrored
+        switch geometry.orientation {
+        case .portrait:
+            videoOrientation = isMirrored ? .upMirrored : .up
+        case .portraitUpsideDown:
+            videoOrientation = isMirrored ? .downMirrored : .down
+        case .landscapeLeft:
+            videoOrientation = isMirrored ? .leftMirrored : .left
+        case .landscapeRight:
+            videoOrientation = isMirrored ? .rightMirrored : .right
+        }
+
         let codec = AVVideoCodecType(rawValue: codecRawValue)
         let ext = codecRawValue.lowercased().contains("hevc") || codecRawValue.lowercased().contains("hvc1") ? "mov" : "mov" // All mov
         let timestamp = Int(Date().timeIntervalSince1970)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("greyvision-camera-\(timestamp).\(ext)")
-        let session = GVRealtimeRecordingSession(outputURL: url, size: size, saveToPhotos: true, codec: codec)
+        let session = GVRealtimeRecordingSession(
+            outputURL: url,
+            size: size,
+            saveToPhotos: true,
+            codec: codec,
+            burnHUD: burnHUD
+        )
+        session.videoOrientation = videoOrientation
         guard session.start(withAudio: true) else {
             GVLog.recording.error("Camera recording writer setup failed")
             recordingMailbox.requestStop()
             onRecordingMessage("WRITER UNAVAILABLE")
             return
         }
-        
+
         recordingStartTime = ProcessInfo.processInfo.systemUptime
-        
 
         recordingSession = session
         recordingMailbox.activate(with: session)
@@ -1684,33 +2191,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 self?.onRecordingMessage(error.localizedDescription.uppercased())
             }
         }
-    }
-
-    /// Adaptive quality: how many of the cheapest stacked effects to skip this
-    /// frame. Uses the same EMA of GPU time as `adaptiveTapCount`, with
-    /// hysteresis so an effect never flickers in and out frame to frame: a
-    /// drop is armed only after sustained over-budget frames and restored only
-    /// after a longer stretch under budget.
-    private func adaptiveEffectDropCount() -> Int {
-        let average = statsLock.withLock { gpuMillisecondsAverage }
-        if average > 16.6 {
-            overBudgetStreak += 1
-            underBudgetStreak = 0
-            if overBudgetStreak >= 6, effectBudgetDrops < 3 {
-                effectBudgetDrops += 1
-                overBudgetStreak = 0
-                GVLog.rendering.notice("Adaptive quality: dropping \(self.effectBudgetDrops) stacked effect(s)")
-            }
-        } else if average < 12.0 {
-            underBudgetStreak += 1
-            overBudgetStreak = 0
-            if underBudgetStreak >= 30, effectBudgetDrops > 0 {
-                effectBudgetDrops -= 1
-                underBudgetStreak = 0
-                GVLog.rendering.notice("Adaptive quality: restoring \(self.effectBudgetDrops + 1) stacked effect(s)")
-            }
-        }
-        return effectBudgetDrops
     }
 
     /// Packs the scanline overlay into preview uniforms in drawable pixel
@@ -1744,18 +2224,13 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         )
     }
 
-    /// Adaptive quality: the number of temporal taps sampled inside the tear
-    /// falls back as GPU time rises, rather than dropping the whole effect.
+    /// Signal Fracture always samples its complete temporal ring; reducing the
+    /// tap count would alter an active Composition.
     private var adaptiveTapCount: Int {
-        let average = statsLock.withLock { gpuMillisecondsAverage }
-        return switch average {
-        case ..<9.0: TemporalFrameBuffer.strides.count
-        case ..<12.5: 3
-        default: 2
-        }
+        TemporalFrameBuffer.strides.count
     }
 
-    private func recordCompletion(_ buffer: MTLCommandBuffer) {
+    private func recordCompletion(_ buffer: MTLCommandBuffer, reducedDetail: Bool) {
         let elapsed = max(buffer.gpuEndTime - buffer.gpuStartTime, 0) * 1000
         let stats: CameraRenderStats = statsLock.withLock {
             renderedFrameNumber &+= 1
@@ -1770,7 +2245,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 topChromeLoad: topChromeLoadAverage,
                 deckChromeLoad: deckChromeLoadAverage,
                 bottomChromeLoad: bottomChromeLoadAverage,
-                shedEffects: shedEffectSnapshot
+                shedEffects: shedEffectSnapshot,
+                reducedDetail: reducedDetail
             )
         }
         statsMailbox.publish(stats)
@@ -1900,6 +2376,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private func encodeFlow(
         source: MTLTexture,
         settings: CameraRenderSettings,
+        holdStyle: UInt32,
+        holdSeconds: Float,
         commandBuffer: MTLCommandBuffer
     ) {
         guard let currentLuma = flowField.currentLuma,
@@ -1907,6 +2385,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
               let current = flowField.current,
               let previous = flowField.previous,
               let persistent = flowField.persistent,
+              let persistentOutput = flowField.persistentOutput,
               let frozen = flowField.frozen,
               let encoder = commandBuffer.makeComputeCommandEncoder()
         else {
@@ -1914,6 +2393,12 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         }
 
         let (width, height) = flowField.size
+        // The flow field needs the same `holdStyle` / `holdSeconds` pair the
+        // mosh engine consumes, so the persistent motion vector can either
+        // stay locked to its captured course (MOTION LOCK) or bleed away
+        // under an exponential decay. Without these the field would either
+        // snap to zero or repeat the same vector forever on every held frame.
+        let packedHoldSeconds = UInt32(min(max(holdSeconds, 0) * 65536.0, 4294967295.0))
         var uniforms = FlowUniforms(
             viewport: SIMD4<Float>(
                 Float(width),
@@ -1924,11 +2409,38 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             // Search radius, persistence, decay, gain. These are the engine
             // defaults; per-effect controls scale the field where it is read
             // rather than here, so one accumulation serves every consumer.
-            controls: SIMD4<Float>(6, 0.82, 0.10, 1.0),
-            flags: SIMD4<UInt32>(settings.temporalHoldActive ? 1 : 0, 0, 0, 0)
+            //
+            // Search radius was 6, bumped to 9 so the first step of the
+            // three-step log search covers a wider area; the seed is the
+            // previous frame's motion and a fast pan can outrun a 6-texel
+            // radius, leaving the search locked to a stale vector.
+            //
+            // Persistence was 0.82, dropped to 0.55 so the persistent field
+            // tracks the live estimate on the same frame the estimate
+            // changes. The effect is that datamosh / motion hold / motion
+            // transplant follow the camera instead of trailing it by a frame.
+            controls: SIMD4<Float>(9, 0.55, 0.10, 1.0),
+            flags: SIMD4<UInt32>(
+                // The rising-edge frame still accumulates live flow, then
+                // snapshots that finished result below. Reading `frozen`
+                // before the snapshot used undefined private-texture memory.
+                settings.temporalHoldActive && flowField.hasSnapshot ? 1 : 0,
+                0,
+                holdStyle,
+                packedHoldSeconds
+            )
         )
 
         encoder.label = "greyVISION Optical Flow"
+
+        if flowField.needsClear {
+            encoder.setComputePipelineState(flowClearPipeline)
+            for texture in [current, previous, persistent, persistentOutput, frozen] {
+                encoder.setTexture(texture, index: 0)
+                dispatch(encoder, pipeline: flowClearPipeline, texture: texture)
+            }
+            flowField.markCleared()
+        }
 
         encoder.setComputePipelineState(flowLumaPipeline)
         encoder.setTexture(source, index: 0)
@@ -1951,23 +2463,32 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             encoder.setTexture(current, index: 0)
             encoder.setTexture(persistent, index: 1)
             encoder.setTexture(frozen, index: 2)
-            encoder.setTexture(persistent, index: 3)
+            encoder.setTexture(persistentOutput, index: 3)
             encoder.setBytes(&uniforms, length: MemoryLayout<FlowUniforms>.stride, index: 0)
-            dispatch(encoder, pipeline: flowAccumulatePipeline, texture: persistent)
+            dispatch(encoder, pipeline: flowAccumulatePipeline, texture: persistentOutput)
         }
 
         encoder.endEncoding()
 
+        let accumulatedFlow = flowField.isPrimed
+        if accumulatedFlow {
+            // Consumers bind `persistent`, so rotate the completed write into
+            // that role before the temporal graph is encoded.
+            flowField.advancePersistent()
+        }
+
         // MOTION HOLD captures on the rising edge. Copying the field once, at
         // the moment the finger lands, is what lets the held motion keep
         // driving displacement while live frames continue to arrive.
-        if settings.temporalHoldActive, !flowField.hasSnapshot {
-            if let blit = commandBuffer.makeBlitCommandEncoder() {
+        if settings.temporalHoldActive, !flowField.hasSnapshot, accumulatedFlow {
+            if let captured = flowField.persistent,
+               let blit = commandBuffer.makeBlitCommandEncoder()
+            {
                 blit.label = "greyVISION Flow Snapshot"
-                blit.copy(from: persistent, to: frozen)
+                blit.copy(from: captured, to: frozen)
                 blit.endEncoding()
+                flowField.markSnapshot()
             }
-            flowField.markSnapshot()
         } else if !settings.temporalHoldActive, flowField.hasSnapshot {
             flowField.clearSnapshot()
         }
@@ -2209,6 +2730,17 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         statsMailbox.clear()
         touchMailbox.clear()
         temporalFrames.release()
+        renderGraph.effects.forEach { $0.releaseResources() }
+        renderGraph.replaceEffects([])
+        graphNodes.removeAll(keepingCapacity: false)
+        rgbGraphNode.releaseResources()
+        renderTexturePool.purgeAvailable()
+        renderTemporalBuffers.reset(reason: .renderRestarted)
+        renderMotionField.reset()
+        graphFrameState = nil
+        previousRenderTime = nil
+        temporalSourceSignature = nil
+        temporalHoldBeganAt = nil
         linearTexture = nil
         effectTextureA = nil
         effectTextureB = nil
@@ -2251,19 +2783,27 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         sourceHeight: Int,
         drawableSize: CGSize
     ) -> (width: Int, height: Int) {
-        if recordingSession != nil || recordingMailbox.isStartPending || screenshotMailbox.isCapturePending {
+        let isHoldingFullResolution = recordingSession != nil
+            || recordingMailbox.isStartPending
+            || screenshotMailbox.isCapturePending
+        if isHoldingFullResolution {
             // Held for a moment after, so a burst of stills does not resize the
             // chain — and the history with it — once per press.
             fullResolutionHold = 24
         } else if fullResolutionHold > 0 {
             fullResolutionHold -= 1
         }
+        // A take in progress outranks the governor. The recorded file has to
+        // match what the operator was looking at, not whatever rung the
+        // preview happened to have settled on when they hit record.
+        effectQuality.setFullResolutionHold(fullResolutionHold > 0)
 
         return CameraChainResolution.resolve(
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
             drawablePixels: Double(drawableSize.width * drawableSize.height),
-            fullResolution: fullResolutionHold > 0
+            fullResolution: fullResolutionHold > 0,
+            renderScale: effectQuality.renderScale
         )
     }
 
@@ -2273,9 +2813,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             effectTextureA?.width == width &&
             effectTextureA?.height == height &&
             effectTextureB?.width == width &&
-            effectTextureB?.height == height &&
-            historyTexture?.width == width &&
-            historyTexture?.height == height
+            effectTextureB?.height == height
         if texturesMatch {
             return true
         }
@@ -2290,22 +2828,105 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         descriptor.usage = [.shaderRead, .shaderWrite]
         guard let linearTexture = device.makeTexture(descriptor: descriptor),
               let effectTextureA = device.makeTexture(descriptor: descriptor),
-              let effectTextureB = device.makeTexture(descriptor: descriptor),
-              let historyTexture = device.makeTexture(descriptor: descriptor)
+              let effectTextureB = device.makeTexture(descriptor: descriptor)
         else {
             return false
         }
         linearTexture.label = "greyVISION Linear Camera Frame"
         effectTextureA.label = "greyVISION Effect Ping"
         effectTextureB.label = "greyVISION Effect Pong"
-        historyTexture.label = "greyVISION Temporal History"
         self.linearTexture = linearTexture
         self.effectTextureA = effectTextureA
         self.effectTextureB = effectTextureB
-        self.historyTexture = historyTexture
+        historyTexture = nil
+        renderGraph.effects.forEach { $0.reset(reason: .formatChanged) }
+        renderTemporalBuffers.reset(reason: .renderRestarted)
+        renderMotionField.reset()
         hasLinearFrame = false
         hasHistoryFrame = false
         return true
+    }
+
+    private func prepareMoshState(
+        for node: CameraRenderGraphNode,
+        width: Int,
+        height: Int,
+        commandBuffer: MTLCommandBuffer
+    ) -> (input: MTLTexture, output: MTLTexture)? {
+        let stateWidth = max((width + 7) / 8, 1)
+        let stateHeight = max((height + 7) / 8, 1)
+        let matches = node.moshStateA?.width == stateWidth &&
+            node.moshStateA?.height == stateHeight &&
+            node.moshStateB?.width == stateWidth &&
+            node.moshStateB?.height == stateHeight
+
+        if !matches {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba16Float,
+                width: stateWidth,
+                height: stateHeight,
+                mipmapped: false
+            )
+            descriptor.storageMode = .private
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            guard let stateA = device.makeTexture(descriptor: descriptor),
+                  let stateB = device.makeTexture(descriptor: descriptor),
+                  let encoder = commandBuffer.makeComputeCommandEncoder()
+            else {
+                return nil
+            }
+            stateA.label = "\(node.identifier) Mosh State A"
+            stateB.label = "\(node.identifier) Mosh State B"
+            encoder.label = "greyVISION Slot Mosh State Clear"
+            encoder.setComputePipelineState(moshClearStatePipeline)
+            encoder.setTexture(stateA, index: 0)
+            dispatch(encoder, pipeline: moshClearStatePipeline, texture: stateA)
+            encoder.setTexture(stateB, index: 0)
+            dispatch(encoder, pipeline: moshClearStatePipeline, texture: stateB)
+            encoder.endEncoding()
+            node.moshStateA = stateA
+            node.moshStateB = stateB
+            node.moshStateReadsA = true
+        }
+
+        guard let stateA = node.moshStateA, let stateB = node.moshStateB else { return nil }
+        return node.moshStateReadsA ? (stateA, stateB) : (stateB, stateA)
+    }
+
+    private func prepareMoshHistory(
+        for node: CameraRenderGraphNode,
+        width: Int,
+        height: Int
+    ) -> MTLTexture? {
+        if let history = node.moshHistory,
+           history.width == width,
+           history.height == height
+        {
+            return history
+        }
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        descriptor.storageMode = .private
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        guard let history = device.makeTexture(descriptor: descriptor) else { return nil }
+        history.label = "\(node.identifier) Mosh History"
+        node.moshHistory = history
+        node.moshHistoryNeedsSeed = true
+        return history
+    }
+
+    private func isMoshMode(_ mode: UInt32) -> Bool {
+        switch mode {
+        case 4, 39, 40, 41, 43, 44, 45, 46:
+            true
+        default:
+            false
+        }
     }
 
     private func encodeYUVFrame(
@@ -2389,8 +3010,11 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         commandBuffer: MTLCommandBuffer,
         time: Float,
         audio: SIMD4<Float>,
+        audioDynamics: SIMD4<Float>,
+        audioSpectrum: CameraAudioSpectrum,
         touch: SIMD4<Float>,
         touchImpact: SIMD4<Float>,
+        touchDrag: SIMD4<Float>,
         blobs: [SIMD4<Float>]
     ) {
         guard let mode = effect.styleMode,
@@ -2413,10 +3037,19 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 1 / Float(max(destination.width, 1)),
                 1 / Float(max(destination.height, 1))
             ),
-            extra: SIMD4<Float>(Float(values.blend), 0, 0, 0),
+            // `extra.yz` are intentionally reserved for freeform scope
+            // placement. Other style modes leave them unread, while spectrum
+            // slots retain their own position when duplicated or recorded.
+            extra: SIMD4<Float>(
+                Float(values.blend),
+                Float(values.overlayX),
+                Float(values.overlayY),
+                0
+            ),
             audio: audio,
             touch: touch,
             touchImpact: touchImpact,
+            touchDrag: touchDrag,
             audioDynamics: audioDynamics,
             blob0: !blobs.isEmpty ? blobs[0] : .zero,
             blob1: blobs.count > 1 ? blobs[1] : .zero,
@@ -2431,7 +3064,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             worldReprojection: matrix_identity_float3x3
         )
         encoder.label = "greyVISION \(effect.label)"
-        encoder.setComputePipelineState(styleEffectPipeline)
+        let pipeline = stylePipeline(for: mode)
+        encoder.setComputePipelineState(pipeline)
         encoder.setTexture(source, index: 0)
         encoder.setTexture(destination, index: 1)
         encoder.setBytes(
@@ -2439,7 +3073,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             length: MemoryLayout<CameraStyleEffectUniforms>.stride,
             index: 0
         )
-        dispatch(encoder, pipeline: styleEffectPipeline, texture: destination)
+        dispatch(encoder, pipeline: pipeline, texture: destination)
         encoder.endEncoding()
     }
 
@@ -2457,9 +3091,16 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         commandBuffer: MTLCommandBuffer,
         time: Float,
         holdActive: Bool,
+        holdStyle: UInt32,
+        holdSeconds: Float,
+        deltaTime: Float,
         audio: SIMD4<Float>,
+        audioDynamics: SIMD4<Float>,
+        audioSpectrum: CameraAudioSpectrum,
         touch: SIMD4<Float>,
         touchImpact: SIMD4<Float>,
+        touchDrag: SIMD4<Float>,
+        moshState: (input: MTLTexture, output: MTLTexture)?,
         blobs: [SIMD4<Float>]
     ) {
         guard let mode = effect.temporalMode,
@@ -2468,8 +3109,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             return
         }
         let values = parameters.sanitized
+        let packedDelta = UInt32(min(max(deltaTime, 1.0 / 240.0) * 65536.0, 4294967295.0))
         var uniforms = CameraStyleEffectUniforms(
-            mode: SIMD4<UInt32>(mode, 0, 0, 0),
+            mode: SIMD4<UInt32>(mode, holdStyle, packedDelta, 0),
             parameters: SIMD4<Float>(
                 Float(values.primary),
                 Float(values.secondary),
@@ -2488,11 +3130,12 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 // Guards every flow read. Without it the first frames after a
                 // resolution change displace against an unwritten texture.
                 flow != nil && flowField.isPrimed ? 1 : 0,
-                0
+                max(holdSeconds, 0)
             ),
             audio: audio,
             touch: touch,
             touchImpact: touchImpact,
+            touchDrag: touchDrag,
             audioDynamics: audioDynamics,
             blob0: !blobs.isEmpty ? blobs[0] : .zero,
             blob1: blobs.count > 1 ? blobs[1] : .zero,
@@ -2523,6 +3166,17 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         // never null, and the shader gates on `extra.z` rather than on the
         // texture's contents.
         encoder.setTexture(flow ?? history, index: 7)
+        // Slots 9 and 10 are the mosh engine's block-state field. Non-mosh
+        // modes never read them, but Metal still requires the bindings to be
+        // populated; the history texture stands in so the first frame after a
+        // resolution change is still well-defined.
+        if let moshState {
+            encoder.setTexture(moshState.input, index: 9)
+            encoder.setTexture(moshState.output, index: 10)
+        } else {
+            encoder.setTexture(history, index: 9)
+            encoder.setTexture(history, index: 10)
+        }
         // Slot 8 plus buffers 1 and 2 are the timestamped ring. Bound every
         // frame; `ringInfo.validCount` is what gates use, so a shader can read
         // it safely before any frame has been recorded.
@@ -2575,11 +3229,75 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         texture: MTLTexture
     ) {
         let width = max(1, pipeline.threadExecutionWidth)
-        let height = max(1, pipeline.maxTotalThreadsPerThreadgroup / width)
+        // Filling the hardware maximum produced 32x32 (1,024-thread) groups on
+        // current Apple GPUs. Heavy FBM/raymarch kernels then kept too many
+        // registers live for a second resident group. Four to eight SIMDgroups
+        // is the better occupancy/boundary-efficiency balance for this 2D work.
+        let targetThreads = min(256, pipeline.maxTotalThreadsPerThreadgroup)
+        let height = max(1, targetThreads / width)
         encoder.dispatchThreads(
             MTLSize(width: texture.width, height: texture.height, depth: 1),
             threadsPerThreadgroup: MTLSize(width: width, height: height, depth: 1)
         )
+    }
+
+    /// Returns a mode-specialized kernel when ready, otherwise the generic
+    /// kernel. Every thread in a pass uses one mode, so specialization lets the
+    /// compiler dead-strip the giant switch without changing Composition order
+    /// or introducing a first-use hitch.
+    private func stylePipeline(for mode: UInt32) -> MTLComputePipelineState {
+        if let pipeline = stylePipelineCacheLock.withLock({ styleEffectPipelines[mode] }) {
+            return pipeline
+        }
+        scheduleStylePipelineSpecialization(for: mode)
+        return styleEffectPipeline
+    }
+
+    private func scheduleStylePipelineSpecialization(for mode: UInt32) {
+        let shouldCompile = stylePipelineCacheLock.withLock { () -> Bool in
+            guard styleEffectPipelines[mode] == nil,
+                  !pendingStylePipelineModes.contains(mode),
+                  !failedStylePipelineModes.contains(mode)
+            else {
+                return false
+            }
+            pendingStylePipelineModes.insert(mode)
+            return true
+        }
+        guard shouldCompile else { return }
+
+        stylePipelineCompilationQueue.async { [weak self] in
+            guard let self, let shaderLibrary = self.shaderLibrary else { return }
+            var specializedMode = mode
+            let constants = MTLFunctionConstantValues()
+            constants.setConstantValue(
+                &specializedMode,
+                type: .uint,
+                index: CameraMetalShaderNames.styleModeFunctionConstantIndex
+            )
+            let function = try? shaderLibrary.makeFunction(
+                name: CameraMetalShaderNames.styleEffect,
+                constantValues: constants
+            )
+            let pipeline = function.flatMap {
+                try? self.device.makeComputePipelineState(function: $0)
+            }
+
+            self.stylePipelineCacheLock.withLock {
+                self.pendingStylePipelineModes.remove(mode)
+                if let pipeline {
+                    self.styleEffectPipelines[mode] = pipeline
+                } else {
+                    // Keep using the correct generic kernel, but do not turn a
+                    // device-specific compiler rejection into a retry every
+                    // render frame.
+                    self.failedStylePipelineModes.insert(mode)
+                }
+            }
+            if pipeline == nil {
+                GVLog.rendering.warning("Style PSO specialization unavailable for mode \(mode)")
+            }
+        }
     }
 
     private func makeTextures(frame: CapturedFrame) -> CameraFrameTextureLease? {

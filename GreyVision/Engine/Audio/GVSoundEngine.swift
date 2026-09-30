@@ -107,6 +107,8 @@ final class GVSoundEngine {
         /// Fires once the system arms. The discharge is the payoff for the
         /// load bed that preceded it.
         case systemReady
+        /// Passcode accepted — bright chime over the unlock thud.
+        case successChime
 
         var resource: String {
             switch self {
@@ -117,6 +119,7 @@ final class GVSoundEngine {
             case .systemReady: "gv_electricity"
             case .blip: "gv_short_beep"
             case .errorGlitch, .errorGlitchReversed, .errorGlitchSlow: "gv_error_glitch"
+            case .successChime: "success-chime"
             }
         }
 
@@ -166,6 +169,7 @@ final class GVSoundEngine {
             // is texture rather than an event.
             case .sceneLoad: 0.11
             case .systemReady: 0.26
+            case .successChime: 0.24
             }
         }
     }

@@ -250,6 +250,13 @@ struct GVTerminalParameterRow: View {
     var tracking: CGFloat = 0.68
     var defaultValue: Double?
     var identifier: String?
+    /// Fires once when a scrub starts and once when it ends.
+    ///
+    /// The binding writes on every frame of the drag, and anything that
+    /// snapshots the value per write — undo history, autosave — turns a
+    /// one-second scrub into a hundred entries. This is how a caller brackets
+    /// the gesture instead.
+    var onEditingChanged: ((Bool) -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -435,6 +442,7 @@ struct GVTerminalParameterRow: View {
                     continuous = value
                     delta = 0
                     GVParameterHaptics.prepare()
+                    onEditingChanged?(true)
                 }
                 let dx = gesture.translation.width - lastTranslation
                 lastTranslation = gesture.translation.width
@@ -457,9 +465,11 @@ struct GVTerminalParameterRow: View {
                 }
             }
             .onEnded { _ in
+                guard isDragging else { return }
                 isDragging = false
                 precision = 1
                 delta = 0
+                onEditingChanged?(false)
             }
     }
 

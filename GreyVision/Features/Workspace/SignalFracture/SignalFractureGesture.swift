@@ -3,9 +3,8 @@ import UIKit
 /// Two-finger membrane gesture.
 ///
 /// It only claims a touch sequence once **exactly two** contacts are down, so
-/// the existing single-finger tap-to-focus and press-and-hold recognisers are
-/// untouched. Zoom in this app is driven by the camera deck's explicit
-/// controls rather than a pinch, so nothing is displaced by this gesture.
+/// single-finger tap-to-focus and touch-reactive effects remain available.
+/// Zoom is driven by the camera deck's explicit controls rather than a pinch.
 final class SignalFractureGestureRecognizer: UIGestureRecognizer {
     /// Normalised contact points (0...1, origin top-left of the view).
     private(set) var normalizedA = CGPoint(x: 0.5, y: 0.5)

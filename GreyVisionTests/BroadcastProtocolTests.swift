@@ -42,9 +42,17 @@ final class BroadcastProtocolTests: XCTestCase {
         badMagic[0] = 0
         XCTAssertNil(GVBroadcastProtocol.Header.decode(badMagic), "a bad magic must not parse")
 
-        var badKind = GVBroadcastProtocol.Header(kind: .videoFrame, payloadLength: 4).encoded
-        badKind[4] = 99
-        XCTAssertNil(GVBroadcastProtocol.Header.decode(badKind), "an unknown message kind must not parse")
+        // An unknown kind is NOT a broken stream: the header still carries a
+        // payload length, so the reader decodes it with a nil kind and skips
+        // that many bytes. This is what lets a peer add a message type
+        // without dropping every older build (see controlSurface/controlState).
+        var unknownKind = GVBroadcastProtocol.Header(kind: .videoFrame, payloadLength: 4).encoded
+        unknownKind[4] = 99
+        let decoded = GVBroadcastProtocol.Header.decode(unknownKind)
+        XCTAssertNotNil(decoded, "an unknown kind must stay framed so its payload can be skipped")
+        XCTAssertNil(decoded?.kind)
+        XCTAssertTrue(decoded?.isUnknownKind == true)
+        XCTAssertEqual(decoded?.payloadLength, 4)
 
         XCTAssertNil(GVBroadcastProtocol.Header.decode(Data([1, 2, 3])), "a short buffer must not parse")
     }

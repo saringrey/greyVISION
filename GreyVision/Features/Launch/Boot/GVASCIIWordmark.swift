@@ -49,7 +49,7 @@ struct GVASCIIWordmark: View {
                 if reduceMotion {
                     asciiText(mask.render(time: 0, tilt: .zero, waves: false, reveal: 1))
                 } else {
-                    TimelineView(.animation(minimumInterval: 1 / 24, paused: false)) { timeline in
+                    TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { timeline in
                         let time = timeline.date.timeIntervalSinceReferenceDate
                         asciiText(
                             mask.render(
@@ -59,6 +59,8 @@ struct GVASCIIWordmark: View {
                                 reveal: reveal(at: timeline.date)
                             )
                         )
+                        .shadow(color: accent.opacity(0.35 + 0.2 * sin(time * 1.8)), radius: 4)
+                        .offset(y: enableWaves ? sin(time * 1.2) * 1.5 : 0)
                     }
                 }
             } else {

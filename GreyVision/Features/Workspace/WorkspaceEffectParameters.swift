@@ -6,6 +6,7 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case datamosh
     case liquidMosh
     case heavyMosh
+    case predictionDrift
     case sort
     case depthSort
     case objectSort
@@ -172,6 +173,51 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case timeMap
     /// Full Eulerian fluid solve. Runs its own multi-pass stage.
     case fluid
+    // SHADERS. Colorful, interactive, audio-reactive GPU generative shaders.
+    case cyberGrid
+    case astralPlasma
+    case quantumRaymarch
+    case liquidChroma
+    case holoAurora
+    // NEW INTERACTIVE SHADERS - generative, audio-reactive, touch-responsive
+    case neuralFlow
+    case voxelStorm
+    case fractalZoom
+    case particleLife
+    case waveformTunnel
+    case spectralFlower
+    case glitchWeave
+    case hologramMatrix
+    case singularityLens
+    case causticReactor
+    case eventHorizon
+    // FULL COLOR. Fast, tactile component-inspired generative shaders.
+    case prismPortal
+    case neonOrbit
+    case chromeRipple
+    case laserGarden
+    case hyperBloom
+    case pixelConfetti
+    case solarFlare
+    case candyMesh
+    case auroraGlass
+    case cosmicKnot
+    case nebulaDrift
+    case quantumBloom
+    case plasmaRipple
+    case chromascrape
+    case singularityWeave
+    case fractalBurst
+    case vortexPulse
+    case spectralNova
+    case ionStorm
+    case opalWave
+    case cmykPress
+    case spectralDiffraction
+    case reactionGarden
+    case vectorCodebook
+    case motionTransplant
+    case bitplaneLatch
 
     var id: String {
         rawValue
@@ -287,13 +333,55 @@ extension WorkspaceAdjustableEffect {
         .lissajous,
         .vectorscope,
         .waveformMonitor,
-        .rgbParade
+        .rgbParade,
+        .cyberGrid,
+        .astralPlasma,
+        .quantumRaymarch,
+        .liquidChroma,
+        .holoAurora,
+        .neuralFlow,
+        .voxelStorm,
+        .fractalZoom,
+        .particleLife,
+        .waveformTunnel,
+        .spectralFlower,
+        .glitchWeave,
+        .hologramMatrix,
+        .singularityLens,
+        .causticReactor,
+        .eventHorizon,
+        .prismPortal,
+        .neonOrbit,
+        .chromeRipple,
+        .laserGarden,
+        .hyperBloom,
+        .pixelConfetti,
+        .solarFlare,
+        .candyMesh,
+        .auroraGlass,
+        .cosmicKnot,
+        .nebulaDrift,
+        .quantumBloom,
+        .plasmaRipple,
+        .chromascrape,
+        .singularityWeave,
+        .fractalBurst,
+        .vortexPulse,
+        .spectralNova,
+        .ionStorm,
+        .opalWave,
+        .cmykPress,
+        .spectralDiffraction
     ]
 
     static let temporalRenderOrder: [WorkspaceAdjustableEffect] = [
         .datamosh,
         .liquidMosh,
         .heavyMosh,
+        .predictionDrift,
+        .vectorCodebook,
+        .motionTransplant,
+        .bitplaneLatch,
         .moshBrush,
         .timeMap,
         .sort,
@@ -346,12 +434,16 @@ extension WorkspaceAdjustableEffect {
     /// because an effect present in both would rank by its style position and
     /// quietly render out of temporal order.
     static let defaultPlacementOrder: [WorkspaceAdjustableEffect] =
-        metalRenderOrder + temporalRenderOrder
+        metalRenderOrder + temporalRenderOrder + [.fluid, .reactionGarden]
 
     static let datamoshCategoryEffects: [WorkspaceAdjustableEffect] = [
         .datamosh,
         .liquidMosh,
         .heavyMosh,
+        .predictionDrift,
+        .vectorCodebook,
+        .motionTransplant,
+        .bitplaneLatch,
         .moshBrush,
         .sort,
         .depthSort,
@@ -371,12 +463,12 @@ extension WorkspaceAdjustableEffect {
         .pixelShift
     ]
 
-
     static let blockCategoryEffects: [WorkspaceAdjustableEffect] = [
         .pixelate,
         .posterize,
         .dither,
         .halftone,
+        .cmykPress,
         .threshold,
         .edge,
         .emboss,
@@ -396,7 +488,6 @@ extension WorkspaceAdjustableEffect {
         .freeze,
         .motionBloom,
         .slitScan
-        // Moved out of EXPERIMENTAL: both accumulate over time.
     ]
 
     static let flowCategoryEffects: [WorkspaceAdjustableEffect] = [
@@ -405,7 +496,17 @@ extension WorkspaceAdjustableEffect {
         .water,
         .touchWarp,
         .vectorWarp
-        // Moved out of EXPERIMENTAL: it is a vector field warp.
+    ]
+
+    /// Straight color grades. Split out of glitch so a "color" lookup lands
+    /// here directly; the family is small enough to show effects with no
+    /// subgroups.
+    static let colorCategoryEffects: [WorkspaceAdjustableEffect] = [
+        .thermal,
+        .solarize,
+        .hueShift,
+        .invert,
+        .monochrome
     ]
 
     static let glitchCategoryEffects: [WorkspaceAdjustableEffect] = [
@@ -413,25 +514,7 @@ extension WorkspaceAdjustableEffect {
         .signalTear,
         .vhs,
         .grain,
-        .thermal,
-        .solarize,
-        .hueShift,
-        .invert,
-        .monochrome,
         .crt
-    ]
-
-    /// Genuinely experimental: expensive, unstable, or not yet settled.
-    ///
-    /// This list had grown to ten because it was being used as the place to
-    /// put anything that did not obviously belong elsewhere. Most of those
-    /// effects were not experimental at all — a prism streak is optics, a
-    /// voronoi is a field. They have been moved to the families they actually
-    /// belong to, which both thins this rail and fills out the thin ones.
-    static let experimentalCategoryEffects: [WorkspaceAdjustableEffect] = [
-        .fluid,
-        .dataBend,
-        .hologram
     ]
 
     /// Effects driven by the live FFT bands. Selecting any of these arms the
@@ -471,6 +554,7 @@ extension WorkspaceAdjustableEffect {
 
     static let opticsCategoryEffects: [WorkspaceAdjustableEffect] = [
         .chromaticAberration,
+        .spectralDiffraction,
         .anamorphicFlare,
         .bokeh,
         .tiltShift,
@@ -482,7 +566,7 @@ extension WorkspaceAdjustableEffect {
         .softFocus,
         .vignette,
         .prismStreak,
-        // Moved out of EXPERIMENTAL: this is a lens artefact.
+        .hologram,
         .frostedGlass,
         .lensWarp
     ]
@@ -499,7 +583,6 @@ extension WorkspaceAdjustableEffect {
         .degauss,
         .printThrough,
         .phosphor
-        // Moved out of EXPERIMENTAL: phosphor is analog display decay.
     ]
 
     static let geometryCategoryEffects: [WorkspaceAdjustableEffect] = [
@@ -529,7 +612,6 @@ extension WorkspaceAdjustableEffect {
         .edgeGlow,
         .reactionBands,
         .voronoi,
-        // Moved out of EXPERIMENTAL: sits beside worleyCracks.
         .domainWarp
     ]
 
@@ -563,12 +645,43 @@ extension WorkspaceAdjustableEffect {
         .dctBlocks
     ]
 
-    static let decayCategoryEffects: [WorkspaceAdjustableEffect] = [
-        .pixelMelt,
-        .corrode,
-        .burnThrough,
-        .ashDrift,
-        .bitRot
+    static let shaderCategoryEffects: [WorkspaceAdjustableEffect] = [
+        .cyberGrid,
+        .astralPlasma,
+        .quantumRaymarch,
+        .liquidChroma,
+        .holoAurora,
+        .neuralFlow,
+        .voxelStorm,
+        .fractalZoom,
+        .particleLife,
+        .waveformTunnel,
+        .spectralFlower,
+        .glitchWeave,
+        .hologramMatrix,
+        .singularityLens,
+        .causticReactor,
+        .eventHorizon,
+        .prismPortal,
+        .neonOrbit,
+        .chromeRipple,
+        .laserGarden,
+        .hyperBloom,
+        .pixelConfetti,
+        .solarFlare,
+        .candyMesh,
+        .auroraGlass,
+        .cosmicKnot,
+        .nebulaDrift,
+        .quantumBloom,
+        .plasmaRipple,
+        .chromascrape,
+        .singularityWeave,
+        .fractalBurst,
+        .vortexPulse,
+        .spectralNova,
+        .ionStorm,
+        .opalWave
     ]
 
     /// Effects that accumulate in a world-locked frame. The renderer only
@@ -580,30 +693,73 @@ extension WorkspaceAdjustableEffect {
     /// Anything that reads the live spectrum must be able to turn the
     /// microphone on, otherwise the effect renders against a silent uniform.
     var requiresAudioAnalysis: Bool {
-        // The spectrum scopes are not in the AUDIO family - they live in
-        // SCOPE - but they read the same FFT, and a scope that draws a flat
-        // line because nothing armed the microphone reads as broken.
+        // The spectrum scopes and shader family read the live FFT, and need
+        // the microphone armed to react dynamically.
         WorkspaceAdjustableEffect.audioCategoryEffects.contains(self)
+            || WorkspaceAdjustableEffect.shaderCategoryEffects.contains(self)
             || [.spectrumBars, .radialSpectrum, .lissajous].contains(self)
     }
 
+    /// Spectrum instruments are composited as movable overlays rather than as
+    /// a full-frame grade. Their placement is kept with the slot, so two
+    /// spectrum instances can live in different parts of the composition.
+    var isSpectrumOverlay: Bool {
+        self == .spectrumBars || self == .radialSpectrum
+    }
+
+    // MARK: - Consolidated categories (10 effect families)
+
+    /// All frame-history work: mosh/sort/smear plus the sarin
+    /// motion-as-material experiments, which read the same flow field and
+    /// frame ring.
+    static let timeCategoryEffects: [WorkspaceAdjustableEffect] = datamoshCategoryEffects + sarinCategoryEffects
+
+    /// Merged motion: temporal feedback + vector flow + the fluid solve.
+    static let motionCategoryEffects: [WorkspaceAdjustableEffect] = feedbackCategoryEffects + flowCategoryEffects + [.fluid]
+    /// Pixel-integrity group: primitive rebuilds + transport failure + decay.
+    static let decayCategoryEffects: [WorkspaceAdjustableEffect] = blockCategoryEffects + damageCategoryEffects + [
+        .pixelMelt,
+        .corrode,
+        .burnThrough,
+        .ashDrift,
+        .bitRot
+    ]
+    /// Decorative glitch + analog tape + the reassigned data bend. Color
+    /// grades moved to COLOR; optics moved to OPTICS.
+    static let signalCategoryEffects: [WorkspaceAdjustableEffect] = glitchCategoryEffects + analogCategoryEffects + [.dataBend]
+    /// Merged form: spatial geometry + field warps + the reassigned garden.
+    static let formCategoryEffects: [WorkspaceAdjustableEffect] = geometryCategoryEffects + fieldCategoryEffects + [.reactionGarden]
+
     static let curatedCategoryEffectGroups: [[WorkspaceAdjustableEffect]] = [
-        datamoshCategoryEffects,
-        blockCategoryEffects,
-        feedbackCategoryEffects,
-        flowCategoryEffects,
-        glitchCategoryEffects,
-        experimentalCategoryEffects,
-        audioCategoryEffects,
-        opticsCategoryEffects,
-        analogCategoryEffects,
-        geometryCategoryEffects,
-        fieldCategoryEffects,
+        colorCategoryEffects,
+        timeCategoryEffects,
+        motionCategoryEffects,
         decayCategoryEffects,
-        damageCategoryEffects,
-        sarinCategoryEffects,
+        signalCategoryEffects,
+        opticsCategoryEffects,
+        formCategoryEffects,
+        shaderCategoryEffects,
+        audioCategoryEffects,
         scopeCategoryEffects,
     ]
+
+    /// The curated family this effect fans out with, plus a rail title for the
+    /// radial ring. Nil only for effects that belong to no family rail.
+    var curatedFamily: (title: String, effects: [WorkspaceAdjustableEffect])? {
+        let families: [(title: String, effects: [WorkspaceAdjustableEffect])] = [
+            (title: "COLOR", effects: WorkspaceAdjustableEffect.colorCategoryEffects),
+            (title: "TIME", effects: WorkspaceAdjustableEffect.timeCategoryEffects),
+            (title: "MOTION", effects: WorkspaceAdjustableEffect.motionCategoryEffects),
+            (title: "DECAY", effects: WorkspaceAdjustableEffect.decayCategoryEffects),
+            (title: "SIGNAL", effects: WorkspaceAdjustableEffect.signalCategoryEffects),
+            (title: "OPTICS", effects: WorkspaceAdjustableEffect.opticsCategoryEffects),
+            (title: "FORM", effects: WorkspaceAdjustableEffect.formCategoryEffects),
+            (title: "SHADERS", effects: WorkspaceAdjustableEffect.shaderCategoryEffects),
+            (title: "AUDIO", effects: WorkspaceAdjustableEffect.audioCategoryEffects),
+            (title: "SCOPE", effects: WorkspaceAdjustableEffect.scopeCategoryEffects),
+        ]
+        return families.first { $0.effects.contains(self) }
+    }
 
     static var repeatedCuratedCategoryEffects: Set<WorkspaceAdjustableEffect> {
         var seen = Set<WorkspaceAdjustableEffect>()
@@ -619,17 +775,37 @@ extension WorkspaceAdjustableEffect {
         return repeated
     }
 
-    var label: String {
+    /// Built once, on first use.
+    ///
+    /// `label` and `detail` are 192-arm switches. The effect rail asks both
+    /// for every card on every body pass, and the dock re-renders on each
+    /// parameter write — so browsing SHADERS was running two hundred and
+    /// fifty-six switch dispatches, each returning an interned literal, just
+    /// to build text the catalog has never changed at runtime. The switch
+    /// below stays the single source of truth; this only stops it being
+    /// re-run.
+    private static let labelTable: [WorkspaceAdjustableEffect: String] = {
+        var table: [WorkspaceAdjustableEffect: String] = [:]
+        table.reserveCapacity(allCases.count)
+        for effect in allCases {
+            table[effect] = effect.computedLabel
+        }
+        return table
+    }()
+
+    var label: String { Self.labelTable[self] ?? Self.unknownText }
+
+    private var computedLabel: String {
         switch self {
         case .rgbSplit: "RGB SPLIT"
         case .signalTear: "SIGNAL TEAR"
         case .hueShift: "HUE SHIFT"
-        case .depthSort: "DEPTH SORT"
-        case .objectSort: "OBJECT SORT"
+        case .depthSort: "LUMA SORT"
+        case .objectSort: "EDGE SORT"
         case .radialSort: "RADIAL SORT"
         case .temporalPixelSort: "TEMPORAL PIXEL SORT"
-        case .pointCloudSmear: "POINT-CLOUD SMEAR"
-        case .depthFeedback: "DEPTH FEEDBACK"
+        case .pointCloudSmear: "LUMA POINT SMEAR"
+        case .depthFeedback: "LUMA FEEDBACK"
         case .freezeBrush: "FREEZE BRUSH"
         case .sortBrush: "SORT BRUSH"
         case .feedbackTunnel: "FEEDBACK TUNNEL"
@@ -685,16 +861,72 @@ extension WorkspaceAdjustableEffect {
         case .rgbParade: "RGB PARADE"
         case .moshBrush: "MOSH BRUSH"
         case .timeMap: "TIME MAP"
+        case .predictionDrift: "PREDICTION DRIFT"
+        case .cyberGrid: "CYBER GRID"
+        case .astralPlasma: "ASTRAL PLASMA"
+        case .quantumRaymarch: "RAYMARCH SDF"
+        case .liquidChroma: "LIQUID CHROMA"
+        case .holoAurora: "HOLO AURORA"
+        case .neuralFlow: "NEURAL FLOW"
+        case .voxelStorm: "VOXEL STORM"
+        case .fractalZoom: "FRACTAL ZOOM"
+        case .particleLife: "PARTICLE LIFE"
+        case .waveformTunnel: "WAVEFORM TUNNEL"
+        case .spectralFlower: "SPECTRAL FLOWER"
+        case .glitchWeave: "GLITCH WEAVE"
+        case .hologramMatrix: "HOLO MATRIX"
+        case .singularityLens: "SINGULARITY LENS"
+        case .causticReactor: "CAUSTIC REACTOR"
+        case .eventHorizon: "EVENT HORIZON"
+        case .prismPortal: "PRISM PORTAL"
+        case .neonOrbit: "NEON ORBIT"
+        case .chromeRipple: "CHROME RIPPLE"
+        case .laserGarden: "LASER GARDEN"
+        case .hyperBloom: "HYPER BLOOM"
+        case .pixelConfetti: "PIXEL CONFETTI"
+        case .solarFlare: "SOLAR FLARE"
+        case .candyMesh: "CANDY MESH"
+        case .auroraGlass: "AURORA GLASS"
+        case .cosmicKnot: "COSMIC KNOT"
+        case .nebulaDrift: "NEBULA DRIFT"
+        case .quantumBloom: "QUANTUM BLOOM"
+        case .plasmaRipple: "PLASMA RIPPLE"
+        case .chromascrape: "CHROMASCRAPE"
+        case .singularityWeave: "SINGULARITY WEAVE"
+        case .fractalBurst: "FRACTAL BURST"
+        case .vortexPulse: "VORTEX PULSE"
+        case .spectralNova: "SPECTRAL NOVA"
+        case .ionStorm: "ION STORM"
+        case .opalWave: "OPAL WAVE"
+        case .bokeh: "LUMA DIFFUSION"
+        case .cmykPress: "CMYK PRESS"
+        case .spectralDiffraction: "SPECTRAL DIFFRACTION"
+        case .reactionGarden: "REACTION GARDEN"
+        case .vectorCodebook: "VECTOR CODEBOOK"
+        case .motionTransplant: "MOTION TRANSPLANT"
+        case .bitplaneLatch: "BITPLANE LATCH"
         default: rawValue.uppercased()
         }
     }
 
-    var detail: String {
+    private static let detailTable: [WorkspaceAdjustableEffect: String] = {
+        var table: [WorkspaceAdjustableEffect: String] = [:]
+        table.reserveCapacity(allCases.count)
+        for effect in allCases {
+            table[effect] = effect.computedDetail
+        }
+        return table
+    }()
+
+    var detail: String { Self.detailTable[self] ?? Self.unknownText }
+
+    private var computedDetail: String {
         switch self {
         case .rgbSplit: "CHANNEL OFFSET"
         case .datamosh: "LIVE BLOCK SMEAR"
         case .liquidMosh: "LIQUID FLOW SMEAR"
         case .heavyMosh: "HEAVY DATAMOSH"
+        case .predictionDrift: "DIFFERENTIAL MOTION MEMORY"
         case .sort: "LUMA LINE SORT"
         case .depthSort: "DEPTH-RANK SMEAR"
         case .objectSort: "EDGE-BOUND SORT"
@@ -840,6 +1072,48 @@ extension WorkspaceAdjustableEffect {
         case .rgbParade: "R / G / B WAVEFORMS"
         case .moshBrush: "FINGER-PAINTED MOTION"
         case .timeMap: "BRIGHTNESS PICKS THE MOMENT"
+        case .cyberGrid: "QUANTUM LASER MATRIX"
+        case .astralPlasma: "WARPED COSMIC NEBULA"
+        case .quantumRaymarch: "3D SDF HYPERCUBE CORRIDOR"
+        case .liquidChroma: "NEON FLUID DISPERSION"
+        case .holoAurora: "PRISMATIC WAVE INTERFERENCE"
+        case .neuralFlow: "AI NEURAL VISUALIZATION"
+        case .voxelStorm: "3D VOXEL PARTICLE FIELD"
+        case .fractalZoom: "INFINITE FRACTAL DEEP ZOOM"
+        case .particleLife: "EMERGENT PARTICLE ECOSYSTEM"
+        case .waveformTunnel: "AUDIO WAVEFORM CORRIDOR"
+        case .spectralFlower: "REACTIVE SPECTRAL BLOOM"
+        case .glitchWeave: "INTERACTIVE GLITCH TAPESTRY"
+        case .hologramMatrix: "HOLOGRAPHIC FALLING CODE"
+        case .singularityLens: "GRAVITATIONAL CHROMA LENS"
+        case .causticReactor: "AUDIO-CHARGED LIQUID LIGHT"
+        case .eventHorizon: "RECURSIVE WARP COLLAPSE"
+        case .prismPortal: "TOUCH-ANCHORED SPECTRUM GATE"
+        case .neonOrbit: "AUDIO-CHARGED ORBITAL RINGS"
+        case .chromeRipple: "IRIDESCENT LIQUID LENS"
+        case .laserGarden: "GESTURE-BENT LIGHT LATTICE"
+        case .hyperBloom: "VIVID HIGHLIGHT HALO"
+        case .pixelConfetti: "BEAT-SYNCED COLOUR PARTICLES"
+        case .solarFlare: "SPECTRAL RADIAL STREAKS"
+        case .candyMesh: "ANIMATED MESH GRADIENT"
+        case .auroraGlass: "REFRACTIVE PRISM CURTAIN"
+        case .cosmicKnot: "INTERACTIVE NEON TORUS KNOT"
+        case .nebulaDrift: "LIQUID NEBULA CLOUDS"
+        case .quantumBloom: "QUANTUM ENTANGLEMENT BLOOM"
+        case .plasmaRipple: "ELECTRIC PLASMA RIPPLES"
+        case .chromascrape: "CHROMATIC ABERRATION SCRAPE"
+        case .singularityWeave: "WORMHOLE INTERFERENCE PATTERN"
+        case .fractalBurst: "CATASTROPHIC FRACTAL EXPLOSION"
+        case .vortexPulse: "GAMMA RAY VORTEX PULSE"
+        case .spectralNova: "WHITE DWARF SPECTRAL NOVA"
+        case .ionStorm: "AUDIO-CHARGED FLOW REFRACTION"
+        case .opalWave: "IRIDESCENT CAUSTIC REFRACTION"
+        case .cmykPress: "FOUR ROTATED SUBTRACTIVE INK SCREENS"
+        case .spectralDiffraction: "HIGHLIGHT DIFFRACTION ORDERS"
+        case .reactionGarden: "CAMERA-SEEDED GRAY-SCOTT CHEMISTRY"
+        case .vectorCodebook: "QUANTIZED MEASURED MOTION MEMORY"
+        case .motionTransplant: "DONOR REGION FLOW TRANSPORT"
+        case .bitplaneLatch: "MOTION-GATED BIT PLANE MEMORY"
         }
     }
 
@@ -949,8 +1223,46 @@ extension WorkspaceAdjustableEffect {
         case .vectorscope: 101
         case .waveformMonitor: 102
         case .rgbParade: 103
-        case .fluid: nil
-        case .rgbSplit, .datamosh, .liquidMosh, .heavyMosh, .sort, .depthSort, .objectSort,
+        case .cyberGrid: 104
+        case .astralPlasma: 105
+        case .quantumRaymarch: 106
+        case .liquidChroma: 107
+        case .holoAurora: 108
+        case .neuralFlow: 109
+        case .voxelStorm: 110
+        case .fractalZoom: 111
+        case .particleLife: 112
+        case .waveformTunnel: 113
+        case .spectralFlower: 114
+        case .glitchWeave: 115
+        case .hologramMatrix: 116
+        case .singularityLens: 117
+        case .causticReactor: 118
+        case .eventHorizon: 119
+        case .prismPortal: 120
+        case .neonOrbit: 121
+        case .chromeRipple: 122
+        case .laserGarden: 123
+        case .hyperBloom: 124
+        case .pixelConfetti: 125
+        case .solarFlare: 126
+        case .candyMesh: 127
+        case .auroraGlass: 128
+        case .cosmicKnot: 129
+        case .nebulaDrift: 130
+        case .quantumBloom: 131
+        case .plasmaRipple: 132
+        case .chromascrape: 133
+        case .singularityWeave: 134
+        case .fractalBurst: 135
+        case .vortexPulse: 136
+        case .spectralNova: 137
+        case .ionStorm: 138
+        case .opalWave: 139
+        case .cmykPress: 140
+        case .spectralDiffraction: 141
+        case .fluid, .reactionGarden, .vectorCodebook, .motionTransplant, .bitplaneLatch: nil
+        case .rgbSplit, .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .sort, .depthSort, .objectSort,
              .radialSort, .temporalPixelSort, .pointCloudSmear, .depthFeedback, .freezeBrush,
              .sortBrush, .feedbackTunnel, .lumaExtrusion, .opticalFlowLiquid, .rollingTime,
              .frameHoldSmear, .pixelGravity, .pixelShift, .slitScan, .motionBloom,
@@ -977,6 +1289,10 @@ extension WorkspaceAdjustableEffect {
         case .datamosh: 4
         case .liquidMosh: 39
         case .heavyMosh: 40
+        case .predictionDrift: 43
+        case .vectorCodebook: 44
+        case .motionTransplant: 45
+        case .bitplaneLatch: 46
         case .moshBrush: 41
         case .timeMap: 42
         case .sort: 5
@@ -1017,12 +1333,29 @@ extension WorkspaceAdjustableEffect {
         }
     }
 
-    var parameterLabels: [String] {
+    /// Fallback for an effect the tables somehow missed. Should be
+    /// unreachable — the tables are built from `allCases` — but a card with no
+    /// text is worse than a card with a placeholder.
+    private static let unknownText = "UNNAMED"
+
+    private static let parameterLabelTable: [WorkspaceAdjustableEffect: [String]] = {
+        var table: [WorkspaceAdjustableEffect: [String]] = [:]
+        table.reserveCapacity(allCases.count)
+        for effect in allCases {
+            table[effect] = effect.computedParameterLabels
+        }
+        return table
+    }()
+
+    var parameterLabels: [String] { Self.parameterLabelTable[self] ?? [] }
+
+    private var computedParameterLabels: [String] {
         switch self {
         case .datamosh: ["FLOW", "REF AGE", "BLOCK"]
-        case .liquidMosh: ["FLOW", "VISCOSITY", "FLOOR"]
-        case .heavyMosh: ["FLOW", "REF AGE", "BLOCK"]
-        case .moshBrush: ["PUSH", "REACH", "DRAG"]
+        case .liquidMosh: ["FLOW", "VISCOSITY", "INJECT"]
+        case .heavyMosh: ["FLOW", "BLOCK", "ROT"]
+        case .predictionDrift: ["DRIFT", "DECAY", "TEAR"]
+        case .moshBrush: ["PUSH", "REACH", "BLOCK"]
         case .timeMap: ["DEPTH", "BIAS", "CONTRAST"]
         case .sort: ["SPAN", "BIAS", "MIX"]
         case .depthSort: ["DEPTH", "GATE", "SMEAR"]
@@ -1161,21 +1494,67 @@ extension WorkspaceAdjustableEffect {
         case .dctBlocks: ["QUALITY", "BLOCK", "MIX"]
         case .domainWarp: ["AMOUNT", "SCALE", "MIX"]
         case .blueNoiseDither: ["LEVELS", "PIXEL", "MIX"]
-        case .spectrumBars: ["HEIGHT", "BARS", "MIX"]
-        case .radialSpectrum: ["REACH", "INNER", "MIX"]
+        case .spectrumBars: ["SIZE", "BARS", "HUE"]
+        case .radialSpectrum: ["SIZE", "INNER", "HUE"]
         case .lissajous: ["GAIN", "RATIO", "MIX"]
         case .vectorscope: ["GAIN", "SIZE", "MIX"]
         case .waveformMonitor: ["GAIN", "HEIGHT", "MIX"]
         case .rgbParade: ["GAIN", "HEIGHT", "MIX"]
+        case .cyberGrid: ["GRID", "COLOR", "MIX"]
+        case .astralPlasma: ["WARP", "GLOW", "MIX"]
+        case .quantumRaymarch: ["MORPH", "GLOW", "MIX"]
+        case .liquidChroma: ["DISPERSE", "SAT", "MIX"]
+        case .holoAurora: ["PHASE", "GAIN", "MIX"]
+        case .neuralFlow: ["DEPTH", "ACTIVITY", "MIX"]
+        case .voxelStorm: ["DENSITY", "CHAOS", "MIX"]
+        case .fractalZoom: ["ZOOM", "ITERATIONS", "MIX"]
+        case .particleLife: ["POPULATION", "ENERGY", "MIX"]
+        case .waveformTunnel: ["DEPTH", "RESONANCE", "MIX"]
+        case .spectralFlower: ["PETALS", "HARMONICS", "MIX"]
+        case .glitchWeave: ["COMPLEXITY", "DISTORT", "MIX"]
+        case .hologramMatrix: ["RAIN", "SCANLINE", "MIX"]
+        case .singularityLens: ["PULL", "CHROMA", "MIX"]
+        case .causticReactor: ["ENERGY", "REFRACT", "MIX"]
+        case .eventHorizon: ["DEPTH", "SPIN", "MIX"]
+        case .prismPortal: ["RADIUS", "FACETS", "MIX"]
+        case .neonOrbit: ["ORBIT", "SPEED", "MIX"]
+        case .chromeRipple: ["REFRACT", "CHROME", "MIX"]
+        case .laserGarden: ["DENSITY", "BEND", "MIX"]
+        case .hyperBloom: ["BLOOM", "GATE", "MIX"]
+        case .pixelConfetti: ["DENSITY", "ENERGY", "MIX"]
+        case .solarFlare: ["REACH", "RAYS", "MIX"]
+        case .candyMesh: ["FLOW", "SATURATION", "MIX"]
+        case .auroraGlass: ["WARP", "SHEEN", "MIX"]
+        case .cosmicKnot: ["KNOT", "TWIST", "MIX"]
+        case .nebulaDrift: ["DRIFT", "SWIRL", "MIX"]
+        case .quantumBloom: ["GROW", "GAIN", "MIX"]
+        case .plasmaRipple: ["SCALE", "INTENSITY", "MIX"]
+        case .chromascrape: ["REACH", "BOOST", "MIX"]
+        case .singularityWeave: ["PULL", "CHROMA", "MIX"]
+        case .fractalBurst: ["EXPAND", "SPIN", "MIX"]
+        case .vortexPulse: ["SPEED", "ANGLE", "MIX"]
+        case .spectralNova: ["GAIN", "RESOLUTION", "MIX"]
+        case .ionStorm: ["FIELD", "CHARGE", "MIX"]
+        case .opalWave: ["CAUSTIC", "FLOW", "MIX"]
+        case .cmykPress: ["SCREEN", "REGISTER", "INK"]
+        case .spectralDiffraction: ["PITCH", "ORDERS", "GATE"]
+        case .reactionGarden: ["FEED", "SCALE", "RELIEF"]
+        case .vectorCodebook: ["DIRECTIONS", "STEP", "RETAIN"]
+        case .motionTransplant: ["REGION", "TRAVEL", "MEMORY"]
+        case .bitplaneLatch: ["PLANES", "REFRESH", "FLOW"]
         default: []
         }
     }
 
     var defaultCameraParameters: CameraEffectParameters {
         let values: SIMD3<Double> = switch self {
-        case .datamosh: SIMD3(0.55, 0.42, 0.30)
-        case .liquidMosh: SIMD3(0.85, 0.30, 0.00)
-        case .heavyMosh: SIMD3(0.95, 0.80, 0.90)
+        // Mosh starts from a recent seed. Strength comes from recursively
+        // carrying and warping the decoded frame, not from showing a visibly
+        // delayed camera feed.
+        case .datamosh: SIMD3(0.68, 0.12, 0.48)
+        case .liquidMosh: SIMD3(0.85, 0.72, 0.18)
+        case .heavyMosh: SIMD3(0.95, 0.18, 0.90)
+        case .predictionDrift: SIMD3(0.72, 0.82, 0.38)
         case .sort: SIMD3(0.58, 0.48, 0.82)
         case .depthSort: SIMD3(0.66, 0.38, 0.74)
         case .objectSort: SIMD3(0.54, 0.42, 0.82)
@@ -1323,6 +1702,48 @@ extension WorkspaceAdjustableEffect {
         case .vectorscope: SIMD3(0.46, 0.50, 0.95)
         case .waveformMonitor: SIMD3(0.50, 0.42, 0.95)
         case .rgbParade: SIMD3(0.50, 0.42, 0.95)
+        case .cyberGrid: SIMD3(0.50, 0.40, 0.90)
+        case .astralPlasma: SIMD3(0.60, 0.70, 0.88)
+        case .quantumRaymarch: SIMD3(0.35, 0.75, 0.92)
+        case .liquidChroma: SIMD3(0.55, 0.65, 0.85)
+        case .holoAurora: SIMD3(0.45, 0.60, 0.88)
+        case .neuralFlow: SIMD3(0.45, 0.55, 0.88)
+        case .voxelStorm: SIMD3(0.55, 0.60, 0.85)
+        case .fractalZoom: SIMD3(0.35, 0.45, 0.90)
+        case .particleLife: SIMD3(0.50, 0.65, 0.88)
+        case .waveformTunnel: SIMD3(0.45, 0.55, 0.90)
+        case .spectralFlower: SIMD3(0.55, 0.60, 0.88)
+        case .glitchWeave: SIMD3(0.50, 0.55, 0.86)
+        case .hologramMatrix: SIMD3(0.60, 0.50, 0.88)
+        case .singularityLens: SIMD3(0.58, 0.62, 0.90)
+        case .causticReactor: SIMD3(0.64, 0.56, 0.88)
+        case .eventHorizon: SIMD3(0.56, 0.54, 0.92)
+        case .prismPortal: SIMD3(0.48, 0.60, 0.90)
+        case .neonOrbit: SIMD3(0.52, 0.58, 0.88)
+        case .chromeRipple: SIMD3(0.46, 0.64, 0.86)
+        case .laserGarden: SIMD3(0.48, 0.55, 0.84)
+        case .hyperBloom: SIMD3(0.58, 0.52, 0.88)
+        case .pixelConfetti: SIMD3(0.50, 0.62, 0.86)
+        case .solarFlare: SIMD3(0.56, 0.56, 0.88)
+        case .candyMesh: SIMD3(0.48, 0.78, 0.90)
+        case .auroraGlass: SIMD3(0.50, 0.64, 0.88)
+        case .cosmicKnot: SIMD3(0.54, 0.58, 0.90)
+        case .nebulaDrift: SIMD3(0.52, 0.70, 0.92)
+        case .quantumBloom: SIMD3(0.58, 0.62, 0.88)
+        case .plasmaRipple: SIMD3(0.64, 0.56, 0.90)
+        case .chromascrape: SIMD3(0.48, 0.62, 0.86)
+        case .singularityWeave: SIMD3(0.50, 0.58, 0.88)
+        case .fractalBurst: SIMD3(0.42, 0.66, 0.90)
+        case .vortexPulse: SIMD3(0.56, 0.54, 0.88)
+        case .spectralNova: SIMD3(0.52, 0.60, 0.92)
+        case .ionStorm: SIMD3(0.58, 0.64, 0.90)
+        case .opalWave: SIMD3(0.54, 0.58, 0.88)
+        case .cmykPress: SIMD3(0.48, 0.24, 0.78)
+        case .spectralDiffraction: SIMD3(0.48, 0.50, 0.62)
+        case .reactionGarden: SIMD3(0.46, 0.60, 0.58)
+        case .vectorCodebook: SIMD3(0.35, 0.58, 0.82)
+        case .motionTransplant: SIMD3(0.45, 0.62, 0.84)
+        case .bitplaneLatch: SIMD3(0.65, 0.32, 0.60)
         default: .zero
         }
         return CameraEffectParameters(primary: values.x, secondary: values.y, tertiary: values.z)
@@ -1334,6 +1755,21 @@ extension WorkspaceAdjustableEffect {
     /// more than the single-sample ones.
     var estimatedCost: Double {
         switch self {
+        case .reactionGarden: 1.8
+        case .spectralDiffraction: 2.0
+        case .cmykPress, .vectorCodebook, .motionTransplant, .bitplaneLatch: 1.5
+        case .quantumRaymarch:
+            2.6
+        case .astralPlasma, .liquidChroma, .cyberGrid, .holoAurora,
+             .neuralFlow, .voxelStorm, .fractalZoom, .particleLife,
+             .waveformTunnel, .spectralFlower, .glitchWeave, .hologramMatrix,
+             .singularityLens, .causticReactor, .eventHorizon, .prismPortal,
+             .neonOrbit, .chromeRipple, .laserGarden, .hyperBloom, .pixelConfetti,
+             .solarFlare, .candyMesh, .auroraGlass, .cosmicKnot,
+             .nebulaDrift, .quantumBloom, .plasmaRipple, .chromascrape,
+             .singularityWeave, .fractalBurst, .vortexPulse, .spectralNova,
+             .ionStorm, .opalWave:
+            1.6
         case .phosphor, .voronoi, .hologram, .hatch, .water, .touchWarp, .crt, .dataBend,
              .frostedGlass, .dctBlocks, .domainWarp:
             1.4
@@ -1366,7 +1802,8 @@ extension WorkspaceAdjustableEffect {
 
     var freezesHistoryOnHold: Bool {
         switch self {
-        case .datamosh, .liquidMosh, .heavyMosh, .moshBrush,
+        case .datamosh, .liquidMosh, .heavyMosh, .moshBrush, .predictionDrift,
+             .vectorCodebook, .motionTransplant, .bitplaneLatch, .reactionGarden,
              .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort,
              .pointCloudSmear, .depthFeedback, .freezeBrush, .sortBrush, .feedbackTunnel,
              .lumaExtrusion, .opticalFlowLiquid, .rollingTime, .frameHoldSmear, .pixelGravity,
@@ -1384,6 +1821,44 @@ struct CameraEffectParameters: Codable, Equatable, Sendable {
     var secondary = 0.5
     var tertiary = 0.5
     var blend = 1.0
+    /// Normalised centre for the movable spectrum overlays.
+    var overlayX = 0.5
+    var overlayY = 0.5
+
+    init(
+        isEnabled: Bool = false,
+        primary: Double = 0.5,
+        secondary: Double = 0.5,
+        tertiary: Double = 0.5,
+        blend: Double = 1.0,
+        overlayX: Double = 0.5,
+        overlayY: Double = 0.5
+    ) {
+        self.isEnabled = isEnabled
+        self.primary = primary
+        self.secondary = secondary
+        self.tertiary = tertiary
+        self.blend = blend
+        self.overlayX = overlayX
+        self.overlayY = overlayY
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled, primary, secondary, tertiary, blend, overlayX, overlayY
+    }
+
+    /// Old recipes predate freeform overlays. Missing layout fields decode to
+    /// a centred instrument rather than making the entire recipe unreadable.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        primary = try values.decodeIfPresent(Double.self, forKey: .primary) ?? 0.5
+        secondary = try values.decodeIfPresent(Double.self, forKey: .secondary) ?? 0.5
+        tertiary = try values.decodeIfPresent(Double.self, forKey: .tertiary) ?? 0.5
+        blend = try values.decodeIfPresent(Double.self, forKey: .blend) ?? 1
+        overlayX = try values.decodeIfPresent(Double.self, forKey: .overlayX) ?? 0.5
+        overlayY = try values.decodeIfPresent(Double.self, forKey: .overlayY) ?? 0.5
+    }
 
     var sanitized: CameraEffectParameters {
         CameraEffectParameters(
@@ -1391,7 +1866,9 @@ struct CameraEffectParameters: Codable, Equatable, Sendable {
             primary: min(max(primary, 0), 1),
             secondary: min(max(secondary, 0), 1),
             tertiary: min(max(tertiary, 0), 1),
-            blend: min(max(blend, 0), 1)
+            blend: min(max(blend, 0), 1),
+            overlayX: min(max(overlayX, 0.05), 0.95),
+            overlayY: min(max(overlayY, 0.05), 0.95)
         )
     }
 }
@@ -1419,6 +1896,44 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
     /// data operations rather than pipeline changes.
     private var slots: [Slot] = []
 
+    /// Bumped on every mutation.
+    ///
+    /// Two things need to know that a value changed without paying to compare
+    /// it: the preview projection, which was doing a synthesized `Equatable`
+    /// walk of every slot and every parameter on each edit, and the undo
+    /// history, which only cares whether the gesture moved at all. A counter
+    /// answers both in constant time and cannot go stale the way a cached
+    /// fingerprint can.
+    private(set) var revision: UInt64 = 0
+
+    /// Advances the revision. Every mutating operation routes through one of
+    /// the two mutating entry points below, so no path can change the stack
+    /// without moving the counter.
+    mutating func markChanged() {
+        revision &+= 1
+    }
+
+    /// A whole-stack write from a slider, a preset, or an apply. The subslots
+    /// hand this the value they already built.
+    mutating func setSlots(_ newSlots: [Slot]) {
+        slots = newSlots
+        markChanged()
+    }
+
+    /// The stack with its counter carried along, for anything that stores a
+    /// snapshot of the composition.
+    var revisionedIdentity: UInt64 { revision }
+
+    /// Value equality deliberately ignores `revision`.
+    ///
+    /// The counter answers "did anything change", which is not the same
+    /// question as "are these two compositions the same image". Synthesized
+    /// equality would conflate them and make an undo that lands back on an
+    /// identical composition look like a real edit.
+    static func == (lhs: CameraEffectStackParameters, rhs: CameraEffectStackParameters) -> Bool {
+        lhs.slots == rhs.slots
+    }
+
     /// Reads and writes the first slot for an effect, creating one if absent.
     ///
     /// Kept so every existing call site — nine subscript uses across the
@@ -1432,6 +1947,7 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
             let sanitized = newValue.sanitized
             if let index = slots.firstIndex(where: { $0.effect == effect }) {
                 slots[index].parameters = sanitized
+                markChanged()
             } else {
                 insertInPipelineOrder(Slot(effect: effect, parameters: sanitized))
             }
@@ -1454,6 +1970,7 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
         set {
             guard let newValue, let index = slots.firstIndex(where: { $0.id == id }) else { return }
             slots[index].parameters = newValue.sanitized
+            markChanged()
         }
     }
 
@@ -1476,6 +1993,7 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
         var parameters = slots[index].effect.defaultCameraParameters
         parameters.isEnabled = slots[index].parameters.isEnabled
         slots[index].parameters = parameters
+        markChanged()
     }
 
     var activeEffects: [(WorkspaceAdjustableEffect, CameraEffectParameters)] {
@@ -1500,6 +2018,13 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
         self[effect] = parameters
     }
 
+    /// Bumps the revision for callers that mutate through a subscript they
+    /// already own. The subscripts mark themselves, so this exists only for
+    /// the paths that reach past them.
+    mutating func noteChanged() {
+        markChanged()
+    }
+
     mutating func reset(_ effect: WorkspaceAdjustableEffect, enabled: Bool = true) {
         var parameters = effect.defaultCameraParameters
         parameters.isEnabled = enabled
@@ -1512,13 +2037,16 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
     }
 
     mutating func disableAll() {
+        guard !slots.isEmpty else { return }
         slots.removeAll(keepingCapacity: true)
+        markChanged()
     }
 
     // MARK: - Stack operations
 
     mutating func move(fromOffsets source: IndexSet, toOffset destination: Int) {
         slots.move(fromOffsets: source, toOffset: destination)
+        markChanged()
     }
 
     /// Copies a slot, parameters and all, directly after the original.
@@ -1527,16 +2055,29 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
         guard let index = slots.firstIndex(where: { $0.id == id }) else { return nil }
         let copy = Slot(effect: slots[index].effect, parameters: slots[index].parameters)
         slots.insert(copy, at: index + 1)
+        markChanged()
         return copy.id
     }
 
+    @discardableResult
+    mutating func replace(slot id: Slot.ID, with effect: WorkspaceAdjustableEffect, parameters: CameraEffectParameters) -> Bool {
+        guard let index = slots.firstIndex(where: { $0.id == id }) else { return false }
+        slots[index].effect = effect
+        slots[index].parameters = parameters.sanitized
+        markChanged()
+        return true
+    }
+
     mutating func remove(_ id: Slot.ID) {
+        let before = slots.count
         slots.removeAll { $0.id == id }
+        if slots.count != before { markChanged() }
     }
 
     mutating func setEnabled(_ enabled: Bool, slot id: Slot.ID) {
         guard let index = slots.firstIndex(where: { $0.id == id }) else { return }
         slots[index].parameters.isEnabled = enabled
+        markChanged()
     }
 
     /// New slots land where the pipeline would have put them.
@@ -1556,6 +2097,7 @@ struct CameraEffectStackParameters: Codable, Equatable, Sendable {
             (order.firstIndex(of: existing.effect) ?? order.count) > rank
         }
         slots.insert(slot, at: index ?? slots.endIndex)
+        markChanged()
     }
 }
 
@@ -1606,3 +2148,88 @@ struct RGBSplitEffectParameters: Codable, Equatable, Sendable {
 }
 
 // swiftlint:enable file_length
+
+// MARK: - Radial menu subcategories
+
+//
+// The radial ring used to fan out every effect in a family at once (SHADERS
+// alone was 35 same-size slots). Instead the ring now shows small
+// subcategory entries first; hovering one auto-expands into that group's
+// variants. Pure grouping metadata — no effect is reclassified anywhere.
+
+/// One subcategory entry shown on the radial category ring.
+struct GVRadialSubcategory {
+    let title: String
+    let hue: GVTheme.RadialHue
+    let glyph: GVEffectGlyphKind
+    let effects: [WorkspaceAdjustableEffect]
+}
+
+extension WorkspaceAdjustableEffect {
+    /// The radial subcategories for a curated family. Effects missing from
+    /// every group here still appear via a fallback "ALL" subcategory.
+    static func curatedRadialSubcategories(for familyTitle: String) -> [GVRadialSubcategory]? {
+        switch familyTitle {
+        case "TIME":
+            return [
+                GVRadialSubcategory(title: "MOSH", hue: .magenta, glyph: .datamosh, effects: [.datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .moshBrush, .vectorCodebook, .motionTransplant, .bitplaneLatch]),
+                GVRadialSubcategory(title: "SORT", hue: .cyan, glyph: .pixelSort, effects: [.sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort, .sortBrush]),
+                GVRadialSubcategory(title: "SMEAR", hue: .amber, glyph: .echo, effects: [.pointCloudSmear, .depthFeedback, .lumaExtrusion, .opticalFlowLiquid, .pixelGravity, .pixelShift]),
+                GVRadialSubcategory(title: "TIME", hue: .rose, glyph: .frame, effects: [.rollingTime, .frameHoldSmear, .freezeBrush, .feedbackTunnel]),
+                GVRadialSubcategory(title: "SARIN", hue: .moss, glyph: .echo, effects: sarinCategoryEffects),
+            ]
+        case "MOTION":
+            return [
+                GVRadialSubcategory(title: "FEEDBACK", hue: .teal, glyph: .feedback, effects: feedbackCategoryEffects),
+                GVRadialSubcategory(title: "FLOW", hue: .sky, glyph: .flow, effects: flowCategoryEffects),
+                GVRadialSubcategory(title: "FLUID", hue: .cyan, glyph: .flow, effects: [.fluid]),
+            ]
+        case "DECAY":
+            return [
+                GVRadialSubcategory(title: "REBUILD", hue: .lime, glyph: .block, effects: blockCategoryEffects),
+                GVRadialSubcategory(title: "DAMAGE", hue: .rose, glyph: .glitch, effects: damageCategoryEffects),
+                GVRadialSubcategory(title: "DECAY", hue: .ember, glyph: .frame, effects: [.pixelMelt, .corrode, .burnThrough, .ashDrift, .bitRot]),
+            ]
+        case "SIGNAL":
+            return [
+                GVRadialSubcategory(title: "GLITCH", hue: .magenta, glyph: .glitch, effects: glitchCategoryEffects + [.dataBend]),
+                GVRadialSubcategory(title: "ANALOG", hue: .sand, glyph: .frame, effects: analogCategoryEffects),
+            ]
+        case "OPTICS":
+            return [
+                GVRadialSubcategory(title: "LENS", hue: .azure, glyph: .frame, effects: [.fisheye, .barrelWarp, .lensWarp, .tiltShift, .bokeh, .softFocus, .vignette]),
+                GVRadialSubcategory(title: "LIGHT", hue: .amber, glyph: .glitch, effects: [.anamorphicFlare, .lightLeak, .starFilter, .prismStreak, .spectralDiffraction, .chromaticAberration]),
+                GVRadialSubcategory(title: "GLASS", hue: .sky, glyph: .flow, effects: [.lensDirt, .frostedGlass, .hologram]),
+            ]
+        case "FORM":
+            return [
+                GVRadialSubcategory(title: "GEOMETRY", hue: .plum, glyph: .frame, effects: geometryCategoryEffects),
+                GVRadialSubcategory(title: "FIELD", hue: .teal, glyph: .flow, effects: fieldCategoryEffects + [.reactionGarden]),
+            ]
+        case "SHADERS":
+            // Six groups of exactly six, because the ring holds six wedges and
+            // anything larger spills into MORE pages. The previous four groups
+            // of eight to ten meant reaching `causticReactor` cost a hold, a
+            // push into SHADERS, then a walk through four MORE pages before
+            // the effect itself. Six-by-six fits the ring exactly, so every
+            // shader is two gestures from the preview.
+            return [
+                GVRadialSubcategory(title: "PLASMA", hue: .plum, glyph: .flow, effects: [.astralPlasma, .plasmaRipple, .liquidChroma, .auroraGlass, .nebulaDrift, .opalWave]),
+                GVRadialSubcategory(title: "QUANTUM", hue: .magenta, glyph: .echo, effects: [.quantumRaymarch, .quantumBloom, .fractalZoom, .fractalBurst, .singularityLens, .singularityWeave]),
+                GVRadialSubcategory(title: "VOLUME", hue: .cyan, glyph: .block, effects: [.cyberGrid, .voxelStorm, .cosmicKnot, .chromeRipple, .neuralFlow, .chromascrape]),
+                GVRadialSubcategory(title: "PARTICLE", hue: .lime, glyph: .trails, effects: [.particleLife, .pixelConfetti, .ionStorm, .vortexPulse, .waveformTunnel, .spectralFlower]),
+                GVRadialSubcategory(title: "NEON", hue: .amber, glyph: .glitch, effects: [.neonOrbit, .laserGarden, .prismPortal, .solarFlare, .spectralNova, .hyperBloom]),
+                GVRadialSubcategory(title: "GATEWAY", hue: .rose, glyph: .feedback, effects: [.holoAurora, .hologramMatrix, .causticReactor, .eventHorizon, .glitchWeave, .candyMesh]),
+            ]
+        case "AUDIO":
+            return [
+                GVRadialSubcategory(title: "VISUALIZE", hue: .teal, glyph: .audio, effects: [.audioSpectral, .audioWaveform, .audioBandSlice, .audioBloom, .audioKick]),
+                GVRadialSubcategory(title: "WARP", hue: .sky, glyph: .flow, effects: [.audioScanBend, .audioTunnel, .audioKaleido, .audioDisplace, .audioStretch]),
+                GVRadialSubcategory(title: "TEXTURE", hue: .amber, glyph: .block, effects: [.audioMacroblock, .audioFracture, .audioGrain, .audioPosterize, .audioRepair]),
+                GVRadialSubcategory(title: "TINT", hue: .magenta, glyph: .glitch, effects: [.audioChromaPulse, .spectralTint]),
+            ]
+        default:
+            return nil
+        }
+    }
+}

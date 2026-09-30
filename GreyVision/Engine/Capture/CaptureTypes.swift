@@ -112,7 +112,7 @@ struct ActiveCameraInfo: Sendable, Equatable {
     let whiteBalanceLocked: Bool
 }
 
-enum CapturedFrameOrientation: Int, Sendable {
+enum CapturedFrameOrientation: Int, Codable, Equatable, Sendable {
     case portrait
     case portraitUpsideDown
     case landscapeLeft
@@ -241,28 +241,5 @@ extension CaptureSetupDraft.VideoCodec {
             guard let type = codec.avVideoCodecType else { return false }
             return codecTypes.contains(type)
         }
-    }
-}
-
-public struct GVLastCapture: Equatable, Sendable {
-    public enum MediaType: Sendable {
-        case still(image: CGImage)
-        case video(url: URL)
-    }
-
-    public let id: UUID
-    public let mediaType: MediaType
-    public let capturedAt: Date
-    public let thumbnail: UIImage?
-
-    public init(mediaType: MediaType, thumbnail: UIImage?) {
-        id = UUID()
-        self.mediaType = mediaType
-        capturedAt = Date()
-        self.thumbnail = thumbnail
-    }
-
-    public static func == (lhs: GVLastCapture, rhs: GVLastCapture) -> Bool {
-        lhs.id == rhs.id
     }
 }

@@ -10,14 +10,10 @@ struct BootView: View {
 
     @State private var isSocialPresented = false
     @State private var launchTask: Task<Void, Never>?
-    @State private var lineRevealDates: [Int: Date] = [:]
     @State private var hasPlayedGlitchCue = false
     @State private var readyCueTask: Task<Void, Never>?
     @State private var hasPlayedReadyCue = false
     @State private var identityRowDates: [Int: Date] = [:]
-    /// Measured height of the fixed version/signature labels, so the scrolling
-    /// manifest below them can take exactly the rest of the window.
-    @State private var identityHeaderHeight: CGFloat = 0
 
     private var isReady: Bool {
         sequence.isReady
@@ -34,12 +30,7 @@ struct BootView: View {
     var body: some View {
         GeometryReader { geometry in
             let compactHeight = geometry.size.height < 760
-            // The mark is the screen's subject, so it takes the full width and
-            // a little over half the height. The balancing block shrinks to
-            // buy that space back from the console and identity blocks.
-            // Fits the screen exactly. At 1.12x the branches were cropped on
-            // both edges and, worse, the identity overlay inherited that
-            // oversized frame and ran off the right side of the display.
+            // Keep the artwork within the display; identity has its own inset.
             let logoWidth = min(geometry.size.width, compactHeight ? 430 : 520)
             let logoHeight = min(geometry.size.height * (compactHeight ? 0.42 : 0.46), compactHeight ? 340 : 460)
 
@@ -64,14 +55,13 @@ struct BootView: View {
             // Looping corruption bed under the whole sequence. It is a sting,
             // so the existing `stopStings()` on launch and on disappear both
             // kill it; there is no separate teardown to forget.
-            // Discharge is scheduled, not triggered by state. It marks the
-            // moment the splash is fully assembled, and no published flag
-            // corresponds to that: `isReady` arms as soon as capture can
-            // start, which is seconds earlier.
+            // The ready discharge is state-driven, not scheduled: the ceremony
+            // runs 12-15s with its randomised void/spark/discovery holds, so a
+            // fixed 12s timer routinely fired before `isReady` armed.
             readyCueTask?.cancel()
             readyCueTask = Task { @MainActor in
                 try? await Task.sleep(for: .seconds(12))
-                guard !Task.isCancelled, !hasPlayedReadyCue else { return }
+                guard !Task.isCancelled, !hasPlayedReadyCue, sequence.isReady else { return }
                 hasPlayedReadyCue = true
                 GVSoundEngine.shared.stop(.sceneLoad)
                 GVSoundEngine.shared.play(.systemReady)
@@ -79,27 +69,19 @@ struct BootView: View {
 
             // No cue at t=0. The screen is still black at that point, so a
             // sound there reads as a stray discharge rather than as the
-            // instrument coming up; the only launch sound is the 12s one.
+            // instrument coming up.
 
-            // Force full boot sequence (ignore reduceMotion for now)
+            // Keep the artwork reveal, respecting the system motion preference.
             sequence.isAccelerated = appModel.isUITesting
             sequence.start(
                 lineCount: appModel.bootTelemetry.terminalLines.count,
-                reduceMotion: false // Force dramatic sequence
+                reduceMotion: reduceMotion
             )
         }
         .onChange(of: sequence.revealedIdentityRows) { _, revealed in
             let now = Date()
             for index in revealed where identityRowDates[index] == nil {
                 identityRowDates[index] = now
-            }
-        }
-        .onChange(of: sequence.revealedLines) { _, revealed in
-            // Stamp only the newly-resolved indices; order is shuffled, so a
-            // count-based assumption would attribute the wrong timestamp.
-            let now = Date()
-            for index in revealed where lineRevealDates[index] == nil {
-                lineRevealDates[index] = now
             }
         }
         .onChange(of: sequence.glitchedElement) { previous, current in
@@ -117,8 +99,16 @@ struct BootView: View {
         .onChange(of: sequence.isReady) { _, ready in
             guard ready else { return }
             motion.stop()
+            // State-driven discharge: fires with ARMED even when the ceremony
+            // runs long. The 12s watchdog above is the fallback for the rare
+            // case it is already armed at that mark.
+            if !hasPlayedReadyCue {
+                hasPlayedReadyCue = true
+                GVSoundEngine.shared.stop(.sceneLoad)
+                GVSoundEngine.shared.play(.systemReady)
+            }
         }
-        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isSocialPresented)
+        .animation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion), value: isSocialPresented)
     }
 
     /// The full splash stack. Its own method rather than inline in `body`:
@@ -155,10 +145,10 @@ struct BootView: View {
                     edge: .top,
                     reach: max(geometry.safeAreaInsets.top, 12) + 128,
                     tint: BootPalette.glow,
-                    intensity: 1.65
+                    intensity: 0.55
                 )
                 Spacer(minLength: 0)
-                GVNeonEdge(edge: .bottom, reach: 190, tint: BootPalette.glow, intensity: 1.65)
+                GVNeonEdge(edge: .bottom, reach: 110, tint: BootPalette.glow, intensity: 0.55)
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -187,6 +177,7 @@ struct BootView: View {
                         .offset(x: logoWidth * 0.18, y: logoHeight * 0.06)
                 }
                 .blendMode(.plusLighter)
+                .opacity(0.35)
                 .allowsHitTesting(false)
                 // Pinned to the display and clipped. Without this the
                 // wider cloud — logoWidth * 1.5, larger than the screen —
@@ -205,12 +196,12 @@ struct BootView: View {
                     if sequence.revealedIdentityRows.contains(1) {
                         GVASCIIWordmark(
                             text: "grey//VISION",
-                            glyphSize: compactHeight ? 4.6 : 5.4,
-                            columns: compactHeight ? 104 : 118,
-                            tint: GVTheme.bone,
-                            accent: BootPalette.glow,
+                            glyphSize: min(compactHeight ? 5.3 : 5.8, (geometry.size.width - 36) / (112 * 0.62)),
+                            columns: 112,
+                            tint: .white,
+                            accent: .white,
                             revealStart: identityRowDate(1),
-                            revealDuration: 2.8
+                            revealDuration: 1.8
                         )
                         .gvBlackHalo(radius: 30, opacity: 0.66)
                         .contentShape(Rectangle())
@@ -218,24 +209,13 @@ struct BootView: View {
                         .accessibilityIdentifier("boot.screen")
                         .padding(.top, max(geometry.safeAreaInsets.top - 48, 4))
                     }
-
-                    // Gated on the phase, not just faded: during the void
-                    // and spark the console still laid out its rows, and
-                    // the separator dots in them showed as a grey matrix
-                    // floating in the black above the spark.
-                    if sequence.phase > .bloom {
-                        bootConsole(compactHeight: compactHeight)
-                            .padding(.top, compactHeight ? 3 : 6)
-                    }
                 }
                 Spacer(minLength: 0)
             }
 
             markLayer(
-                geometry: geometry,
                 logoWidth: logoWidth,
-                logoHeight: logoHeight,
-                compactHeight: compactHeight
+                logoHeight: logoHeight
             )
 
             VStack(spacing: 0) {
@@ -247,7 +227,7 @@ struct BootView: View {
                     bottomInset: geometry.safeAreaInsets.bottom,
                     onLaunch: launchWorkspace
                 )
-                .padding(.horizontal, 12)
+                .padding(.horizontal, GVMetrics.screenInset)
             }
             .ignoresSafeArea(edges: .bottom)
             // Staged onto the same clock as everything above it. The rail
@@ -255,8 +235,8 @@ struct BootView: View {
             // resolving row by row, which made the most important control
             // on the screen look like it had been pasted in.
             .opacity(dockReveal)
-            .offset(y: (1 - dockReveal) * 26)
-            .animation(.easeOut(duration: 0.55), value: dockReveal)
+            .offset(y: (1 - dockReveal) * GVMetrics.stepSection)
+            .animation(GVMotion.resolved(GVMotion.cinematic, reduceMotion: reduceMotion), value: dockReveal)
             .gvDecay(sequence.glitchedElement == .dock, seed: 4)
             // Above the CRT glass (12) and the sync sweep (15): the dock is
             // the one control surface on this screen and must not be seen
@@ -277,6 +257,7 @@ struct BootView: View {
             // the interface rather than sitting on top of it — which is
             // what stopped it reading as a pasted-on image.
             GVBootCRTGlass()
+                .opacity(0.18)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
                 .zIndex(12)
@@ -286,52 +267,26 @@ struct BootView: View {
                 .ignoresSafeArea()
                 .zIndex(15)
         }
+        .saturation(0)
         .gvChromaticLock(isActive: sequence.phase == .sync, start: sequence.phaseStart)
         .gvRasterTear(isActive: isDeparting, start: sequence.phaseStart)
         .scaleEffect(isDeparting && !reduceMotion ? 1.006 : 1)
     }
 
-    /// Mark centred on the display; identity overlaid on its lower half.
-    ///
-    /// Stacking the two in a VStack tied the mark's position to the height of
-    /// the text under it, so growing the manifest from four rows to twelve
-    /// silently pushed the rabbit upward — it was never repositioned, it was
-    /// displaced. They are separate layers now: the mark holds the centre of
-    /// the screen and the text is offset down over it, which is also the
-    /// overlap that was wanted.
-    ///
-    /// The identity keeps its own width constraint. It must never inherit the
-    /// mark's frame, which is wider than the display and once pushed the
-    /// wordmark off the right edge.
-    ///
-    /// (Its own method rather than inline in `body`: this view is large enough
-    /// that keeping everything in one expression stalls the type-checker.)
+    /// Centre the artwork independently of the title and capture dock.
+    /// Kept separate from `body` to bound SwiftUI type-checking work.
     private func markLayer(
-        geometry: GeometryProxy,
         logoWidth: CGFloat,
-        logoHeight: CGFloat,
-        compactHeight: Bool
+        logoHeight: CGFloat
     ) -> some View {
         ZStack {
-
-            //
-            // Stacking the two in a VStack tied the mark's position to the
-            // height of the text under it, so growing the manifest from
-            // four rows to twelve silently pushed the rabbit upward — it
-            // was never repositioned, it was displaced. They are separate
-            // layers now: the mark holds the centre of the screen and the
-            // text is offset down over it, which is also the overlap that
-            // was wanted.
-            //
-            // The identity keeps its own width constraint. It must never
-            // inherit the mark's frame, which is wider than the display
-            // and once pushed the wordmark off the right edge.
             ZStack {
                 GVLogoReconstruction(
                     isActive: sequence.isMarkVisible,
                     start: markStart
                 ) {
                     LogoTreatment(
+                        imageName: "CreatorMark",
                         decay: isReady ? 0.12 : 0.28,
                         interactive: isReady,
                         accessibilityIdentifier: "boot.social",
@@ -354,30 +309,13 @@ struct BootView: View {
                         // than light on an object.
                         GVLogoGlint(start: markStart)
                             .mask(
-                                Image("OfficialLogo")
+                                Image("CreatorMark")
                                     .resizable()
                                     .scaledToFit()
                             )
                     }
                 }
                 .frame(width: logoWidth, height: logoHeight)
-                // Incantation orbiting the mark. Sits behind it in the
-                // stack and stays under a third opacity: it is an
-                // inscription around the sigil, not a second headline.
-                // Radius is derived from the mark so it clears the
-                // artwork on any device rather than being tuned to one.
-                .background {
-                    GVCircularText(
-                        text: "I CAN SUMMON ANY SPIRIT. I CAN SUMMON ANY SPIRIT. ",
-                        radius: min(logoWidth, logoHeight) * 0.46,
-                        spinDuration: 34,
-                        fontSize: compactHeight ? 9 : 10.5,
-                        color: GVTheme.bone,
-                        opacity: 0.24
-                    )
-                    .opacity(sequence.isMarkVisible ? 1 : 0)
-                    .animation(.easeOut(duration: 1.1), value: sequence.isMarkVisible)
-                }
                 // Applied outside GVLogoReconstruction on purpose. The
                 // reconstruction wraps the mark in a layerEffect, and a
                 // layerEffect rasterises and clips to its own bounds, so a
@@ -421,31 +359,6 @@ struct BootView: View {
                     .allowsHitTesting(false)
                     .animation(.easeOut(duration: 0.9), value: sequence.phase)
                 }
-
-                // The block is top-anchored, not centred.
-                //
-                // It used to be centred and dropped, which meant growing it
-                // pushed its top edge up into the rabbit and its bottom
-                // down through the format dock in equal measure. Pinning
-                // the top and deriving the height from the dock clearance
-                // lets the window fill the gap without eating either.
-                //
-                // The top still sits inside the mark's lower spikes on
-                // purpose — the feather is what keeps that reading as depth
-                // rather than as a collision.
-                let identityTop = logoHeight * (compactHeight ? 0.36 : 0.34)
-                let identityWindow = max(
-                    geometry.size.height / 2 - (compactHeight ? 74 : 84) - identityTop,
-                    150
-                )
-
-                splashIdentity(compactHeight: compactHeight, availableHeight: identityWindow)
-                    .frame(maxWidth: geometry.size.width - 16)
-                    // `offset` moves the centre, and the block is exactly
-                    // `identityWindow` tall, so half of it puts the top
-                    // edge on `identityTop`.
-                    .offset(y: identityTop + identityWindow / 2)
-                    .gvDecay(sequence.glitchedElement == .identity, seed: 3)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -465,7 +378,8 @@ struct BootView: View {
     }
 
     /// PHASE 3+ star field. Hidden during void/spark/bloom phases
-    @ViewBuilder private var wakeLayer: some View {        if sequence.phase >= .wake, sequence.phase < .armed {
+    @ViewBuilder private var wakeLayer: some View {
+        if sequence.phase >= .wake, sequence.phase < .armed {
             TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { timeline in
                 GVStarfieldWake(
                     progress: wakeProgress(now: timeline.date),
@@ -490,328 +404,12 @@ struct BootView: View {
         return min(max(elapsed / 1.4, 0), 1)
     }
 
-    /// Rows below the title. Each has its own decay behaviour so the block
-    /// reads as several failing sources rather than one animation.
-    private var identityRows: [(String, GVDecayMode)] {
-        // One capability per row, dot-led to a common width so every closing
-        // bracket lands in the same column. Ragged terminators would read as
-        // an accident; a column reads as a manifest.
-        //
-        // Modes cycle rather than repeat so no two adjacent rows resolve the
-        // same way — the block should look like several failing sources, not
-        // one animation played twelve times.
-        let modes: [GVDecayMode] = [.forward, .reverse, .cycling, .dropout]
-        return Self.capabilities.enumerated().map { index, capability in
-            (Self.leaders(capability), modes[index % modes.count])
-        }
-    }
-
-    private static let capabilities = [
-        "LOCAL CAMERA INSTRUMENT",
-        "METAL DEVICE ONLINE",
-        "CAMERA NODES",
-        "DEPTH SENSING",
-        "VISION PIPELINE",
-        "AUDIO DSP",
-        "FRAME HISTORY",
-        "FEEDBACK ROUTING",
-        "TOUCH ROUTING",
-        "LOCAL ONLY",
-        "ZERO CLOUD",
-        "SENSOR BOUNDED"
-    ]
-
-    /// Pads a label with dot leaders and terminates it.
-    ///
-    /// Line lengths are deliberately uneven. Padding every row to one width
-    /// produced a perfect column of brackets, which read as typeset rather
-    /// than printed — and the telemetry block above the mark is not like that:
-    /// its rows end wherever their value ends, so the whole group sits ragged
-    /// inside the centred column. This mirrors that.
-    ///
-    /// The variance is hashed from the label, so it is stable across launches
-    /// rather than reshuffling every frame, and derived from the longest entry
-    /// so a longer capability added later cannot break the block.
-    private static func leaders(_ label: String) -> String {
-        let width = (capabilities.map(\.count).max() ?? 0) + 6
-        let jitter = abs(label.unicodeScalars.reduce(0) { $0 &+ Int($1.value) &* 31 }) % 6
-        let dots = String(repeating: ".", count: max(width - label.count - jitter, 2))
-        return "\(label) \(dots) <"
-    }
-
-    /// The lower block: version header, signature, capability manifest.
-    ///
-    /// Only the capability rows travel. The version header and the signature
-    /// are fixed labels — they name the build and sign the work, and neither is
-    /// a feed. The manifest is the part that reads as a machine listing what it
-    /// has, so it is the only part that scrolls.
-    private func splashIdentity(compactHeight: Bool, availableHeight: CGFloat) -> some View {
-        VStack(spacing: compactHeight ? 2 : 4) {
-            identityStaticHeader(compactHeight: compactHeight)
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height
-                } action: { height in
-                    identityHeaderHeight = height
-                }
-
-            if manifestResolved {
-                // The window is what is left after the fixed labels, so the
-                // rows fill the gap down to the format dock instead of showing
-                // seven of twelve inside a short pane.
-                GVInfiniteColumn(
-                    windowHeight: max(availableHeight - identityHeaderHeight, 90)
-                ) {
-                    settledManifest(compactHeight: compactHeight)
-                }
-                .transition(.opacity)
-            } else {
-                identityManifest(compactHeight: compactHeight)
-            }
-        }
-        .frame(height: availableHeight, alignment: .top)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Capability manifest")
-        .accessibilityValue(identityRows.map(\.0).joined(separator: ", "))
-    }
-
-    private func identityStaticHeader(compactHeight: Bool) -> some View {
-        VStack(spacing: compactHeight ? 2 : 4) {
-            // Attribution sits above the title now, so the title is the last
-            // thing read before the mark and clearly terminates the block.
-            if sequence.phase > .bloom {
-                telemetryHeader
-                    .opacity(sequence.revealedElements.contains(.header) ? 1 : 0)
-                    .gvDecay(sequence.glitchedElement == .header, seed: 1)
-                    .padding(.bottom, compactHeight ? 3 : 6)
-            }
-
-            if sequence.revealedIdentityRows.contains(0) {
-                // Deliberately not a GVDecayText. Every other line here is a
-                // failing terminal readout; the signature is the one human
-                // thing on the screen, so it resolves cleanly and is set in
-                // SF rather than the monospace the machine speaks in. Same
-                // type family, different voice.
-                //
-                // Decay would also warp it: the noise glyphs are chosen to
-                // hold a constant width, which only holds in a monospaced
-                // face, so a proportional font would visibly change length
-                // while it settled.
-                // The draw-on treatment lives here now: the signature is the
-                // one human line on the screen, so watching it get written is
-                // the right place for a hand-drawn reveal.
-                HStack(alignment: .firstTextBaseline, spacing: compactHeight ? 5 : 6) {
-                    GVStrokeText(
-                        text: "MADE WITH LOVE BY",
-                        fontSize: compactHeight ? 10.5 : 12,
-                        tracking: 1.2,
-                        strokeColor: BootPalette.glow,
-                        fillColor: GVTheme.bone.opacity(0.78),
-                        strokeWidth: 0.9,
-                        drawDuration: 3.4,
-                        fillDelay: 0.5,
-                        stagger: 0.11,
-                        start: identityRowDate(0)
-                    )
-
-                    // The name carries the chromatic glitch rather than the
-                    // whole sentence, so the corruption reads as being about
-                    // the signature and not about the machine.
-                    GVGlitchText(
-                        text: "GREY",
-                        size: compactHeight ? 17 : 19.5,
-                        tracking: 1.4,
-                        speed: 0.6
-                    )
-                }
-                .gvBlackHalo(radius: 26, opacity: 0.62)
-                // The line was reading as a sticker laid over the splash: full
-                // white at full width, hard on both ends. Feathering the ends
-                // and pulling the contrast down settles it into the field
-                // without losing the draw-on.
-                .mask {
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0.00),
-                            .init(color: .white.opacity(0.45), location: 0.05),
-                            .init(color: .white, location: 0.16),
-                            .init(color: .white, location: 0.84),
-                            .init(color: .white.opacity(0.45), location: 0.95),
-                            .init(color: .clear, location: 1.00)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                }
-                .opacity(0.84)
-                .padding(.bottom, compactHeight ? 3 : 6)
-            }
-        }
-    }
-
-    /// The manifest after it has resolved: no decay, no per-row reveal, just
-    /// the rows. Rendered inside `GVInfiniteColumn`, which supplies the travel.
-    private func settledManifest(compactHeight: Bool) -> some View {
-        let size: CGFloat = compactHeight ? 8.2 : 9.5
-        return VStack(spacing: compactHeight ? 2 : 3) {
-            ForEach(Array(identityRows.enumerated()), id: \.offset) { _, row in
-                Text(row.0)
-                    .gvMono(size, .bold)
-                    .tracking(1.05)
-                    .foregroundStyle(GVTheme.bone)
-                    .shadow(color: .black.opacity(0.85), radius: 2)
-                    .fixedSize()
-            }
-        }
-        // Sits directly under the signature with the same gap the decoding
-        // manifest had, so the swap to the settled rows does not shift the
-        // block.
-        .padding(.top, compactHeight ? 2 : 4)
-    }
-
-    /// True once every capability row has resolved.
-    private var manifestResolved: Bool {
-        let rows = GVBootSequence.identityCapabilityCount
-        return sequence.revealedIdentityRows.filter { $0 >= 2 }.count >= rows
-    }
-
-    /// The decoding manifest, before it starts travelling.
-    @ViewBuilder
-    private func identityManifest(compactHeight: Bool) -> some View {
-        VStack(spacing: compactHeight ? 2 : 4) {
-            ForEach(Array(identityRows.enumerated()), id: \.offset) { index, row in
-                let revealed = sequence.revealedIdentityRows.contains(index + 2)
-                // Top rows sit closest to the mark's own falloff, so they are
-                // held back slightly. Without it the manifest starts at full
-                // brightness exactly where the artwork ends, which reinstates
-                // the edge the feather removed.
-                let proximity = 1.0 - min(Double(index) / 3.0, 1.0)
-                Group {
-                    GVDecayText(
-                        // The top block opens every line with `>`. These close
-                        // with `<` on the right, so the two blocks bracket the
-                        // mark rather than repeating the same gesture twice.
-                        text: row.0,
-                        mode: row.1,
-                        revealDate: identityRowDate(index + 2),
-                        // Smaller than the single-line version it replaced:
-                        // twelve rows at 11.2 would run into the capture dock.
-                        // Dense is also the correct register here — this is a
-                        // manifest, and the top block is set the same way.
-                        size: compactHeight ? 8.2 : 9.5,
-                        weight: .bold,
-                        tracking: 1.05,
-                        // `ink`, matching GVBootTelemetryLine above the mark.
-                        // At `dim` (white 0.48 against the telemetry's 0.94)
-                        // the lower block read as a second-class caption.
-                        color: GVTheme.bone,
-                        seed: index * 7 + 3
-                    )
-                    .frame(maxWidth: 400)
-                }
-                .opacity(revealed ? (1.0 - proximity * 0.55) : 0)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    /// Stamped the first time a row appears so its decay animation starts from
-    /// its own reveal rather than a shared phase origin.
-    /// Rail reveal, 0...1.
-    ///
-    /// Held back until the manifest has finished resolving, then eased in over
-    /// its own beat rather than switching on with the rest of the chrome.
     private var dockReveal: Double {
-        guard sequence.revealedElements.contains(.dock) else { return 0 }
-        let rows = GVBootSequence.identityCapabilityCount
-        let resolved = sequence.revealedIdentityRows.filter { $0 >= 2 }.count
-        return resolved >= rows ? 1 : 0
+        sequence.revealedElements.contains(.dock) ? 1 : 0
     }
 
     private func identityRowDate(_ index: Int) -> Date {
         identityRowDates[index] ?? sequence.phaseStart
-    }
-
-    private var telemetryHeader: some View {
-        VStack(spacing: 4) {
-            GVTerminalText(
-                text: "VERSION 3.3",
-                size: 19,
-                weight: .black,
-                tracking: 4.2,
-                intensity: 1.3
-            )
-            .padding(.bottom, 2)
-
-            GVTerminalText(
-                text: "GV.CORE // CLEAN ROOM",
-                size: 12.4,
-                weight: .black,
-                tracking: 2.1,
-                intensity: 1.15
-            )
-            GVTerminalText(
-                text: "BUILD \(buildNumber) // LOCAL RUNTIME",
-                size: 10.0,
-                weight: .bold,
-                tracking: 1.45,
-                baseColor: GVTheme.ash,
-                intensity: 0.65
-            )
-            GVTerminalText(
-                text: isReady ? "● READY" : "○ PROBING",
-                size: 9.7,
-                weight: .black,
-                tracking: 1.2,
-                baseColor: isReady ? GVTheme.acid : GVTheme.ash,
-                intensity: 0.9
-            )
-            .padding(.top, 1)
-        }
-    }
-
-    /// True once every telemetry line has decoded.
-    private var consoleResolved: Bool {
-        sequence.revealedLines.count >= appModel.bootTelemetry.terminalLines.count
-    }
-
-    private func bootConsole(compactHeight: Bool) -> some View {
-        Group {
-            if consoleResolved {
-                // Travels in place: no window height, so it occupies exactly
-                // the room the static block did and wraps inside it. The
-                // manifest at the bottom of the screen already reads as a live
-                // feed; a fixed console above it read as a caption.
-                GVInfiniteColumn(speed: 9) {
-                    consoleColumn(compactHeight: compactHeight)
-                }
-                .transition(.opacity)
-            } else {
-                consoleColumn(compactHeight: compactHeight)
-            }
-        }
-        .frame(maxWidth: 430)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live device boot telemetry")
-    }
-
-    private func consoleColumn(compactHeight: Bool) -> some View {
-        VStack(spacing: compactHeight ? 1 : 3) {
-            ForEach(Array(appModel.bootTelemetry.terminalLines.enumerated()), id: \.offset) { index, line in
-                GVBootTelemetryLine(
-                    text: line,
-                    index: index,
-                    isRevealed: sequence.revealedLines.contains(index),
-                    revealDate: lineRevealDates[index] ?? sequence.phaseStart,
-                    isGlitching: sequence.glitchIndex == index,
-                    size: compactHeight ? 8.6 : 10.2,
-                    tracking: compactHeight ? 0.5 : 0.82
-                )
-            }
-        }
-    }
-
-    private var buildNumber: String {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "0001"
     }
 
     /// Collapses the control into a point, tears the raster, and only then
@@ -838,7 +436,7 @@ struct BootView: View {
 
     private func presentSocialLinks() {
         guard isReady else { return }
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+        withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
             isSocialPresented = true
         }
     }
@@ -873,8 +471,8 @@ private struct BootAmbientField: View {
             GVAurora()
                 .ignoresSafeArea()
 
-            DeterministicStarfield()
-                .opacity(0.58)
+            DeterministicStarfield(starCount: 420, shootingStarInterval: 3.6)
+                .opacity(0.85)
                 .ignoresSafeArea(edges: .top)
 
             GVSnowField()
@@ -906,7 +504,7 @@ private struct BootAmbientField: View {
         }
     }
 
-    private static func veilStops(reach: CGFloat) -> [Gradient.Stop] {
+    private static func veilStops(reach _: CGFloat) -> [Gradient.Stop] {
         [
             .init(color: BootPalette.deep.opacity(0.19), location: 0),
             .init(color: BootPalette.deep.opacity(0.12), location: 0.22),
@@ -1004,62 +602,8 @@ private struct BootBloomLayer: View {
     }
 }
 
-/// The signature line above the wordmark.
-///
-/// Set in SF rather than the monospace used everywhere else on this screen, so
-/// it reads as a person's hand inside a machine readout. It is lifted off the
-/// surrounding rows by a violet bloom instead of by size alone — at a size big
-/// enough to separate on its own it would start competing with the wordmark
-/// directly beneath it.
-private struct GVSplashAttribution: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let text: String
-    let size: CGFloat
-    let revealDate: Date
-
-    var body: some View {
-        let storm = GVStormCloud()
-            .frame(height: size * 7.2)
-            .scaleEffect(x: 1.5, y: 1.0)
-            .offset(y: -size * 0.85)
-            .blendMode(.plusLighter)
-            .allowsHitTesting(false)
-
-        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 20, paused: reduceMotion)) { timeline in
-            let elapsed = max(timeline.date.timeIntervalSince(revealDate), 0)
-            // Breathes only after it has settled, so the reveal is clean and
-            // the glow is what keeps it alive afterwards.
-            let settle = min(elapsed / 0.7, 1)
-            let pulse = reduceMotion ? 0.5 : (sin(elapsed * 1.5) + 1) / 2
-            let bloom = 0.32 + pulse * 0.26
-
-            Text(text)
-                .font(.system(size: size, weight: .semibold, design: .default))
-                .tracking(size * 0.22)
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [GVTheme.bone, GVTheme.bone.opacity(0.86)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .background {
-                    storm.opacity(0.68 * settle)
-                }
-                .shadow(color: GVTheme.violet.opacity(bloom * settle), radius: 7)
-                .shadow(color: GVTheme.violetDeep.opacity(bloom * 0.7 * settle), radius: 15)
-                .shadow(color: .black.opacity(0.75), radius: 2, y: 1)
-                .opacity(settle)
-                .blur(radius: (1 - settle) * 3)
-        }
-        .lineLimit(1)
-        .minimumScaleFactor(0.7)
-        .accessibilityLabel(text)
-    }
-}
-
 private struct SplashCaptureDock: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var setup: CaptureSetupDraft
     let isReady: Bool
     let isCollapsing: Bool
@@ -1067,24 +611,42 @@ private struct SplashCaptureDock: View {
     let onLaunch: () -> Void
 
     @State private var activeSection: SplashDockSection?
-    /// Leading visible card of the FORMAT rail. Survives open/close cycles,
-    /// so reopening drops you where you left off — at 60FPS, not at H.264.
-    @State private var formatScrollID: String?
+    /// Leading visible card of the open format rail. Every submenu opens from
+    /// its first option so the beginning of the list is never clipped.
+    @State private var optionScrollID: String?
 
     /// The basics only. The enum still spells every codec it ever did for
     /// draft decoding, but the chooser offers five.
     private let codecChoices: [CaptureSetupDraft.VideoCodec] = CaptureSetupDraft.VideoCodec.curated
 
+    /// Height of the dock's button row, and the gap the open rail leaves above
+    /// it. The rail hangs off these: its readout makes it taller than the old
+    /// strip, and an overlay pinned to the row's top edge would have grown
+    /// downwards over the controls it belongs to. Anchored to the bottom it
+    /// grows the only direction there is room for.
+    private let rowHeight: CGFloat = 52
+    private let railGap: CGFloat = GVMetrics.gap
+
     var body: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                dockButton(
-                    .format,
-                    value: "\(setup.videoCodec.compactLabel) \u{00B7} \(setup.frameRate.rawValue) \u{00B7} \(setup.resolution.rawValue)"
-                )
+        VStack(spacing: GVMetrics.gap) {
+            HStack(spacing: GVMetrics.gap) {
+                dockButton(.codec, value: setup.videoCodec.compactLabel)
+                dockButton(.frameRate, value: "\(setup.frameRate.rawValue)")
+                dockButton(.resolution, value: setup.resolution.rawValue)
                 launchButton
             }
-            .fixedSize(horizontal: true, vertical: true)
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .bottom) {
+                if let activeSection {
+                    choiceRail(for: activeSection)
+                        .offset(y: -(rowHeight + railGap))
+                        .transition(
+                            .move(edge: .bottom)
+                                .combined(with: .opacity)
+                                .combined(with: .scale(scale: 0.96, anchor: .bottom))
+                        )
+                }
+            }
 
             GVTerminalText(
                 text: isReady ? "FORMAT ARMED // LAUNCH" : "LOCAL PROBE IN PROGRESS",
@@ -1094,144 +656,142 @@ private struct SplashCaptureDock: View {
                 baseColor: isReady ? GVTheme.bone.opacity(0.72) : GVTheme.bone.opacity(0.42),
                 intensity: 0.42
             )
-            .padding(.bottom, max(bottomInset, 5))
+            Text("MADE WITH LOVE BY GREY")
+                .gvMono(9, .medium)
+                .tracking(1.2)
+                .foregroundStyle(GVTheme.bone.opacity(0.82))
+                .accessibilityIdentifier("boot.attribution")
+                .padding(.bottom, max(bottomInset, GVMetrics.stepInternal))
         }
         .frame(maxWidth: 560)
-        .overlay(alignment: .top) {
-            if let activeSection {
-                choiceRail(for: activeSection)
-                    .offset(y: -128)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
         .zIndex(2)
-        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: activeSection)
+        .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: activeSection)
     }
 
+    /// Every option in a section, built once.
+    ///
+    /// The cards, the footer readout, the scroll anchor and the accessibility
+    /// identifiers all read off this list, so the rail cannot describe a format
+    /// the chooser does not offer — which is what three hand-kept card groups
+    /// kept doing at the edges.
+    private func options(for section: SplashDockSection) -> [GVSplashOption] {
+        switch section {
+        case .codec:
+            codecChoices.map { codec in
+                GVSplashOption(
+                    id: "codec-\(codec.rawValue)",
+                    identifier: "boot.codec.\(optionSlug(codec.rawValue))",
+                    label: codec.rawValue,
+                    spec: "\(codec.chromaLabel) · \(codec.bitDepthLabel)",
+                    note: codec.availabilityNote,
+                    meter: codec.fidelityClass,
+                    chips: [
+                        GVSplashSpecChip(caption: "CHROMA", value: codec.chromaLabel),
+                        GVSplashSpecChip(caption: "DEPTH", value: codec.bitDepthLabel),
+                        GVSplashSpecChip(caption: "TIER", value: codec.tierLabel),
+                        GVSplashSpecChip(
+                            caption: "FIDELITY",
+                            value: codec.fidelityLabel,
+                            meter: codec.fidelityClass
+                        )
+                    ],
+                    enabled: codec.isOperatingSystemAvailable,
+                    apply: { setup.videoCodec = codec }
+                )
+            }
+        case .frameRate:
+            CaptureSetupDraft.FrameRate.allCases.map { frameRate in
+                GVSplashOption(
+                    id: "fps-\(frameRate.rawValue)",
+                    identifier: "boot.fps.\(optionSlug(frameRate.label))",
+                    label: frameRate.label,
+                    spec: frameRate.cadenceLabel,
+                    note: frameRate.availabilityNote,
+                    meter: frameRate.motionClass,
+                    chips: [
+                        GVSplashSpecChip(caption: "CADENCE", value: frameRate.label),
+                        GVSplashSpecChip(
+                            caption: "MOTION",
+                            value: frameRate.cadenceLabel,
+                            meter: frameRate.motionClass
+                        )
+                    ],
+                    enabled: true,
+                    apply: { setup.frameRate = frameRate }
+                )
+            }
+        case .resolution:
+            CaptureSetupDraft.Resolution.allCases.map { resolution in
+                GVSplashOption(
+                    id: "res-\(resolution.rawValue)",
+                    identifier: "boot.res.\(optionSlug(resolution.rawValue))",
+                    label: resolution.rawValue,
+                    spec: resolution.pixelLabel,
+                    note: resolution.availabilityNote,
+                    meter: resolution.detailClass,
+                    chips: [
+                        GVSplashSpecChip(caption: "PIXELS", value: resolution.pixelLabel),
+                        GVSplashSpecChip(
+                            caption: "DETAIL",
+                            value: resolution.detailLabel,
+                            meter: resolution.detailClass
+                        )
+                    ],
+                    enabled: true,
+                    apply: { setup.resolution = resolution }
+                )
+            }
+        }
+    }
+
+    /// Scroll anchor of the option currently in force, so the rail's inverted
+    /// plate and its footer readout always describe the same thing.
+    private func selectedID(for section: SplashDockSection) -> String {
+        switch section {
+        case .codec: "codec-\(setup.videoCodec.rawValue)"
+        case .frameRate: "fps-\(setup.frameRate.rawValue)"
+        case .resolution: "res-\(setup.resolution.rawValue)"
+        }
+    }
+
+    /// The open section's rail. All of its presentation lives in
+    /// `GVSplashChoiceRail`; what stays here is the state machine — which
+    /// section is open, what a choice does to the draft, and when the rail
+    /// closes.
     private func choiceRail(for section: SplashDockSection) -> some View {
-        // 21 matches the workspace effect rail exactly; 27 was close enough to
-        // look like a mistake rather than a different component.
-        //
-        // Opaque, unlike the workspace rails. Those sit over a live camera the
-        // operator needs to keep seeing; this one sits over the splash, where
-        // the violet field behind it was reading straight through the option
-        // cards. A chooser is a modal surface — it should stop the background,
-        // not sample it.
-        VStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    groupHeader("CODEC")
-                    ForEach(codecChoices) { codec in
-                        optionCard(
-                            label: codec.rawValue,
-                            detail: codec.availabilityNote,
-                            selected: setup.videoCodec == codec,
-                            enabled: codec.isOperatingSystemAvailable,
-                            scale: 0.9
-                        ) {
-                            setup.videoCodec = codec
-                        }
-                        .id("codec-\(codec.rawValue)")
-                    }
-
-                    segmentDivider
-
-                    groupHeader("FPS")
-                    ForEach(CaptureSetupDraft.FrameRate.allCases) { frameRate in
-                        optionCard(
-                            label: frameRate.label,
-                            detail: frameRate.availabilityNote,
-                            selected: setup.frameRate == frameRate,
-                            enabled: true
-                        ) {
-                            setup.frameRate = frameRate
-                        }
-                        .id("fps-\(frameRate.rawValue)")
-                    }
-
-                    segmentDivider
-
-                    groupHeader("RES")
-                    ForEach(CaptureSetupDraft.Resolution.allCases) { resolution in
-                        optionCard(
-                            label: resolution.rawValue,
-                            detail: resolution.availabilityNote,
-                            selected: setup.resolution == resolution,
-                            enabled: resolution.isSelectable,
-                            collapsesMenu: true
-                        ) {
-                            setup.resolution = resolution
-                        }
-                        .id("res-\(resolution.rawValue)")
+        GVSplashChoiceRail(
+            section: section,
+            options: options(for: section),
+            selectedID: selectedID(for: section),
+            scrollID: $optionScrollID,
+            onSelect: { option in
+                // Animated, so the footer readout crossfades to the format the
+                // operator just chose instead of snapping while the rail is
+                // still open.
+                withAnimation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion)) { option.apply() }
+                // The rail stays open just long enough for the choice to be
+                // seen landing on the card before it collapses.
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(230))
+                    withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
+                        activeSection = nil
                     }
                 }
-                .padding(.vertical, 7)
-                .scrollTargetLayout()
-            }
-            // Two-way binding: reading gives the leading visible card while
-            // the operator scrolls; writing on re-open restores that spot.
-            .scrollPosition(id: $formatScrollID)
-            .contentMargins(.horizontal, 10, for: .scrollContent)
-            // Was `scrollClipDisabled`, which let cards draw straight through
-            // the panel's own border as they scrolled — the hard vertical cut
-            // in the middle of a plate. Cards now clip to the rail and the
-            // edge fade makes a partly visible card read as "more this way"
-            // rather than as a rendering fault. Same treatment as the
-            // workspace effect rail.
-            .gvHorizontalEdgeFade()
-            // Clipped to the rail's own shape, so a card scrolling out ends
-            // at the rail's rounded edge instead of being cut by the display.
-            // The fade sits inside the clip, so the last visible card reads
-            // as "more this way" rather than as a severed plate.
-            .clipShape(RoundedRectangle(cornerRadius: GVMetrics.radiusPanel, style: .continuous))
-            .accessibilityIdentifier("boot.choices.\(section.rawValue)")
-        }
-        .background(
-            ZStack(alignment: .top) {
-                LinearGradient(
-                    colors: [SplashPalette.charcoal, SplashPalette.deep],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                Rectangle()
-                    .fill(Color.white.opacity(0.07))
-                    .frame(height: 1 / UIScreen.main.scale)
-                    .frame(maxHeight: .infinity, alignment: .top)
             }
         )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.09), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.55), radius: 14, y: 8)
-        // Matches the dock beneath it. At 680 the rail was wider than both its
-        // parent and the display, so its right-hand end — and any card under
-        // it — was cut off by the screen edge rather than by the rail. That is
-        // the hard vertical slice through the fourth plate.
-        .frame(maxWidth: .infinity)
-    }
-
-    private var segmentDivider: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.10))
-            .frame(width: 1, height: GVMetrics.cardHeight)
-    }
-
-    private func groupHeader(_ title: String) -> some View {
-        Text(title)
-            .gvMono(GVMetrics.textSmall, .bold)
-            .tracking(1.6)
-            .foregroundStyle(GVTheme.ash.opacity(0.85))
-            .frame(width: 46)
     }
 
     private func dockButton(_ section: SplashDockSection, value: String) -> some View {
         let isActive = activeSection == section
         return Button {
-            activeSection = isActive ? nil : section
+            if isActive {
+                activeSection = nil
+            } else {
+                optionScrollID = firstOptionID(for: section)
+                activeSection = section
+            }
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: GVMetrics.gapTight) {
                 GVTerminalText(
                     text: section.label,
                     size: 9.5,
@@ -1243,157 +803,67 @@ private struct SplashCaptureDock: View {
                 GVTerminalText(
                     text: value,
                     size: 15,
-                    weight: .black,
-                    tracking: 1.0,
+                    weight: .medium,
+                    tracking: 0.7,
                     baseColor: GVTheme.bone,
-                    intensity: 0.8
+                    intensity: 0.2
                 )
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
+                // A lit rule under the value, so the dock says which section
+                // the rail above it belongs to without the operator having to
+                // read the header over the cards.
+                Rectangle()
+                    .fill(isActive ? GVTheme.violet : GVTheme.bone.opacity(0.16))
+                    .frame(width: 22, height: 0.75)
+                    .shadow(color: GVTheme.violet.opacity(isActive ? 0.7 : 0), radius: 3)
             }
-            // Same white-transparent chamfered plate as the workspace settings
-            // deck, so the splash dock and the camera chrome read as one
-            // instrument instead of two different control languages.
-            .frame(width: isActive ? 300 : 200, height: 80)
-            .background(
-                GVChamferedPlate(cut: 10)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                GVChamferedPlate(cut: 10)
-                    .strokeBorder(isActive ? Color.white.opacity(0.85) : Color.white.opacity(0.22), lineWidth: isActive ? 1.4 : 1)
-            )
-            .shadow(color: .black.opacity(0.55), radius: 8, y: 3)
-            .shadow(color: isActive ? Color.white.opacity(0.30) : .clear, radius: 7)
+            .frame(maxWidth: .infinity)
+            .frame(height: rowHeight)
             .contentShape(Rectangle())
         }
-        .buttonStyle(GVPressStyle())
+        .buttonStyle(GVSplashButtonStyle(active: isActive))
+        .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: value)
         .accessibilityLabel("\(section.label), \(value)")
+        .accessibilityHint(isActive ? "Closes the format chooser." : "Opens the format chooser.")
         .accessibilityIdentifier("boot.\(section.rawValue)")
+    }
+
+    /// First option of a section, because opening one always starts at its
+    /// beginning. Read off the same list the rail draws, so a reordered
+    /// chooser cannot leave the scroll pinned to an anchor that no longer
+    /// exists.
+    private func firstOptionID(for section: SplashDockSection) -> String {
+        options(for: section).first?.id ?? ""
     }
 
     private var launchButton: some View {
         Button(action: onLaunch) {
-            VStack(spacing: 6) {
+            VStack(spacing: GVMetrics.gapTight) {
                 GVTerminalText(
                     text: "ARM",
                     size: 9.5,
                     weight: .bold,
                     tracking: 1.6,
-                    baseColor: isReady ? .white : GVTheme.bone.opacity(0.5),
-                    intensity: 0.85
+                    baseColor: isReady ? GVTheme.bone : GVTheme.bone.opacity(0.5),
+                    intensity: 0.95
                 )
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 24, weight: .black))
-                    .foregroundStyle(isReady ? Color.white : GVTheme.faint)
-                    .shadow(color: isReady ? Color.white.opacity(0.65) : .clear, radius: 5)
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(isReady ? GVTheme.bone : GVTheme.faint)
+                    .shadow(color: isReady ? GVTheme.bone.opacity(0.85) : .clear, radius: 6)
+                    .shadow(color: isReady ? GVTheme.bone.opacity(0.45) : .clear, radius: 12)
             }
-            // The one committing control on the screen, so it is the only one
-            // that emits.
-            .frame(width: 124, height: 80)
-            .background(
-                GVChamferedPlate(cut: 10)
-                    .fill(isReady ? Color.white.opacity(0.13) : Color.white.opacity(0.04))
-            )
-            .overlay(
-                GVChamferedPlate(cut: 10)
-                    .strokeBorder(isReady ? Color.white.opacity(0.85) : Color.white.opacity(0.16), lineWidth: isReady ? 1.4 : 1)
-            )
+            .frame(maxWidth: .infinity)
+            .frame(height: rowHeight)
             .contentShape(Rectangle())
-            .shadow(color: .black.opacity(0.55), radius: 8, y: 3)
-            .shadow(color: isReady ? Color.white.opacity(0.35) : .clear, radius: 9)
         }
-        .buttonStyle(GVPressStyle())
+        .buttonStyle(GVSplashButtonStyle(active: isReady))
         .disabled(!isReady)
+        .opacity(isReady ? 1 : 0.72)
         .accessibilityLabel("Launch workspace")
+        .accessibilityHint(isReady ? "Enters the camera workspace." : "Unavailable until the probe completes.")
         .accessibilityIdentifier("boot.launch")
-    }
-
-    private func optionCard(
-        label: String,
-        detail: String,
-        selected: Bool,
-        enabled: Bool,
-        collapsesMenu: Bool = false,
-        scale: CGFloat = 1,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            action()
-            // The chooser stays open while the operator works through codec
-            // and cadence; only a resolution pick completes the format, and
-            // that is what collapses the rail.
-            guard collapsesMenu else { return }
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(230))
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                    activeSection = nil
-                }
-            }
-        } label: {
-            VStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    if !enabled {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(GVTheme.ash)
-                    }
-                    GVTerminalText(
-                        text: label,
-                        size: 13.5,
-                        weight: .black,
-                        tracking: 1.2,
-                        baseColor: selected ? GVTheme.violet : GVTheme.bone,
-                        intensity: 0.78
-                    )
-                    .lineLimit(1)
-                }
-                GVTerminalText(
-                    text: detail,
-                    size: 9,
-                    weight: .bold,
-                    tracking: 0.8,
-                    baseColor: selected ? GVTheme.violet.opacity(0.8) : GVTheme.bone.opacity(0.74),
-                    intensity: 0.48
-                )
-                .lineLimit(1)
-            }
-            .frame(width: 176 * scale, height: 88 * scale)
-            // Same plate language as the workspace effect rail: chamfered
-            // charcoal, hairline structure, and one glowing white accent that
-            // only the committed option earns.
-            .background(
-                GVChamferedPlate(cut: 8)
-                    .fill(
-                        selected ? Color.white.opacity(0.13) : Color(white: 0.10).opacity(0.94)
-                    )
-                    .overlay(
-                        GVChamferedPlate(cut: 8)
-                            .stroke(
-                                selected ? Color.white.opacity(0.85) : Color.white.opacity(0.08),
-                                lineWidth: selected ? 1.2 : 1.0
-                            )
-                    )
-            )
-            .overlay {
-                if selected {
-                    GVScanlines(opacity: 0.16)
-                        .padding(2)
-                        .allowsHitTesting(false)
-                }
-            }
-            .contentShape(Rectangle())
-            .shadow(color: .black.opacity(0.5), radius: 5, y: 3)
-            .shadow(color: selected ? Color.white.opacity(0.42) : .clear, radius: 7)
-            .shadow(color: selected ? Color.white.opacity(0.18) : .clear, radius: 16)
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.42)
-        .accessibilityHint(enabled ? detail : "Unavailable. \(detail)")
-        .accessibilityIdentifier(
-            "boot.\(activeSection?.rawValue ?? "option").\(optionSlug(label))"
-        )
     }
 
     private func optionSlug(_ label: String) -> String {
@@ -1404,25 +874,24 @@ private struct SplashCaptureDock: View {
     }
 }
 
-/// The splash chooser's material — same charcoal family as the workspace
-/// dock and parameter decks, so boot and camera read as one instrument.
-private enum SplashPalette {
-    static let charcoal = Color(red: 0.135, green: 0.135, blue: 0.143)
-    static let deep = Color(red: 0.078, green: 0.078, blue: 0.085)
-}
+/// Thin monochrome plates shared by the format dock and its options.
+struct GVSplashButtonStyle: ButtonStyle {
+    let active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-/// One consolidated selector. Codec, cadence and sensor format used to be
-/// three separate popovers; they are one FORMAT surface now, summarised as a
-/// single line in the dock button.
-private enum SplashDockSection: String, CaseIterable, Identifiable {
-    case format
-
-    var id: String {
-        rawValue
-    }
-
-    var label: String {
-        "FORMAT"
+    func makeBody(configuration: Configuration) -> some View {
+        let pressed = configuration.isPressed
+        configuration.label
+            .background(Color.black.opacity(active || pressed ? 0.94 : 0.76))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(GVTheme.bone.opacity(active || pressed ? 0.85 : 0.28), lineWidth: 0.75)
+            }
+            .brightness(pressed ? 0.14 : 0)
+            .scaleEffect(reduceMotion ? 1 : (pressed ? 0.95 : (active ? 1.02 : 1)))
+            .animation(GVMotion.resolved(GVMotion.press, reduceMotion: reduceMotion), value: pressed)
+            .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: active)
     }
 }
 

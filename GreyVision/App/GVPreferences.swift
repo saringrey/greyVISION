@@ -9,7 +9,6 @@ import SwiftUI
 @MainActor
 final class GVPreferences: ObservableObject {
     private enum Key {
-        static let sigils = "gv.preferences.sigils"
         static let experimental = "gv.preferences.experimental"
         static let sound = "gv.preferences.sound"
         static let favorites = "gv.preferences.favorites"
@@ -18,6 +17,18 @@ final class GVPreferences: ObservableObject {
         static let density = "gv.preferences.hudDensity"
         static let coachSeen = "gv.preferences.coach.seen"
         static let startupAnimation = "gv.preferences.startup.animation"
+        static let renderQuality = "gv.preferences.renderQuality"
+    }
+
+    /// How hard the renderer is allowed to work.
+    ///
+    /// Automatic lets the governor move the render scale, the simulation field
+    /// sizes and the frame-rate ceiling when frames run over budget. The
+    /// pinned options are promises: they will not move on their own, which is
+    /// the right answer for an operator who would rather have a dropped frame
+    /// than a soft image. See `GVRenderQuality`.
+    @Published var renderQuality: GVRenderQuality {
+        didSet { defaults.set(renderQuality.rawValue, forKey: Key.renderQuality) }
     }
 
     /// Whether unlocking runs the full boot ceremony or lands straight in the
@@ -85,12 +96,6 @@ final class GVPreferences: ObservableObject {
         }
     }
 
-    /// Hidden stroke sequences. Off by default — the mechanic should be opted
-    /// into, not discovered by accident while framing a shot.
-    @Published var sigilsEnabled: Bool {
-        didSet { defaults.set(sigilsEnabled, forKey: Key.sigils) }
-    }
-
     /// Reveals the experimental effect categories in the dock rail. Hidden by
     /// default so the default surface stays the stable set.
     @Published var experimentalEnabled: Bool {
@@ -105,10 +110,35 @@ final class GVPreferences: ObservableObject {
             GVSoundEngine.shared.isEnabled = soundEnabled
         }
     }
-    
+
     /// Whether to composite the HUD watermark into saved recordings.
     @Published var watermarkEnabled: Bool {
         didSet { defaults.set(watermarkEnabled, forKey: "gv.preferences.watermark") }
+    }
+
+    /// Camera tools & guide preferences
+    @Published var gridEnabled: Bool {
+        didSet { defaults.set(gridEnabled, forKey: "gv.preferences.cam.grid") }
+    }
+
+    @Published var histogramEnabled: Bool {
+        didSet { defaults.set(histogramEnabled, forKey: "gv.preferences.cam.histogram") }
+    }
+
+    @Published var peakingEnabled: Bool {
+        didSet { defaults.set(peakingEnabled, forKey: "gv.preferences.cam.peaking") }
+    }
+
+    @Published var zebraEnabled: Bool {
+        didSet { defaults.set(zebraEnabled, forKey: "gv.preferences.cam.zebra") }
+    }
+
+    @Published var reticleEnabled: Bool {
+        didSet { defaults.set(reticleEnabled, forKey: "gv.preferences.cam.reticle.v2") }
+    }
+
+    @Published var ndShutterEnabled: Bool {
+        didSet { defaults.set(ndShutterEnabled, forKey: "gv.preferences.cam.ndShutter") }
     }
 
     /// Menu track playback. Session-only by design — persisting it would mean
@@ -133,14 +163,16 @@ final class GVPreferences: ObservableObject {
         hudDensity = defaults.integer(forKey: Key.density)
         developerEnabled = defaults.bool(forKey: Key.developer)
         coachSeen = defaults.bool(forKey: Key.coachSeen)
-        sigilsEnabled = defaults.bool(forKey: Key.sigils)
         experimentalEnabled = defaults.bool(forKey: Key.experimental)
+        renderQuality = GVRenderQuality(
+            rawValue: defaults.string(forKey: Key.renderQuality) ?? ""
+        ) ?? .automatic
 
         defaults.register(defaults: [Key.startupAnimation: true])
         startupAnimationEnabled = defaults.object(forKey: Key.startupAnimation) == nil
             ? true
             : defaults.bool(forKey: Key.startupAnimation)
-        
+
         defaults.register(defaults: ["gv.preferences.watermark": true])
         watermarkEnabled = defaults.bool(forKey: "gv.preferences.watermark")
         // `bool(forKey:)` returns false for an unset key, so sound has to be
@@ -153,12 +185,31 @@ final class GVPreferences: ObservableObject {
             defaults.set(true, forKey: Key.sound)
             defaults.set(true, forKey: "gv.preferences.sound.reset.v2")
         }
-        soundEnabled = defaults.bool(forKey: Key.sound)
-        GVSoundEngine.shared.isEnabled = soundEnabled
+        let soundVal = defaults.bool(forKey: Key.sound)
+        soundEnabled = soundVal
+
+        defaults.register(defaults: [
+            "gv.preferences.cam.grid": false,
+            "gv.preferences.cam.histogram": false,
+            "gv.preferences.cam.peaking": false,
+            "gv.preferences.cam.zebra": false,
+            // New default also applies to existing installs, then preserves
+            // any subsequent choice to turn the reticle off.
+            "gv.preferences.cam.reticle.v2": true,
+            "gv.preferences.cam.ndShutter": false
+        ])
+        gridEnabled = defaults.bool(forKey: "gv.preferences.cam.grid")
+        histogramEnabled = defaults.bool(forKey: "gv.preferences.cam.histogram")
+        peakingEnabled = defaults.bool(forKey: "gv.preferences.cam.peaking")
+        zebraEnabled = defaults.bool(forKey: "gv.preferences.cam.zebra")
+        reticleEnabled = defaults.bool(forKey: "gv.preferences.cam.reticle.v2")
+        ndShutterEnabled = defaults.bool(forKey: "gv.preferences.cam.ndShutter")
+
         favoriteEffects = Set(defaults.stringArray(forKey: Key.favorites) ?? [])
         recentEffects = Array(
             (defaults.stringArray(forKey: Key.recents) ?? []).prefix(Self.recentEffectLimit)
         )
 
+        GVSoundEngine.shared.isEnabled = soundVal
     }
 }

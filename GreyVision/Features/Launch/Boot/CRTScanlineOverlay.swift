@@ -260,13 +260,10 @@ struct CRTScanlinesTexture: View {
 
 // MARK: - Global CRT glass
 
-/// The tube the whole splash screen is seen through.
+/// The tube the splash display field is seen through.
 ///
-/// Composited above every other layer, including the mark. That ordering is
-/// the entire point: when scanlines, vignette and phosphor tint sit on top of
-/// the artwork as well as the interface, the artwork stops looking like an
-/// image placed on a background and starts looking like something the same
-/// display is showing.
+/// Composited above the atmosphere and interface, but below the foreground
+/// logo so scanlines, vignette and phosphor tint never degrade the mark.
 ///
 /// Kept to two cheap `Canvas` passes plus static gradients — this runs for the
 /// few seconds of boot and must not compete with camera warm-up for GPU.

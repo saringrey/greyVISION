@@ -13,7 +13,7 @@ enum GVScreenCapture {
             return
         }
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("greyvision-ui-\(Int(Date().timeIntervalSince1970)).png")
+            .appendingPathComponent("greyvision-ui-\(UUID().uuidString).png")
         do {
             try png.write(to: url)
         } catch {
@@ -22,6 +22,7 @@ enum GVScreenCapture {
         }
         requestAddAccess { granted in
             guard granted else {
+                try? FileManager.default.removeItem(at: url)
                 message("SCREENSHOT // PHOTOS ACCESS DENIED")
                 return
             }
@@ -30,7 +31,7 @@ enum GVScreenCapture {
             } completionHandler: { success, error in
                 try? FileManager.default.removeItem(at: url)
                 if success {
-                    message("SCREENSHOT // SAVED WITH UI")
+                    message("PHOTO // SAVED TO CAMERA ROLL")
                 } else {
                     message("SCREENSHOT // SAVE FAILED")
                     GVLog.recording.error(

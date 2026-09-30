@@ -191,7 +191,7 @@ extension GVFieldControl {
 
         case .resolution:
             return .discrete(Discrete(
-                options: CaptureSetupDraft.Resolution.allCases.filter(\.isSelectable).map {
+                options: CaptureSetupDraft.Resolution.allCases.map {
                     Option(id: $0.rawValue, label: $0.rawValue)
                 },
                 selectedID: setup.resolution.rawValue

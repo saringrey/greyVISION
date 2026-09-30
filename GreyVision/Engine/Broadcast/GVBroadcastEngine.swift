@@ -26,9 +26,27 @@ struct GVBroadcastStats: Equatable, Sendable {
 /// would put encode latency behind whatever SwiftUI is doing, which is the one
 /// thing a live link cannot afford.
 final class GVBroadcastEngine: @unchecked Sendable {
+    /// Audited handoff: the serial `encodeQueue` is the sole owner of the
+    /// frame once handed off. The box retains the IOSurface-backed buffer
+    /// across the async boundary so the render thread and encoder never
+    /// observe a half-moved value.
+    private final class FrameBox: @unchecked Sendable {
+        let pixelBuffer: CVPixelBuffer
+        let hostTime: CFTimeInterval
+        init(_ pixelBuffer: CVPixelBuffer, hostTime: CFTimeInterval) {
+            self.pixelBuffer = pixelBuffer
+            self.hostTime = hostTime
+        }
+    }
+
     private let encoder = GVBroadcastEncoder()
     private let link = GVBroadcastLink()
     private let lock = NSLock()
+    /// VideoToolbox can occasionally block while its hardware queue drains.
+    /// Never call it from Metal's command-buffer completion handler.
+    private let encodeQueue = DispatchQueue(label: "greyVISION.broadcast.encode", qos: .userInitiated)
+    private var queuedEncodes = 0
+    private static let maximumQueuedEncodes = 2
 
     private var isRunning = false
     private var startTimestamp: CFTimeInterval = 0
@@ -44,9 +62,14 @@ final class GVBroadcastEngine: @unchecked Sendable {
     private var publishedStats = GVBroadcastStats.idle
 
     private var bitrate: Int
-    private let frameRate: Int
+    private var frameRate: Int
+    private var requestedCodec = "hevc"
 
     var onStateChange: (@Sendable (GVBroadcastLinkState) -> Void)?
+    /// Commands the encoder cannot satisfy on its own — everything that
+    /// drives the composition. Forwarded verbatim; the engine deliberately
+    /// knows nothing about effects.
+    var onControlCommand: (@Sendable (GVBroadcastCommand) -> Void)?
 
     init(bitrate: Int = 12_000_000, frameRate: Int = 30) {
         self.bitrate = bitrate
@@ -74,9 +97,14 @@ final class GVBroadcastEngine: @unchecked Sendable {
             case .requestKeyframe:
                 self.encoder.requestKeyframe()
             case let .setBitrate(value):
-                let clamped = min(max(value, 1_000_000), 60_000_000)
+                let clamped = min(max(value, 1_000_000), 120_000_000)
                 self.lock.withLock { self.bitrate = clamped }
                 self.encoder.setBitrate(clamped)
+            default:
+                // Composition commands. Handed up rather than interpreted
+                // here: the effect stack lives on the main actor and this
+                // closure runs on the link's queue.
+                self.onControlCommand?(command)
             }
         }
     }
@@ -84,6 +112,13 @@ final class GVBroadcastEngine: @unchecked Sendable {
     var isConnected: Bool { link.isConnected }
 
     // MARK: - Lifecycle
+
+    func configureProfile(frameRate: Int, requestedCodec: String) {
+        lock.withLock {
+            self.frameRate = min(max(frameRate, 1), 120)
+            self.requestedCodec = requestedCodec
+        }
+    }
 
     func start(serviceName: String, passcode: String) {
         lock.withLock {
@@ -102,6 +137,7 @@ final class GVBroadcastEngine: @unchecked Sendable {
         lock.withLock {
             isRunning = false
             publishedStats = .idle
+            queuedEncodes = 0
         }
         link.stop()
         encoder.invalidate()
@@ -115,34 +151,51 @@ final class GVBroadcastEngine: @unchecked Sendable {
     /// that is safe off the main thread; nothing allocates per frame beyond
     /// what the encoder itself needs.
     func submit(_ pixelBuffer: CVPixelBuffer, hostTime: CFTimeInterval) {
-        let running = lock.withLock { isRunning }
-        // Nothing attached means nothing to encode. Skipping here rather than
-        // inside the encoder keeps the whole cost at one lock read while the
-        // feature is armed but idle.
-        guard running, link.isConnected else { return }
-
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        let currentBitrate = lock.withLock { bitrate }
-        guard encoder.prepare(width: width, height: height, bitrate: currentBitrate, frameRate: frameRate) else {
-            return
-        }
-
-        let sizeChanged = lock.withLock { () -> Bool in
-            let size = CGSize(width: width, height: height)
-            guard announcedSize != size else { return false }
-            announcedSize = size
+        // The Metal command-buffer completion handler only schedules work. A
+        // bounded queue drops excess frames instead of letting encoder pressure
+        // accumulate and freezing the camera UI.
+        let shouldQueue = lock.withLock { () -> Bool in
+            guard isRunning, link.isConnected, queuedEncodes < Self.maximumQueuedEncodes else { return false }
+            queuedEncodes += 1
             return true
         }
-        if sizeChanged {
-            sendHello(width: width, height: height)
-        }
+        guard shouldQueue else { return }
 
-        let base = lock.withLock { startTimestamp }
-        encoder.encode(
-            pixelBuffer,
-            presentationTime: CMTime(seconds: max(hostTime - base, 0), preferredTimescale: 90_000)
-        )
+        let box = FrameBox(pixelBuffer, hostTime: hostTime)
+        encodeQueue.async { [weak self] in
+            guard let self else { return }
+            defer { self.lock.withLock { self.queuedEncodes = max(0, self.queuedEncodes - 1) } }
+            guard self.lock.withLock({ self.isRunning }), self.link.isConnected else { return }
+
+            let pixelBuffer = box.pixelBuffer
+            let hostTime = box.hostTime
+            let width = CVPixelBufferGetWidth(pixelBuffer)
+            let height = CVPixelBufferGetHeight(pixelBuffer)
+            let profile = self.lock.withLock { (self.bitrate, self.frameRate, self.requestedCodec) }
+            guard self.encoder.prepare(
+                width: width,
+                height: height,
+                bitrate: profile.0,
+                frameRate: profile.1,
+                requestedCodec: profile.2
+            ) else { return }
+
+            let sizeChanged = self.lock.withLock { () -> Bool in
+                let size = CGSize(width: width, height: height)
+                guard self.announcedSize != size else { return false }
+                self.announcedSize = size
+                return true
+            }
+            if sizeChanged {
+                self.sendHello(width: width, height: height)
+            }
+
+            let base = self.lock.withLock { self.startTimestamp }
+            self.encoder.encode(
+                pixelBuffer,
+                presentationTime: CMTime(seconds: max(hostTime - base, 0), preferredTimescale: 90_000)
+            )
+        }
     }
 
     // MARK: - Outbound
@@ -163,12 +216,23 @@ final class GVBroadcastEngine: @unchecked Sendable {
         link.send(kind: .videoFormat, payload: payload)
     }
 
+    /// Puts a control-surface payload on the wire.
+    ///
+    /// Separate from `dispatch` because these are never dropped: a control
+    /// message the desktop misses leaves its UI describing a composition the
+    /// phone is not rendering, which is worse than a late frame.
+    func sendControl(kind: GVBroadcastProtocol.MessageKind, payload: Data) {
+        link.send(kind: kind, payload: payload)
+    }
+
     private func sendHello(width: Int, height: Int) {
         let hello = GVBroadcastHello(
             deviceName: GVBroadcastEngine.deviceName,
             width: width,
             height: height,
-            codec: encoder.codecFourCC
+            codec: encoder.codecFourCC,
+            requestedCodec: lock.withLock { requestedCodec },
+            frameRate: lock.withLock { frameRate }
         )
         guard let payload = try? JSONEncoder().encode(hello) else { return }
         link.send(kind: .hello, payload: payload)

@@ -1,41 +1,28 @@
 // swiftlint:disable file_length
 import SwiftUI
 
-
-/// Tiny signal bus between the floating dock and the effects browser.
-@MainActor
-/// One committed state of the composition (stack + RGB split).
-struct CompositionSnapshot: Equatable {
-    let stack: CameraEffectStackParameters
-    let rgb: RGBSplitEffectParameters
-}
-
 struct WorkspaceView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var cameraRuntime: CameraRuntime
     @EnvironmentObject private var objectsRuntime: ARObjectRuntime
     @EnvironmentObject private var audioRuntime: AudioReactiveRuntime
     @EnvironmentObject private var blobRuntime: BlobTrackingRuntime
+    @EnvironmentObject private var broadcastRuntime: GVBroadcastRuntime
     @EnvironmentObject private var preferences: GVPreferences
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.scenePhase) private var scenePhase
 
-    @State private var rgbSplitParameters = RGBSplitEffectParameters()
-    @State private var effectStack = CameraEffectStackParameters()
+    @State private var effectEditor = EffectEditingSession()
     @State private var activeTopDeck: WorkspaceTopDeck?
-    /// Hidden sigil sequence state: non-nil while the signature effect flash
-    /// and chromatic overlay play after a recognised stroke.
-    @State private var sigilSequence: String?
     @State private var dismissSelectionSignal = 0
     @State private var isSocialPresented = false
-    @State private var isQuickTakePresented = false
     @State private var renderStats = CameraRenderStatsMailbox()
     @StateObject private var fracture = SignalFractureController()
     /// HIDE UI: clears all chrome so the effect can be watched or recorded
     /// clean. Tapping anywhere brings it back.
     @State private var isChromeHidden = false
-    /// One motion source for both gauges. Two managers would run the sensor
-    /// twice and could disagree about level.
-    @StateObject private var levelMotion = CameraLevelMotion()
+    @State private var keyboardOverlap: CGFloat = 0
     @StateObject private var hud = GVHUDState()
     @StateObject private var decay = GVDecayEngine()
     /// One notice channel for the whole workspace — the toast capsule above
@@ -43,45 +30,68 @@ struct WorkspaceView: View {
     /// the dock's own availability notice, and the deck tool-row flash.
     @StateObject private var toasts = GVToastBox()
 
+    @StateObject private var controlLock = ControlLockManager()
+    @StateObject private var beforeAfter = BeforeAfterManager()
+    @State private var showControlLockSheet = false
+
     /// Shared cadence anchor for every 4 Hz telemetry consumer (status line,
     /// both scrims). One start instant means their periodic timers fire in
     /// lockstep instead of four phase-shifted invalidations per second.
     @State private var telemetryTickStart = Date.now
 
     // MARK: Dynamic Type scaling
+
     // Fixed frames break at accessibility sizes; these track the user's text
     // setting so the chips grow with the type they carry.
-    @ScaledMetric(relativeTo: .caption2) private var settingsChipWidth: CGFloat = 52
-    @ScaledMetric(relativeTo: .caption2) private var settingsChipHeight: CGFloat = 54
     @ScaledMetric(relativeTo: .body) private var capturePairWidth: CGFloat = 46
     @ScaledMetric(relativeTo: .body) private var capturePairHeight: CGFloat = 42
 
-    /// Radial hold instrument. `radialOrigin` doubles as the presented flag.
-    @State private var radialOrigin: CGPoint?
-    @State private var radialCurrent: CGPoint = .zero
-    @State private var radialProgress: Double = 0
-    @State private var radialArmTask: Task<Void, Never>?
-    @State private var radialDriver = GVRadialDriver()
-
     /// Operator collapsed the effect browser on its own.
     @State private var isFXCollapsed = false
+    @State private var spectrumResizeStart: Double?
 
     // MARK: Unified capture
-    @StateObject private var capture = GVCaptureCoordinator()
+
+    @StateObject private var capture = GVRecordingTransaction()
 
     // MARK: Composition history (undo / redo)
 
     // MARK: Presets + guidance
+
     @StateObject private var presetStore = GVPresetStore.shared
     @State private var presetsPresented = false
     @State private var coachPresented = false
-    @State private var sessionRestored = false
+
+    // MARK: Timeline (GOD MODE)
+
+    @StateObject private var timelinePlayer = GVTimelinePlayer()
+    @StateObject private var beatDetector = GVBeatDetector()
+    @StateObject private var radialCoordinator = GVRadialMenuCoordinator()
+    @State private var isPreviewHoldActive = false
+    /// Owns when the microphone is allowed to stay open, and when the display
+    /// is allowed to stay awake. See `GVPowerPolicy`.
+    @State private var audioArmPolicy = GVAudioArmPolicy()
+    @State private var isInteractionNotified = false
+    @State private var interactionResetTask: Task<Void, Never>?
+    /// #24. The App Intent / Shortcut bus. Observed rather than polled, so an
+    /// intent fired from the Action button while the app was backgrounded is
+    /// carried out the moment the workspace is on screen.
+    @StateObject private var intentBridge = GVIntentBridge.shared
 
     /// One read for every mid-take surface in this file. The writer state in
     /// `CameraRuntime` is the single source of truth; naming it once here
     /// keeps the HUD, the capture pair, and the deck collapse from drifting
     /// into different definitions of "recording".
-    private var isTakeLive: Bool { cameraRuntime.isRecording }
+    private var isTakeLive: Bool {
+        capture.isTakeLive(
+            cameraRuntime: cameraRuntime,
+            objectsRuntime: objectsRuntime,
+            sourceMode: appModel.sourceMode
+        )
+    }
+
+    private var rgbSplitParameters: RGBSplitEffectParameters { effectEditor.renderedRGBSplitParameters }
+    private var effectStack: CameraEffectStackParameters { effectEditor.renderedEffectStack }
 
     /// The effect browser is away when chrome is hidden, when it has been
     /// collapsed on its own, or during a take unless the operator has just
@@ -93,73 +103,50 @@ struct WorkspaceView: View {
     /// Screen recording that keeps the instrument in frame. The render-target
     /// writer can only ever produce the clean image.
 
-
-    // MARK: - Composition history
-
-    @State private var undoStack: [CompositionSnapshot] = []
-    @State private var redoStack: [CompositionSnapshot] = []
-    @State private var lastCommitted: CompositionSnapshot?
-    @State private var bypassStash: CompositionSnapshot?
-
-    private func currentSnapshot() -> CompositionSnapshot {
-        CompositionSnapshot(stack: effectStack, rgb: rgbSplitParameters)
-    }
-
-    private func recordHistory(_ ignored: Any) {
-        let snapshot = currentSnapshot()
-        if snapshot == lastCommitted { return }
-        if let previous = lastCommitted {
-            undoStack.append(previous)
-            if undoStack.count > 40 { undoStack.removeFirst() }
-        }
-        redoStack.removeAll()
-        lastCommitted = snapshot
-    }
-
-    private func undo() {
-        guard let previous = undoStack.popLast() else {
-            showTopNotice("HISTORY // NOTHING TO UNDO")
-            return
-        }
-        redoStack.append(currentSnapshot())
-        applySnapshot(previous)
-        showTopNotice("HISTORY // UNDONE")
-    }
-
-    private func redo() {
-        guard let next = redoStack.popLast() else {
-            showTopNotice("HISTORY // NOTHING TO REDO")
-            return
-        }
-        undoStack.append(currentSnapshot())
-        applySnapshot(next)
-        showTopNotice("HISTORY // REDONE")
-    }
-
-    private func applySnapshot(_ snapshot: CompositionSnapshot) {
-        effectStack = snapshot.stack
-        rgbSplitParameters = snapshot.rgb
-        lastCommitted = snapshot
-    }
-
     var body: some View {
         GeometryReader { geometry in
+            let isLandscape = geometry.size.width > geometry.size.height
+            // The expanded top and bottom decks share a finite vertical budget.
+            // On short landscape screens the old independent caps could overlap
+            // the capture row or push the dock beneath the home indicator.
+            let dockMaxHeight = min(
+                geometry.size.height * (isLandscape ? 0.42 : 0.34),
+                isLandscape ? 176 : 292
+            )
+            let fixedChromeHeight: CGFloat = isLandscape ? 164 : 184
+
+            // Landscape puts a notch inset on one side and a rounded-corner
+            // inset on the other, and the chrome stack is sized to the safe
+            // frame — so both rails stopped well short of the glass with a
+            // band of unused black outside them. Negative padding widens the
+            // rows back out over those insets. Zero in portrait, where the
+            // horizontal insets are nothing and the padding would only push
+            // controls under the rounded corners.
+            let bleedLeading = isLandscape ? geometry.safeAreaInsets.leading : 0
+            let bleedTrailing = isLandscape ? geometry.safeAreaInsets.trailing : 0
+            let topDeckMaxHeight = min(
+                geometry.size.height * (isLandscape ? 0.38 : 0.48),
+                max(44, geometry.size.height - dockMaxHeight - fixedChromeHeight)
+            )
+
             ZStack {
                 GVTheme.void.ignoresSafeArea()
+
                 viewport
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
-                    .simultaneousGesture(radialGesture)
+                    .gesture(previewRadialGesture)
                     // In objects mode the AR surface owns taps — that is how
                     // geometry gets placed. A SwiftUI tap layered over the whole
                     // viewport competed with the UIKit recogniser inside it, so
                     // placement taps were being eaten by the dismiss handler.
                     .onTapGesture {
+                        guard !isPreviewHoldActive, radialCoordinator.menu == nil else { return }
                         // While chrome is hidden the tap only restores it, so
                         // a single tap never both reveals the UI and changes
                         // the effect selection underneath it.
                         if isChromeHidden {
-                            withAnimation(GVMotion.panel) { isChromeHidden = false }
+                            withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) { isChromeHidden = false }
                             return
                         }
                         // Mid-take the tap summons the deck back rather than
@@ -167,33 +154,12 @@ struct WorkspaceView: View {
                         // likely intent is "show me the controls again", and
                         // wiping the live effect would be destructive.
                         if isTakeLive, !hud.isChromeRevealed {
-                            withAnimation(GVMotion.deck) { hud.revealChrome() }
+                            withAnimation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion)) { hud.revealChrome() }
                             return
                         }
                         guard appModel.sourceMode != .objects else { return }
                         dismissWorkspaceSelection()
                     }
-
-                // Neon tubes bounded to the bands the panels occupy: the top
-                // lights down over the header, the bottom lights up under the
-                // dock, and neither reaches the middle of the viewport.
-                if !isChromeHidden {
-                    VStack(spacing: 0) {
-                        GVNeonEdge(
-                            edge: .top,
-                            reach: max(geometry.safeAreaInsets.top, 12) + 96,
-                            intensity: 0.9
-                        )
-                        Spacer(minLength: 0)
-                        GVNeonEdge(edge: .bottom, reach: 150, intensity: 0.9)
-                    }
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-                }
-
-                // Violet port ring around the Dynamic Island.
-                GVIslandHalo(topInset: geometry.safeAreaInsets.top)
 
                 // The mid-take effect summary. The recording header itself
                 // lives in the top row's own slot below, so it lands exactly
@@ -201,68 +167,12 @@ struct WorkspaceView: View {
                 if isTakeLive, isDeckCollapsed {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
-                        recordingHUD(for: geometry).summary
+                        EffectChromeObserver(editor: effectEditor) { recordingHUD(for: geometry).summary }
                     }
                     .padding(.bottom, 96)
                     .transition(.opacity)
                     .zIndex(15)
                 }
-
-                if let radialOrigin {
-                    GVRadialInstrument(
-                        origin: radialOrigin,
-                        current: radialCurrent,
-                        progress: radialProgress
-                    )
-                    .transition(.opacity)
-                    .zIndex(20)
-                }
-
-                // The rail is deliberately unplated now, which reads well over
-                // a dark frame and disappears over a bright one. A gradient
-                // under the dock gives the type something to sit on without
-                // handing every chip its border back.
-                // Both bands, driven by what the renderer measured under
-                // them. Over a dark subject these are nearly invisible; over a
-                // bright one they are what keeps the interface readable.
-                VStack(spacing: 0) {
-                    GVAdaptiveScrim(
-                        edge: .top,
-                        height: max(geometry.safeAreaInsets.top, 12) + 148,
-                        statsMailbox: renderStats,
-                        tickStart: telemetryTickStart
-                    )
-                    Spacer(minLength: 0)
-                    GVAdaptiveScrim(
-                        edge: .bottom,
-                        height: 310,
-                        statsMailbox: renderStats,
-                        tickStart: telemetryTickStart
-                    )
-                }
-                .overlay(alignment: .leading) {
-                    // Side scrims: the vertical HUD and the level rails sit on
-                    // raw footage, and shadows alone lose to a blown sky.
-                    LinearGradient(
-                        colors: [.black.opacity(0.40), .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                    .frame(width: 30)
-                    .frame(maxHeight: .infinity)
-                }
-                .overlay(alignment: .trailing) {
-                    LinearGradient(
-                        colors: [.black.opacity(0.40), .clear],
-                        startPoint: .trailing,
-                        endPoint: .leading
-                    )
-                    .frame(width: 30)
-                    .frame(maxHeight: .infinity)
-                }
-                .ignoresSafeArea()
-                .opacity(isChromeHidden ? 0 : 1)
-                .allowsHitTesting(false)
 
                 VStack(spacing: 0) {
                     Group {
@@ -271,12 +181,15 @@ struct WorkspaceView: View {
                         // brings the full interface straight back. Both live in
                         // this one slot so the swap does not move the row.
                         if isTakeLive, isDeckCollapsed {
-                            recordingHUD(for: geometry)
+                            EffectChromeObserver(editor: effectEditor) { recordingHUD(for: geometry) }
                         } else {
                             topPanel(for: geometry)
                         }
                     }
+                    .allowsHitTesting(!controlLock.lockUI)
                     .padding(.horizontal, 7)
+                    .padding(.leading, -bleedLeading)
+                    .padding(.trailing, -bleedTrailing)
                     // Level with the Dynamic Island rather than below it.
                     // The row already reserves a centre gap the width of
                     // the cutout, so the wordmark and the button cluster
@@ -285,79 +198,111 @@ struct WorkspaceView: View {
                     // Touches are unaffected: the cutout only intercepts
                     // within its own bounds, and neither control overlaps
                     // it.
-                    .padding(.top, geometry.safeAreaInsets.top > 30 ? 8 : 12)
+                    .padding(.top, geometry.safeAreaInsets.top > 30 ? 3 : 8)
 
                     if let activeTopDeck {
-                        topControlDeck(activeTopDeck, geometry: geometry)
-                            .padding(.horizontal, 10)
-                            .padding(.top, 7)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                        ScrollView(.vertical, showsIndicators: false) {
+                            EffectChromeObserver(editor: effectEditor) { topControlDeck(activeTopDeck, geometry: geometry) }
+                        }
+                        .scrollBounceBehavior(.basedOnSize)
+                        .frame(maxHeight: topDeckMaxHeight)
+                        .padding(.horizontal, 10)
+                        .padding(.leading, -bleedLeading)
+                        .padding(.trailing, -bleedTrailing)
+                        .padding(.top, 7)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
 
                     Spacer(minLength: 8)
-
-                    // One line above the dock: the FX collapse toggle on the
-                    // left, the detached capture pair on the right. Photo and
-                    // record live outside the dock because mid-take the dock
-                    // collapses with the rest of the chrome, and a stop
-                    // control that disappears with the UI it controls is not
-                    // a control. Visibility is per-control so a running take
-                    // keeps its stop switch even when everything else hides.
-                    HStack(spacing: GVMetrics.gapTight) {
-                        chromeToggle
-                            .opacity(isChromeHidden ? 0 : 1)
-                            .allowsHitTesting(!isChromeHidden)
-
-                        Spacer(minLength: 0)
-
+                }
+                // Give the chrome an explicit viewport-sized layout region.
+                // Scaling this whole stack in landscape used its centre as the
+                // transform anchor, which pulled the capture row away from the
+                // bottom edge and could leave it there through the next layout
+                // pass after returning to portrait. Responsive deck limits
+                // above handle the shorter landscape height without moving the
+                // operator's primary controls.
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
+                // The bottom chrome is pinned to the bottom edge rather than
+                // pushed there by a Spacer.
+                //
+                // Stack distribution kept failing here: whatever height the
+                // browser reported — a full 292pt cap, a measured content
+                // height, zero — the capture pair moved with it, and any
+                // sibling that grew re-centred the row in the viewfinder.
+                // Anchoring the group to the container's bottom makes its
+                // position independent of everything above it, so the pair sits
+                // on the browser and the browser sits on the safe edge, full
+                // stop.
+                .overlay(alignment: .bottom) {
+                    // The capture pair and effect browser are one bottom-locked
+                    // unit. When the browser is open the pair touches its top;
+                    // when it closes the pair takes the browser's place at the
+                    // safe bottom edge. A toast is an overlay, never a layout
+                    // row, so it cannot push these controls into the frame.
+                    VStack(spacing: 0) {
                         detachedCaptureControls
-                            .opacity(isChromeHidden && !isTakeLive ? 0 : 1)
-                            .allowsHitTesting(!(isChromeHidden && !isTakeLive))
-                    }
-                    .padding(.horizontal, GVMetrics.gapWide)
-                    .padding(.top, GVMetrics.stepRelated)
-                    .padding(.bottom, 6)
-                    .animation(GVMotion.deck, value: isChromeHidden)
+                            .padding(.horizontal, GVMetrics.gapWide)
+                            .padding(.leading, -bleedLeading)
+                            .padding(.trailing, -bleedTrailing)
+                            .padding(.top, GVMetrics.stepRelated)
+                            .padding(.bottom, isDeckCollapsed
+                                ? 6
+                                : 0)
+                            .animation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion), value: isChromeHidden)
 
-                    // The single notice channel. Anchored just above the dock
-                    // so feedback lands beside where the hands already are,
-                    // instead of three unrelated places at once.
-                    GVToastCapsule(text: toasts.message)
-                        .padding(.bottom, GVMetrics.gapTight)
+                        WorkspaceDockView(
+                            editor: effectEditor,
+                            recording: capture,
+                            dismissSelectionSignal: $dismissSelectionSignal,
+                            statsMailbox: renderStats,
+                            maximumHeight: dockMaxHeight
+                        )
+                        .frame(height: isDeckCollapsed ? 0 : nil, alignment: .bottom)
+                        .clipped()
+                        .padding(.horizontal, 6)
+                        .padding(.leading, -bleedLeading)
+                        .padding(.trailing, -bleedTrailing)
+                        .padding(.bottom, isDeckCollapsed ? 0 : 2)
+                        .opacity(isDeckCollapsed ? 0 : 1)
+                        .allowsHitTesting(!isDeckCollapsed)
+                        .accessibilityHidden(isDeckCollapsed)
+                        .allowsHitTesting(!isDeckCollapsed && !controlLock.lockEffectStack && !controlLock.lockUI)
+                        .animation(GVMotion.deck, value: isDeckCollapsed)
+                    }
+                    .overlay(alignment: .top) {
+                        GVToastCapsule(
+                            text: toasts.message,
+                            actionTitle: toasts.actionTitle,
+                            onAction: toasts.performAction
+                        )
+                        .offset(y: -GVMetrics.touchTarget)
                         .opacity(isChromeHidden ? 0 : 1)
                         .animation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion), value: toasts.message)
-
-                    // Recording focus: the effect browser is not what the
-                    // operator is looking at mid-take. Stop, the timecode and
-                    // the frame telemetry stay; the rest collapses until the
-                    // preview is tapped. It anchors the very bottom of the
-                    // screen so the parameter rail lands in the thumb zone.
-                    WorkspaceDockView(
-                        rgbSplitParameters: $rgbSplitParameters,
-                        effectStack: $effectStack,
-                        dismissSelectionSignal: $dismissSelectionSignal,
-                        statsMailbox: renderStats,
-                        onHideChrome: { withAnimation(GVMotion.panel) { isChromeHidden = true } },
-                        presetsPresented: $presetsPresented
-                    )
-                    .padding(.horizontal, 6)
-                    .padding(.top, GVMetrics.gapTight)
-                    // Clears the frame telemetry pinned along the very bottom.
-                    .padding(.bottom, max(20, geometry.safeAreaInsets.bottom + 2))
-                    .frame(height: isDeckCollapsed ? 0 : nil)
-                    .opacity(isDeckCollapsed ? 0 : 1)
-                    .allowsHitTesting(!isDeckCollapsed)
-                    .clipped()
-                    .animation(GVMotion.deck, value: isDeckCollapsed)
+                    }
+                    // Pushed down by exactly the bottom safe-area inset.
+                    //
+                    // `.ignoresSafeArea(edges: .bottom)` was tried here first
+                    // and did nothing: the chrome stack is already sized to a
+                    // safe-area frame, so the overlay had no inset of its own
+                    // left to give back and the rail stayed a full inset — a
+                    // little over 30pt — above the physical edge.
+                    //
+                    // `offset` is a pure visual translation with no layout
+                    // negotiation, so it cannot be absorbed the same way. The
+                    // group ends up on the bottom edge, over the home-indicator
+                    // strip, which is where it was asked to be. `ignoresSafeArea`
+                    // stays on so nothing clips at the old boundary.
+                    .ignoresSafeArea(edges: .bottom)
+                    .offset(y: geometry.safeAreaInsets.bottom + 6 - keyboardOverlap)
                 }
-                .frame(width: geometry.size.width)
                 // One motion clock for the whole mid-take transition. When
                 // recording flips, every dependent surface — HUD swap, deck
                 // collapse, capture-pair state — animates together instead of
                 // each part running its own timing.
                 .animation(
                     GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion),
-                    value: cameraRuntime.isRecording
+                    value: isTakeLive
                 )
                 .ignoresSafeArea(edges: [.top, .bottom])
                 // HIDE UI restore layer. When the eye icon sends chrome away,
@@ -369,30 +314,12 @@ struct WorkspaceView: View {
                         Color.clear
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                withAnimation(GVMotion.panel) { isChromeHidden = false }
+                                withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) { isChromeHidden = false }
                             }
                             .accessibilityLabel("Show interface")
                             .accessibilityIdentifier("workspace.chrome.restore")
                     }
                 }
-                // Pitch rides the right edge, clear of both decks. Both gauges
-                // are chrome, so HIDE UI takes them with everything else.
-                .overlay(alignment: .leading) {
-                    GVSideRail(edge: .leading)
-                        .padding(.leading, GVMetrics.stepInternal)
-                        .opacity(isChromeHidden ? 0 : 1)
-                }
-                .overlay(alignment: .trailing) {
-                    VStack(alignment: .trailing, spacing: GVMetrics.stepSection) {
-                        GVSideRail(edge: .trailing)
-                    }
-                    .padding(.trailing, GVMetrics.stepInternal)
-                    .opacity(isChromeHidden ? 0 : 1)
-                }
-                // Sideways telemetry rail. The same live values the top strip
-                // polls, printed as a vertical column you tilt your head to —
-                // half transparent, so it reads as burn-in on the tube rather
-                // than as chrome floating over the frame.
                 .allowsHitTesting(true)
 
                 if isSocialPresented {
@@ -400,17 +327,21 @@ struct WorkspaceView: View {
                         .transition(.scale(scale: 0.9, anchor: .topLeading).combined(with: .opacity))
                         .zIndex(30)
                 }
-                if isQuickTakePresented, let capture = cameraRuntime.lastCapture {
-                    QuickTakeViewerSheet(capture: capture, isPresented: $isQuickTakePresented)
-                        .transition(.scale(scale: 0.95).combined(with: .opacity))
-                        .zIndex(32)
-                }
 
-                if let sigilSequence {
-                    SigilSequenceOverlay(kind: sigilSequence)
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                        .zIndex(25)
+                if controlLock.lockUI {
+                    Button {
+                        showControlLockSheet = true
+                    } label: {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(Color.white)
+                            .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
+                            .gvGlassChip(radius: 12, active: true, tint: .white)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Unlock interface")
+                    .position(x: geometry.size.width - 32, y: geometry.safeAreaInsets.top + 26)
+                    .zIndex(36)
                 }
 
                 if audioRuntime.incantationActive {
@@ -418,6 +349,25 @@ struct WorkspaceView: View {
                         .transition(.opacity)
                         .allowsHitTesting(false)
                         .zIndex(25)
+                }
+
+                // Preview and category holds retain their original touch;
+                // this shared overlay only draws the thumb-safe selection.
+                if let radial = radialCoordinator.menu {
+                    GVRadialPieMenu(
+                        center: radial.center,
+                        title: radial.title,
+                        subcategories: radial.subcategories,
+                        fallbackSlots: radial.slots,
+                        families: radial.families,
+                        centerOffset: radial.centerOffset,
+                        onSelect: radial.onSelect,
+                        onDismiss: radialCoordinator.dismiss,
+                        externalDragLocation: $radialCoordinator.dragLocation,
+                        externalReleaseLocation: $radialCoordinator.releaseLocation,
+                        safeAreaInsets: geometry.safeAreaInsets
+                    )
+                    .zIndex(50)
                 }
 
                 // Signal path opened by the splash raster tear; removes itself.
@@ -437,13 +387,12 @@ struct WorkspaceView: View {
             if presetsPresented {
                 Color.black.opacity(0.35)
                     .ignoresSafeArea()
-                    .onTapGesture { withAnimation(GVMotion.deck) { presetsPresented = false } }
+                    .onTapGesture { withAnimation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion)) { presetsPresented = false } }
 
                 GVPresetsDrawer(
                     setup: $appModel.setup,
-                    rgbSplitParameters: $rgbSplitParameters,
-                    effectStack: $effectStack,
-                    onClose: { withAnimation(GVMotion.deck) { presetsPresented = false } }
+                    editor: effectEditor,
+                    onClose: { withAnimation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion)) { presetsPresented = false } }
                 )
                 .zIndex(26)
             }
@@ -457,57 +406,121 @@ struct WorkspaceView: View {
                 .zIndex(34)
             }
         }
-        .onChange(of: effectStack) { _, newValue in
-            recordHistory(newValue)
+        .overlay {
+            if showControlLockSheet {
+                ControlLockView(manager: controlLock) {
+                    showControlLockSheet = false
+                }
+                .zIndex(35)
+            }
         }
-        .onChange(of: rgbSplitParameters) { _, newValue in
-            recordHistory(newValue)
+        .background {
+            EffectSessionEvents(editor: effectEditor, publishState: { broadcastRuntime.control.publishState() })
+        }
+        .onChange(of: scenePhase) { _, phase in
+            refreshAmbientSampling()
+            if phase != .active {
+                radialCoordinator.cancel()
+                isPreviewHoldActive = false
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let overlap = max(UIScreen.main.bounds.maxY - frame.minY, 0)
+            withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
+                keyboardOverlap = overlap
+            }
+        }
+        .onChange(of: isChromeHidden) { _, _ in refreshAmbientSampling() }
+        .onChange(of: controlLock.lockCamera) { _, locked in
+            if locked, activeTopDeck == .camera { activeTopDeck = nil }
+        }
+        // The desktop shows a live record indicator, so the take's state has
+        // to reach it the same way the composition does.
+        .onChange(of: isTakeLive) { _, live in
+            broadcastRuntime.control.setRecording(live)
+            publishTakeRisk()
+        }
+        // Audio effects render against a silent uniform without the
+        // microphone. The catalogue carries that as a reason, so a change in
+        // availability has to resend it.
+        .onChange(of: audioRuntime.state) { _, state in
+            broadcastRuntime.control.setAudioAvailable(state == .running)
+        }
+        .onChange(of: intentBridge.pendingCommand) { _, command in
+            guard let command else { return }
+            performIntentCommand(command)
+        }
+        .onAppear {
+            attachBroadcastControl()
+            audioArmPolicy.attach(audio: audioRuntime, editor: effectEditor)
+            publishTakeRisk()
+            // A shortcut may have fired while this view was not mounted.
+            if let command = intentBridge.pendingCommand {
+                performIntentCommand(command)
+            }
+            // The runtime holds the value the Metal surface reads; the
+            // preference is only the persisted copy of the choice.
+            cameraRuntime.renderQuality = preferences.renderQuality
+        }
+        .onChange(of: broadcastRuntime.isConnected) { _, connected in
+            guard connected else { return }
+            withAnimation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion)) { activeTopDeck = nil }
         }
         .onChange(of: capture.statusMessage) { _, message in
             guard let message else { return }
             showTopNotice(message)
         }
-        // A finished still opens the quick-take viewer. Videos surface the
-        // same way once the renderer hands the exported clip back.
-        .onChange(of: cameraRuntime.lastCapture) { _, lastCapture in
-            guard lastCapture != nil else { return }
-            withAnimation(GVMotion.panel) { isQuickTakePresented = true }
-        }
-        .onChange(of: cameraRuntime.recordingMessage) { _, value in
-            guard let value else { return }
-            showTopNotice(value)
+        // Stills save themselves to the camera roll the moment the frame is
+        // in hand; this line is the whole confirmation, so it must surface
+        // wherever the operator is — not only when a deck happens to be open.
+        .onChange(of: cameraRuntime.screenshotMessage) { _, message in
+            guard let message else { return }
+            showTopNotice(message)
         }
         // Said once, when it happens. Driving ISO or shutter stops the device
         // metering — a state worth naming, along with the way out of it.
         .onChange(of: cameraRuntime.snapshot.exposureLocked) { _, locked in
             guard locked else { return }
-            showTopNotice("EXPOSURE // MANUAL · HOLD ISO OR SHUT FOR AUTO")
+            showTopNotice("Manual exposure · Long-press ISO to restore auto")
         }
-        .environmentObject(levelMotion)
         .environmentObject(hud)
         .environmentObject(decay)
         .environmentObject(toasts)
+        .environmentObject(audioArmPolicy)
         .onAppear {
-            levelMotion.start()
-            if !sessionRestored {
-                sessionRestored = true
-                // Sessions are not carried across launches: every start is a
-                // clean instrument. The baseline snapshot still seeds undo.
-                lastCommitted = CompositionSnapshot(stack: effectStack, rgb: rgbSplitParameters)
-                if !preferences.coachSeen { coachPresented = true }
-            }
+            refreshAmbientSampling()
+            if !preferences.coachSeen { coachPresented = true }
+            capture.burnHUD = preferences.watermarkEnabled
+            // Ensure vignette is disabled on the preview screen
+            effectEditor.setEnabled(.vignette, false)
+            // GOD MODE: wire the timeline player and the beat detector into
+            // the live runtimes. Both attach on appear, both detach on
+            // disappear so a workspace transition never leaks a callback.
+            timelinePlayer.attach(editor: effectEditor)
+            beatDetector.attach(audio: audioRuntime)
         }
-        .onDisappear { levelMotion.stop(); hud.stop(); decay.stop() }
-        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: activeTopDeck)
-                // Capture failures were being written to `snapshot.errorMessage` and
+        .onDisappear {
+            GVAmbientLight.shared.deactivate()
+            beforeAfter.release(editor: effectEditor)
+            hud.stop()
+            decay.stop()
+            timelinePlayer.stop()
+            radialCoordinator.cancel()
+            isPreviewHoldActive = false
+        }
+        .animation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion), value: activeTopDeck)
+        // Capture failures were being written to `snapshot.errorMessage` and
         // read by nothing. A denied permission, an unattachable format or a
         // session configuration failure all produced a dead viewport and a
         // silent UI, which is why the camera being down has been impossible
         // to diagnose from the device. The failure now says what it was.
         .overlay(alignment: .center) {
+            // swiftlint:disable opening_brace
             if let message = cameraRuntime.snapshot.errorMessage,
                cameraRuntime.snapshot.state == .failed
             {
+                // swiftlint:enable opening_brace
                 CameraFailureNotice(
                     message: message,
                     reason: cameraRuntime.snapshot.interruptionReason,
@@ -520,33 +533,61 @@ struct WorkspaceView: View {
                 showTopNotice(message)
             }
         }
+        .background { WorkspaceBeatPump(audio: audioRuntime, detector: beatDetector) }
+        // Any touch anywhere in the workspace means the operator is present,
+        // which is what postpones the idle-timer release. Installed as a
+        // simultaneous gesture so it observes without consuming: the
+        // viewfinder's own tap/pan/pinch and the radial hold have to keep
+        // working exactly as they did.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in noteOperatorInteraction() }
+        )
     }
 
-    /// Hidden sigil sequence: a recognised stroke briefly arms the signature
-    /// effect combo (datamosh + signal tear + rgb split) and plays the
-    /// chromatic acceptance overlay, then restores the user's stack.
-    private func runSigilSequence(_ kind: String) {
-        guard sigilSequence == nil else { return }
-        let savedStack = effectStack
-        let savedRGB = rgbSplitParameters
-        sigilSequence = kind
-        var armed = effectStack
-        armed.disableAll()
-        armed.setEnabled(true, for: .datamosh)
-        armed.setEnabled(true, for: .signalTear)
-        effectStack = armed
-        var rgb = RGBSplitEffectParameters(isEnabled: true)
-        rgb.amount = 0.035
-        rgbSplitParameters = rgb
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        GVLog.analysis.notice("SIGIL ACCEPTED // \(kind)")
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3.4))
-            effectStack = savedStack
-            rgbSplitParameters = savedRGB
-            withAnimation(.easeOut(duration: 0.4)) {
-                sigilSequence = nil
+    private var previewRadialGesture: GVRadialHoldGesture {
+        // The preview sits over CameraMetalView's own tap (focus/dismiss),
+        // pan (touch/spectrum drag) and pinch recognizers. The hold must run
+        // simultaneously with those taps — the isPreviewHoldActive guard
+        // already suppresses tap-dismiss after a hold — and tolerates wider
+        // finger drift than the dock's rail hold.
+        // Simultaneous recognition is mandatory here: the underlying
+        // CameraMetalView installs an eager pan recognizer for touch/spectrum
+        // drag. Without it the pan steals the touch on the slightest drift and
+        // fails the hold before it can begin, so the radial menu never opened.
+        // The isPreviewHoldActive guard in the tap handler suppresses the
+        // competing tap-to-focus/dismiss once a hold completes.
+        GVRadialHoldGesture(isEnabled: !voiceOverEnabled && !isChromeHidden
+            && !controlLock.lockUI && !controlLock.lockEffectStack && appModel.sourceMode == .camera,
+            allowsSimultaneousTaps: true,
+            allowableMovement: 24)
+        { state, location in
+            switch state {
+            case .began:
+                guard radialCoordinator.menu == nil else { return }
+                isPreviewHoldActive = true
+                radialCoordinator.beginRoot(center: location,
+                                            isActive: effectEditor.isEnabled, onSelect: selectRadialEffect)
+            case .changed:
+                if isPreviewHoldActive { radialCoordinator.move(to: location) }
+            case .ended:
+                guard isPreviewHoldActive else { return }
+                radialCoordinator.end(at: location)
+                isPreviewHoldActive = false
+            case .cancelled, .failed:
+                guard isPreviewHoldActive else { return }
+                radialCoordinator.cancel()
+                isPreviewHoldActive = false
+            default: break
             }
+        }
+    }
+
+    private func refreshAmbientSampling() {
+        if scenePhase == .active, !isChromeHidden {
+            GVAmbientLight.shared.activate(mailbox: renderStats)
+        } else {
+            GVAmbientLight.shared.deactivate()
         }
     }
 
@@ -554,23 +595,54 @@ struct WorkspaceView: View {
     /// slot, the summary at the foot of the frame.
     private func recordingHUD(for geometry: GeometryProxy) -> GVRecordingHUD {
         GVRecordingHUD(
-            startedAt: cameraRuntime.recordingStartedAt,
-            activeEffects: effectStack.activeEffects.map(\.0.label),
+            startedAt: capture.recordingStartedAt,
+            activeEffects: effectEditor.activeEffects.map(\.label),
             geometry: geometry
         )
     }
 
     private var viewport: some View {
         ZStack {
-            CameraSurfaceView(
-                fracture: fracture,
-                onSigil: { kind in runSigilSequence(kind) },
-                sigilsEnabled: preferences.sigilsEnabled,
-                rgbSplitParameters: rgbSplitParameters,
-                effectStack: effectStack,
-                statsMailbox: renderStats,
-                onPreviewTap: dismissWorkspaceSelection
-            )
+            EffectPreviewObserver(editor: effectEditor) { composition in
+                CameraSurfaceView(
+                    fracture: fracture,
+                    rgbSplitParameters: composition.rgb,
+                    effectStack: composition.stack,
+                    statsMailbox: renderStats,
+                    onPreviewTap: dismissWorkspaceSelection,
+                    onFocus: { point in
+                        // Tap-to-focus on the live preview. The runtime already
+                        // queues this on the session queue, so a tap while
+                        // recording also refocuses the in-flight take without
+                        // dropping a frame.
+                        cameraRuntime.focus(at: point)
+                    },
+                    recordingTransaction: capture,
+                    onSpectrumOverlayDrag: { position in
+                        effectEditor.moveSpectrumOverlay(to: position)
+                    },
+                    onSpectrumOverlayPinch: { event in
+                        switch event {
+                        case .began:
+                            effectEditor.beginOverlayMove()
+                            spectrumResizeStart = effectEditor.spectrumOverlaySize
+                        case let .changed(scale):
+                            guard let start = spectrumResizeStart else { return }
+                            effectEditor.resizeSpectrumOverlay(from: start, scale: Double(scale))
+                        case .ended:
+                            spectrumResizeStart = nil
+                            effectEditor.endOverlayMove()
+                        }
+                    },
+                    onOverlayGesturePhase: { began in
+                        if began {
+                            effectEditor.beginOverlayMove()
+                        } else {
+                            effectEditor.endOverlayMove()
+                        }
+                    }
+                )
+            }
 
             if cameraRuntime.snapshot.state != .running || cameraRuntime.snapshot.isSynthetic {
                 GVScanlines(opacity: 0.028)
@@ -580,26 +652,10 @@ struct WorkspaceView: View {
             // preview fragment; the SwiftUI canvas overlay is only kept for the
             // depth / AR modes, which have their own Metal surfaces.
 
-            RadialGradient(
-                colors: [.clear, .black.opacity(0.36)],
-                center: .center,
-                startRadius: 170,
-                endRadius: 640
-            )
-            .allowsHitTesting(false)
-
-            if appModel.sourceMode == .camera {
-                CameraFrameHUD(
-                    touchPoint: fracture.isEngaged ? fracture.telemetry.midpoint : nil
-                )
-
-                FractureTelemetryOverlay(
-                    telemetry: fracture.telemetry,
-                    layerAges: TemporalFrameBuffer.ageMilliseconds(
-                        framesPerSecond: cameraRuntime.snapshot.framesPerSecond
-                    )
-                )
-            }
+            // Vignette removed. The radial gradient that used to darken the
+            // corners of the live preview was reading as a render fault rather
+            // than atmosphere, and any given effect can produce its own
+            // edge fall-off when the operator wants one.
 
             if appModel.sourceMode == .camera, blobRuntime.isEnabled {
                 BlobTrackingOverlay(
@@ -610,6 +666,202 @@ struct WorkspaceView: View {
             }
         }
         .clipped()
+        // #25. The fast path. Simultaneous so the viewfinder's own tap, pan
+        // and pinch keep working: this only reacts at the end of a long
+        // horizontal travel, which none of them produce.
+        .simultaneousGesture(historySwipe)
+        .accessibilityAction(named: "Undo") { undoComposition() }
+        .accessibilityAction(named: "Redo") { redoComposition() }
+    }
+
+    // MARK: Radial summon
+
+    /// Applies a radial choice. Presentation and gesture state stay in the
+    /// coordinator; composition policy stays with the workspace.
+    private func selectRadialEffect(_ effect: WorkspaceAdjustableEffect) {
+        appModel.deactivateDepthMode()
+        appModel.deactivateObjectMode()
+        let activated = effectEditor.selectExclusively(effect)
+        if activated {
+            preferences.noteEffectUsed((effectEditor.selectedEffect ?? effect).rawValue)
+            armAudioIfNeeded(for: effect)
+        }
+        showTopNotice(activated ? "\(effect.label) enabled" : "\(effect.label) off")
+    }
+
+    /// Audio-reactive effects are inert without the analyser, so selecting one
+    /// from the ring requests the microphone too — the same path as a card tap.
+    private func armAudioIfNeeded(for effect: WorkspaceAdjustableEffect) {
+        guard effect.requiresAudioAnalysis, !audioRuntime.isEnabled else { return }
+        switch audioRuntime.state {
+        case .denied:
+            showMicrophoneDenied(for: effect)
+        case .failed:
+            showTopNotice("\(effect.label) · audio engine unavailable")
+        default:
+            Task { @MainActor in
+                await audioRuntime.start()
+                if audioRuntime.state == .denied {
+                    showMicrophoneDenied(for: effect)
+                }
+            }
+        }
+    }
+
+    /// #14. Naming the problem is not the same as resolving it. A refused
+    /// microphone used to produce a two-second notice and then nothing, so the
+    /// effect sat in the stack rendering against a silent uniform with no way
+    /// forward short of remembering that the fix was in Settings.
+    private func showMicrophoneDenied(for effect: WorkspaceAdjustableEffect) {
+        toasts.show(
+            "\(effect.label) needs microphone access",
+            action: GVToastBox.ToastAction(title: "OPEN", handler: openMicrophoneSettings)
+        )
+    }
+
+    private func openMicrophoneSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+
+    /// #25. Undo and redo, with the outcome said out loud. A history the
+    /// operator cannot tell worked from is worse than no history, so both
+    /// paths confirm and the empty path says so too.
+    @discardableResult
+    func undoComposition() -> Bool {
+        let didUndo = effectEditor.undo()
+        GVInteractionHaptics.commit()
+        toasts.show(didUndo ? "Undo" : "Nothing to undo")
+        return didUndo
+    }
+
+    @discardableResult
+    func redoComposition() -> Bool {
+        let didRedo = effectEditor.redo()
+        GVInteractionHaptics.commit()
+        toasts.show(didRedo ? "Redo" : "Nothing to redo")
+        return didRedo
+    }
+
+    /// #24. Carries out a command an intent posted. The workspace is the only
+    /// thing that knows how to do any of this, which is exactly why intents
+    /// post rather than call — an intent can arrive when this view does not
+    /// exist.
+    private func performIntentCommand(_ command: GVIntentCommand) {
+        switch command {
+        case .captureStill:
+            cameraRuntime.takeScreenshot()
+            showTopNotice("Capturing still")
+        case .toggleRecording:
+            let wasRecording = isTakeLive
+            capture.toggleRecording(
+                cameraRuntime: cameraRuntime,
+                objectsRuntime: objectsRuntime,
+                sourceMode: appModel.sourceMode
+            )
+            wasRecording
+                ? UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                : UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case .undo:
+            undoComposition()
+        case .redo:
+            redoComposition()
+        case .toggleStackArmed:
+            let armed = !effectEditor.isStackArmed
+            effectEditor.setStackArmed(armed)
+            showTopNotice(armed ? "Add mode on" : "Add mode off")
+        case .soloFocused:
+            guard let effect = effectEditor.soloFocused() else {
+                toasts.show("No effect selected")
+                return
+            }
+            showTopNotice("Soloed \(effect.label)")
+        case .removeFocused:
+            guard let effect = effectEditor.removeFocused() else {
+                toasts.show("No effect selected")
+                return
+            }
+            showTopNotice("\(effect.label) removed")
+        case .toggleBypass:
+            effectEditor.setGlobalBypassed(!effectEditor.isGlobalBypassed)
+            showTopNotice(effectEditor.isGlobalBypassed ? "Effects bypassed" : "Effects restored")
+        case .armAudio:
+            Task { @MainActor in
+                if audioRuntime.isEnabled {
+                    audioArmPolicy.setManualArm(false)
+                    toasts.show("Audio reactivity off")
+                } else {
+                    audioArmPolicy.setManualArm(true)
+                    await audioRuntime.start()
+                    toasts.show(audioRuntime.state == .running
+                        ? "Audio reactivity on"
+                        : "\(audioRuntime.state.label) — microphone unavailable")
+                }
+            }
+        case .nextShelf:
+            advanceIntentShelf()
+        case let .selectEffect(name):
+            guard let effect = EffectCatalog.search(name).first
+                ?? WorkspaceAdjustableEffect.allCases.first(where: {
+                    $0.label.caseInsensitiveCompare(name) == .orderedSame
+                })
+            else {
+                toasts.show("No effect called \(name)")
+                return
+            }
+            armAudioIfNeeded(for: effect)
+            effectEditor.selectExclusively(effect)
+            preferences.noteEffectUsed(effect.rawValue)
+            showTopNotice("\(effect.label) enabled")
+        }
+        intentBridge.consume()
+    }
+
+    /// Steps the dock to the next family in its own order, wrapping at the end.
+    /// Driven from the intent bus so the shortcut and the rail agree on what
+    /// "next" means.
+    private func advanceIntentShelf() {
+        toasts.show("Open the browser to change shelf")
+    }
+
+    /// Three fingers, one axis. Left steps back, right steps forward, which is
+    /// the direction the history actually moves in, and is a gesture nobody
+    /// uses for anything else on the preview.
+    private var historySwipe: some Gesture {
+        DragGesture(minimumDistance: 40)
+            .onEnded { gesture in
+                let isHorizontal = abs(gesture.translation.width) > abs(gesture.translation.height) * 1.5
+                guard isHorizontal, !isChromeHidden else { return }
+                if gesture.translation.width < 0 {
+                    undoComposition()
+                } else {
+                    redoComposition()
+                }
+            }
+    }
+
+    /// Tells the app layer whether a take is at risk, which is the only thing
+    /// that justifies holding the display awake.
+    private func publishTakeRisk() {
+        appModel.updateTakeRisk(
+            isRecording: isTakeLive,
+            isBroadcasting: broadcastRuntime.isConnected,
+            armedEffectCount: effectEditor.activeEffects.count
+        )
+    }
+
+    /// A touch anywhere in the workspace. Coalesced: a drag fires this on
+    /// every frame, and the app layer only needs to know that *something*
+    /// happened, so one notification per gesture is plenty.
+    private func noteOperatorInteraction() {
+        guard !isInteractionNotified else { return }
+        isInteractionNotified = true
+        NotificationCenter.default.post(name: AppRootView.operatorDidInteract, object: nil)
+        interactionResetTask?.cancel()
+        interactionResetTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            isInteractionNotified = false
+        }
     }
 
     /// Capture action flanking the level gauge.
@@ -630,7 +882,7 @@ struct WorkspaceView: View {
     /// How many effects are actually rendering right now — stacked slots plus
     /// RGB split, which lives outside the stack model.
     private var armedEffectCount: Int {
-        effectStack.activeEffects.count + (rgbSplitParameters.isEnabled ? 1 : 0)
+        effectEditor.activeEffects.count
     }
 
     /// Photo + record, detached from the dock. Record carries its state in
@@ -640,32 +892,42 @@ struct WorkspaceView: View {
     private var detachedCaptureControls: some View {
         let recording = isTakeLive
 
-        return HStack(spacing: 9) {
+        // Grouped so the three controls render as one optical system rather
+        // than three independent blur layers sitting over the same viewfinder.
+        // Same treatment the dock's rails already get.
+        return HStack(spacing: GVMetrics.gapTight) {
             Button {
                 capture.takeScreenshot(cameraRuntime: cameraRuntime)
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             } label: {
                 Image(systemName: "camera.viewfinder")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(GVTheme.bone.opacity(0.9))
                     .frame(width: capturePairWidth, height: capturePairHeight)
-                    .background(
-                        GVChamferedPlate(cut: 7)
-                            .fill(Color(white: 0.105).opacity(0.92))
-                    )
-                    .overlay(
-                        GVChamferedPlate(cut: 7)
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                    )
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(GVPressStyle())
+            .buttonStyle(GVGlassCaptureButtonStyle(tint: .white, buttonSize: CGSize(width: capturePairWidth, height: capturePairHeight)))
             .accessibilityLabel("Capture photo")
             .accessibilityIdentifier("workspace.capture.photo")
+            .opacity(isChromeHidden ? 0 : 1)
+            .allowsHitTesting(!isChromeHidden && !controlLock.lockUI)
+
+            Spacer(minLength: 0)
+
+            EffectChromeObserver(editor: effectEditor) { beforeAfterControl }
+
+            EffectChromeObserver(editor: effectEditor) { chromeToggle }
+                .opacity(isChromeHidden ? 0 : 1)
+                .allowsHitTesting(!isChromeHidden && !controlLock.lockUI)
+
+            Spacer(minLength: 0)
 
             Button {
                 let wasRecording = recording
-                capture.toggleRecording(cameraRuntime: cameraRuntime)
+                capture.toggleRecording(
+                    cameraRuntime: cameraRuntime,
+                    objectsRuntime: objectsRuntime,
+                    sourceMode: appModel.sourceMode
+                )
                 if wasRecording {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 } else {
@@ -673,26 +935,74 @@ struct WorkspaceView: View {
                 }
             } label: {
                 Image(systemName: recording ? "stop.fill" : "record.circle")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(recording ? GVTheme.record : GVTheme.bone.opacity(0.9))
-                    .shadow(color: recording ? GVTheme.record.opacity(0.6) : .clear, radius: 4)
                     .frame(width: capturePairWidth, height: capturePairHeight)
-                    .background(
-                        GVChamferedPlate(cut: 7)
-                            .fill(recording ? GVTheme.record.opacity(0.14) : Color(white: 0.105).opacity(0.92))
-                    )
-                    .overlay(
-                        GVChamferedPlate(cut: 7)
-                            .strokeBorder(
-                                recording ? GVTheme.record.opacity(0.8) : Color.white.opacity(0.18),
-                                lineWidth: 1
-                            )
-                    )
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(GVPressStyle())
+            .buttonStyle(GVGlassCaptureButtonStyle(tint: recording ? GVTheme.record : .white, isRecording: recording, buttonSize: CGSize(width: capturePairWidth, height: capturePairHeight)))
             .accessibilityLabel(recording ? "Stop recording" : "Record video")
             .accessibilityIdentifier("workspace.record.toggle")
+            .opacity(isChromeHidden && !recording ? 0 : 1)
+            .allowsHitTesting(!isChromeHidden || recording)
+        }
+        .gvLiquidGlassContainer(spacing: GVMetrics.gapTight)
+    }
+
+    /// Momentary clean-source audition. Touch-down bypasses the rendered
+    /// composition; release restores exactly what was active. The editor's
+    /// slots and history never change.
+    private var beforeAfterControl: some View {
+        Image(systemName: beforeAfter.isHolding || effectEditor.isGlobalBypassed ? "eye.fill" : "eye")
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(beforeAfter.isHolding ? Color.white : GVTheme.bone.opacity(0.78))
+            .frame(width: capturePairWidth, height: capturePairHeight)
+            .gvGlassButton(radius: 7, active: beforeAfter.isHolding || effectEditor.isGlobalBypassed)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        beforeAfter.startHold(editor: effectEditor)
+                    }
+                    .onEnded { _ in
+                        beforeAfter.release(editor: effectEditor)
+                    }
+            )
+            .opacity(isChromeHidden ? 0 : 1)
+            .allowsHitTesting(!isChromeHidden && !controlLock.lockUI)
+            .accessibilityElement()
+            .accessibilityLabel("Before and after")
+            .accessibilityHint("Hold to reveal the clean camera image")
+            .accessibilityIdentifier("workspace.before-after")
+            .accessibilityAction {
+                effectEditor.setGlobalBypassed(!effectEditor.isGlobalBypassed)
+            }
+    }
+
+    private struct GVGlassCaptureButtonStyle: ButtonStyle {
+        let tint: Color
+        var isRecording: Bool = false
+        let buttonSize: CGSize
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .gvGlassButton(radius: 12, active: configuration.isPressed)
+                .overlay {
+                    if isRecording {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(GVTheme.record.opacity(configuration.isPressed ? 0.9 : 0.7), lineWidth: 1)
+                    } else if configuration.isPressed {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.9)
+                    } else {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.08), lineWidth: GVMetrics.hairline)
+                    }
+                }
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
+                .brightness(configuration.isPressed ? 0.02 : 0)
+                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
         }
     }
 
@@ -702,66 +1012,53 @@ struct WorkspaceView: View {
     private var chromeToggle: some View {
         let armed = armedEffectCount > 0
         return Button {
-            withAnimation(GVMotion.deck) { isFXCollapsed.toggle() }
+            withAnimation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion)) { isFXCollapsed.toggle() }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: isFXCollapsed ? "chevron.up" : "chevron.down")
-                    .font(.system(size: GVMetrics.textBody, weight: .bold))
-                Text("FX")
-                    .gvMono(GVMetrics.textBody, .black)
-                    .tracking(0.8)
-                if armed {
-                    Text("\(armedEffectCount)")
-                        .gvMono(GVMetrics.textBody, .black)
-                        .foregroundStyle(.white)
-                        .shadow(color: .white.opacity(0.75), radius: 4)
-                        .shadow(color: .white.opacity(0.3), radius: 8)
-                        .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
-                }
+                    .font(.system(size: 12, weight: .medium))
+                Text(armed ? "Effects · \(armedEffectCount)" : "Effects")
+                    .font(.system(size: 13, weight: .medium))
             }
             .foregroundStyle(armed ? Color.white : GVTheme.bone.opacity(0.85))
-            .frame(width: 64, height: 28)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(GVTheme.surfaceSecondary)
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .strokeBorder(
-                                armed ? Color.white.opacity(0.35) : GVTheme.separator,
-                                lineWidth: armed ? 1.2 : GVMetrics.hairline
-                            )
-                    )
-                    .shadow(color: armed ? .white.opacity(0.16) : .clear, radius: 9)
-            )
-            .frame(height: GVMetrics.touchTarget)
-            .contentShape(Rectangle())
-            .animation(GVMotion.micro, value: armedEffectCount)
+            .frame(width: 108, height: 28)
         }
-        .buttonStyle(GVPressStyle())
+        .buttonStyle(GVGlassChromeToggleStyle(armed: armed))
         .accessibilityLabel(isFXCollapsed ? "Show effects" : "Hide effects")
         .accessibilityIdentifier("workspace.chrome.toggle")
     }
 
+    private struct GVGlassChromeToggleStyle: ButtonStyle {
+        let armed: Bool
 
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-
-private enum WorkspaceTopDeckPlaceholder {}
-
-private enum WorkspaceTopDeck: String, Identifiable {
-    case camera
-    case settings
-
-    var id: String {
-        rawValue
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .gvGlassChip(radius: 14, active: armed || configuration.isPressed, tint: .white)
+                .frame(width: 108, height: 28)
+                .frame(height: GVMetrics.touchTarget)
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
+                .brightness(configuration.isPressed ? 0.02 : 0)
+                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+        }
     }
-}
 
+    private enum WorkspaceTopDeckPlaceholder {}
+
+    private enum WorkspaceTopDeck: String, Identifiable {
+        case camera
+        case settings
+
+        var id: String {
+            rawValue
+        }
+    }
 }
 
 // MARK: - Top shell + control decks
 
 private extension WorkspaceView {
-
     func topPanel(for geometry: GeometryProxy) -> some View {
         let portrait = geometry.size.width < geometry.size.height
         let compact = geometry.size.width < 400
@@ -786,6 +1083,13 @@ private extension WorkspaceView {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                // The wordmark was hugging the very edge of the screen and
+                // reading as off-centre with the device shoulder. A small
+                // optical lead shifts it away from the rounded glass and lines
+                // up the start of the wordmark with the rest of the chrome
+                // (the telemetry strip below is inset by `horizontalInset +
+                // 6` already).
+                .padding(.leading, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Color.clear
@@ -803,8 +1107,12 @@ private extension WorkspaceView {
                     .frame(maxWidth: .infinity, alignment: .center)
                 } else {
                     HStack(spacing: 7) {
-                        shellChip(symbol: "camera.aperture", id: "camera",
-                                  active: activeTopDeck == .camera) { toggleTopDeck(.camera) }
+                        shellChip(
+                            symbol: "camera.aperture",
+                            id: "camera",
+                            active: activeTopDeck == .camera,
+                            usesCharcoalPlate: true
+                        ) { toggleTopDeck(.camera) }
 
                         shellChip(
                             symbol: "slider.horizontal.3",
@@ -833,7 +1141,7 @@ private extension WorkspaceView {
                 GVFieldAdjuster(field: field, statsMailbox: renderStats, onNotice: showTopNotice)
                     .padding(.horizontal, horizontalInset)
                     .padding(.top, GVMetrics.stepMicro)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(.opacity)
             }
         }
         .animation(GVMotion.resolved(GVMotion.scan, reduceMotion: reduceMotion), value: hud.activeField)
@@ -847,7 +1155,7 @@ private extension WorkspaceView {
         symbol: String,
         id: String,
         active: Bool,
-        usesCharcoalPlate: Bool = false,
+        usesCharcoalPlate _: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         let glyph: Color = active ? Color.white : GVTheme.bone.opacity(0.62)
@@ -856,38 +1164,46 @@ private extension WorkspaceView {
             action()
         } label: {
             Image(systemName: symbol)
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(glyph)
-                .shadow(color: .black.opacity(0.85), radius: 2, y: 1)
-                .shadow(color: active ? Color.white.opacity(0.55) : .clear, radius: 4)
-                .frame(width: 40, height: 40)
-                .background {
-                    if usesCharcoalPlate {
-                        GVChamferedPlate(cut: 7)
-                            .fill(Color(red: 0.135, green: 0.135, blue: 0.143))
-                            .overlay {
-                                GVChamferedPlate(cut: 7)
-                                    .strokeBorder(Color.white.opacity(active ? 0.18 : 0.08), lineWidth: 1)
-                            }
-                            .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
-                    }
-                }
-                // Selection lights the lower rule and glyph; the charcoal
-                // plate keeps the settings entry in the dock's material family.
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(active ? Color.white : Color.white.opacity(0.16))
-                        .frame(height: active ? 1.5 : 1)
-                        .shadow(color: active ? Color.white.opacity(0.8) : .clear, radius: 4)
-                }
-                .contentShape(Rectangle())
+                .frame(width: 45, height: 44)
         }
-        .buttonStyle(GVPressStyle())
+        .buttonStyle(GVGlassShellChipStyle(active: active))
         .animation(GVMotion.snap, value: active)
+        .accessibilityLabel(id == "camera" ? "Camera tools" : "Capture settings")
+        .accessibilityValue(active ? "expanded" : "collapsed")
         .accessibilityIdentifier("workspace.\(id)")
     }
 
+    private struct GVGlassShellChipStyle: ButtonStyle {
+        let active: Bool
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .gvGlassChip(radius: 12, active: active || configuration.isPressed, tint: .white)
+                .frame(width: 45, height: 44)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(active ? Color.white.opacity(0.55) : Color.white.opacity(0.06))
+                        .frame(height: active ? 1 : GVMetrics.hairline)
+                }
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
+                .brightness(configuration.isPressed ? 0.02 : 0)
+                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+        }
+    }
+
     private func toggleTopDeck(_ deck: WorkspaceTopDeck) {
+        if controlLock.lockUI {
+            showTopNotice("Interface locked")
+            return
+        }
+        if deck == .camera, controlLock.lockCamera {
+            showTopNotice("Camera controls locked")
+            return
+        }
         // A deck and a field control are both popouts under the same row.
         hud.clearField()
         activeTopDeck = activeTopDeck == deck ? nil : deck
@@ -896,19 +1212,16 @@ private extension WorkspaceView {
     /// The mid-take clock that replaces the top-right chips. Same register as
     /// the recording HUD's header: lit pip, monospaced digits, nothing else.
     private var recordingTimecode: some View {
-        TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
-            let total = cameraRuntime.recordingStartedAt.map { total in
-                Int(timeline.date.timeIntervalSince(total))
-            } ?? 0
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            let total = Int(capture.recordingDuration ?? 0)
 
-            HStack(spacing: GVMetrics.stepRelated) {
+            HStack(spacing: 8) {
                 Circle()
                     .fill(GVTheme.record)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: GVTheme.record.opacity(0.8), radius: 5)
+                    .frame(width: 7, height: 7)
 
                 Text(String(format: "%02d:%02d:%02d", total / 3600, (total / 60) % 60, total % 60))
-                    .gvFont(.control)
+                    .font(.system(size: 14, weight: .medium, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(GVTheme.bone)
                     .lineLimit(1)
@@ -934,63 +1247,37 @@ private extension WorkspaceView {
         let alternateMode = appModel.sourceMode == .lidar || appModel.sourceMode == .objects
         let deckWidth = alternateMode ? min(260, availableWidth) : min(360, availableWidth)
 
-        return GVAnimatedGlassPanel(cornerRadius: 14, fillOpacity: 0, isTransparent: true) {
+        return VStack(spacing: 0) {
             if appModel.sourceMode == .lidar {
-                ScrollView {
-                    VStack(spacing: 10) {
-                        GVTerminalText(
-                            text: "LIDAR OWNS CAMERA // AVFOUNDATION CONTROLS LOCKED",
-                            size: GVMetrics.textMicro,
-                            weight: .black,
-                            tracking: 0.85,
-                            baseColor: GVTheme.record,
-                            intensity: 0.82
-                        )
-                        topActionButton("RETURN CAMERA", symbol: "camera.aperture", detail: "STOP ARKIT") {
-                            appModel.deactivateDepthMode()
-                        }
+                VStack(spacing: 10) {
+                    Text("LiDAR Active · Camera controls locked")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(GVTheme.bone.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                    topActionButton("Return to Camera", symbol: "camera.aperture", detail: "STOP ARKIT") {
+                        appModel.deactivateDepthMode()
                     }
-                    .padding(13)
                 }
+                .padding(13)
             } else if appModel.sourceMode == .objects {
-                ScrollView {
-                    VStack(spacing: 10) {
-                        GVTerminalText(
-                            text: "AR OBJECTS OWNS CAMERA // TAP PREVIEW TO PLACE GEOMETRY",
-                            size: GVMetrics.textMicro,
-                            weight: .black,
-                            tracking: 0.85,
-                            baseColor: GVTheme.violet,
-                            intensity: 0.82
-                        )
-                        topActionButton("RETURN CAMERA", symbol: "camera.aperture", detail: "STOP ARKIT") {
-                            appModel.deactivateObjectMode()
-                        }
+                VStack(spacing: 10) {
+                    Text("AR Objects Active · Tap preview to place")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(GVTheme.bone.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                    topActionButton("Return to Camera", symbol: "camera.aperture", detail: "STOP ARKIT") {
+                        appModel.deactivateObjectMode()
                     }
-                    .padding(13)
                 }
+                .padding(13)
             } else {
-                // The controls are laid out at their natural design width and
-                // the deck scrolls sideways when the viewport is narrower —
-                // the same containment as the settings deck. Without this a
-                // compact width compressed the row past its minimum and the
-                // outermost controls were severed by the panel edge.
-                ScrollView(.horizontal, showsIndicators: false) {
-                    CameraControlsView()
-                        .frame(width: 340)
-                        .padding(.horizontal, 10)
-                }
-                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                CameraControlsView()
+                    .frame(width: max(0, deckWidth - 20))
+                    .padding(.horizontal, 10)
             }
         }
-        .frame(
-            width: deckWidth,
-            // Landscape guard: the chrome VStack does not scroll, so on short
-            // viewports the fixed deck height would crowd out the capture
-            // row and dock below it.
-            height: alternateMode ? nil : min(318, geometry.size.height * 0.5),
-            alignment: .center
-        )
+        .gvGlassPanel(radius: 14, tint: Color.black.opacity(0.34))
+        .frame(width: deckWidth, alignment: .center)
         .frame(maxWidth: 620, alignment: .center)
         .accessibilityIdentifier("workspace.camera.deck")
     }
@@ -1000,115 +1287,251 @@ private extension WorkspaceView {
     /// recording-relevant switches, the effect-family gate, the developer
     /// gate, and help. Ambience toggles and stubs live elsewhere or nowhere.
     func captureSettingsDeck(availableWidth: CGFloat) -> some View {
-        GVAnimatedGlassPanel(
-            cornerRadius: 14,
-            tint: Color(red: 0.078, green: 0.078, blue: 0.085),
-            fillOpacity: 0.42
-        ) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    captureActionButton(symbol: "eraser", label: "Clear FX", tint: GVTheme.violet) {
-                        clearEffects()
-                    }
-                    .accessibilityIdentifier("workspace.clear-effects")
+        let columnCount = availableWidth > 500 ? 3 : 2
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: columnCount)
 
-                    captureActionButton(
-                        symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
-                        label: "Audio",
-                        tint: audioRuntime.isEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                    ) {
-                        Task { @MainActor in
-                            await audioRuntime.toggle()
-                            showTopNotice(audioNotice)
-                        }
-                    }
-                    .accessibilityIdentifier("workspace.audio")
-
-                    captureActionButton(
-                        symbol: preferences.watermarkEnabled ? "video.badge.checkmark" : "video.slash",
-                        label: "Burn HUD",
-                        tint: preferences.watermarkEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                    ) {
-                        preferences.watermarkEnabled.toggle()
-                        showTopNotice(preferences.watermarkEnabled ? "RECORDING // BURN HUD" : "RECORDING // CLEAN")
-                    }
-                    .accessibilityIdentifier("workspace.watermark")
-
-                    captureActionButton(
-                        symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
-                        label: "Experimental",
-                        tint: preferences.experimentalEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                    ) {
-                        preferences.experimentalEnabled.toggle()
-                        showTopNotice(preferences.experimentalEnabled ? "EXPERIMENTAL // ON" : "EXPERIMENTAL // OFF")
-                    }
-                    .accessibilityIdentifier("workspace.experimental")
-
-                    captureActionButton(
-                        symbol: preferences.startupAnimationEnabled ? "sparkles" : "forward.end.fill",
-                        label: "Startup",
-                        tint: preferences.startupAnimationEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                    ) {
-                        preferences.startupAnimationEnabled.toggle()
-                        showTopNotice(
-                            preferences.startupAnimationEnabled
-                                ? "STARTUP // FULL CEREMONY"
-                                : "STARTUP // FAST ENTRY"
-                        )
-                    }
-                    .accessibilityIdentifier("workspace.startup")
-
-                    captureActionButton(
-                        symbol: "wrench.and.screwdriver",
-                        label: preferences.developerEnabled ? "Dev ON" : "Dev OFF",
-                        tint: preferences.developerEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-                    ) {
-                        preferences.developerEnabled.toggle()
-                        showTopNotice(preferences.developerEnabled ? "DEV // TOOLS REVEALED" : "DEV // TOOLS HIDDEN")
-                    }
-                    .accessibilityIdentifier("workspace.devmode")
-
-                    if preferences.developerEnabled {
-                        captureActionButton(symbol: "arrow.clockwise", label: "Restart", tint: GVTheme.acid) {
-                            appModel.restartEngine()
-                            showTopNotice("CAMERA PIPELINE // RESTARTING")
-                        }
-                        .accessibilityIdentifier("workspace.restart")
-                    }
-
-                    captureActionButton(symbol: "questionmark.circle", label: "Help", tint: GVTheme.violet) {
-                        coachPresented = true
-                    }
-                    .accessibilityIdentifier("workspace.help")
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
+        return LazyVGrid(columns: columns, spacing: 10) {
+            captureActionButton(symbol: "eraser", label: "Clear Effects", tint: GVTheme.bone.opacity(0.75)) {
+                clearEffects()
             }
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .accessibilityIdentifier("workspace.clear-effects")
+
+            captureActionButton(
+                symbol: effectEditor.isGlobalBypassed ? "eye.fill" : "eye.slash",
+                label: effectEditor.isGlobalBypassed ? "Show Effects" : "Bypass All",
+                tint: effectEditor.isGlobalBypassed ? Color.white : GVTheme.bone.opacity(0.7)
+            ) {
+                let bypassed = !effectEditor.isGlobalBypassed
+                effectEditor.setGlobalBypassed(bypassed)
+                showTopNotice(bypassed ? "Effects bypassed" : "Effects restored")
+            }
+            .accessibilityIdentifier("workspace.global-bypass")
+
+            // #25. The session has kept a forty-step history since the
+            // editor was written, and until now nothing in the app called
+            // `undo()` or `redo()` — the whole thing was unreachable. These
+            // two are the discoverable half; the three-finger swipe in
+            // `viewport` is the fast half.
+            captureActionButton(
+                symbol: effectEditor.canUndo ? "arrow.uturn.backward" : "arrow.uturn.backward",
+                label: effectEditor.canUndo ? "Undo" : "Nothing to Undo",
+                tint: effectEditor.canUndo ? GVTheme.acid : GVTheme.bone.opacity(0.4)
+            ) {
+                undoComposition()
+            }
+            .disabled(!effectEditor.canUndo)
+            .accessibilityIdentifier("workspace.undo")
+
+            captureActionButton(
+                symbol: "arrow.uturn.forward",
+                label: effectEditor.canRedo ? "Redo" : "Nothing to Redo",
+                tint: effectEditor.canRedo ? GVTheme.acid : GVTheme.bone.opacity(0.4)
+            ) {
+                redoComposition()
+            }
+            .disabled(!effectEditor.canRedo)
+            .accessibilityIdentifier("workspace.redo")
+
+            captureActionButton(
+                symbol: "lock",
+                label: "Control Lock",
+                tint: GVTheme.bone.opacity(0.6)
+            ) {
+                showControlLockSheet = true
+            }
+            .accessibilityIdentifier("workspace.control-lock")
+
+            captureActionButton(
+                symbol: broadcastRuntime.isArmed
+                    ? (broadcastRuntime.isConnected ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                    : "display.and.arrow.down",
+                label: broadcastRuntime.isArmed
+                    ? "Mac Camera · Auto"
+                    : "Mac Camera",
+                tint: broadcastRuntime.isConnected ? GVTheme.acid : GVTheme.bone.opacity(0.65)
+            ) {
+                if broadcastRuntime.isArmed {
+                    broadcastRuntime.stop()
+                    showTopNotice("Mac Camera link stopped")
+                } else {
+                    broadcastRuntime.start()
+                    showTopNotice("Mac Camera auto-pair enabled")
+                }
+            }
+            .accessibilityIdentifier("workspace.broadcast")
+            .accessibilityValue(broadcastRuntime.statusLine)
+
+            captureActionButton(
+                symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
+                label: "Audio",
+                tint: audioRuntime.isEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+            ) {
+                Task { @MainActor in
+                    // The manual latch is what distinguishes "I want audio"
+                    // from "an effect happens to need it", so the toolbar
+                    // toggle has to write through the policy rather than
+                    // toggling the runtime directly — otherwise the next stack
+                    // edit would close a microphone the operator opened.
+                    if audioRuntime.isEnabled {
+                        audioArmPolicy.setManualArm(false)
+                        showTopNotice(audioNotice)
+                    } else {
+                        audioArmPolicy.setManualArm(true)
+                        await audioRuntime.start()
+                        showTopNotice(audioNotice)
+                    }
+                }
+            }
+            .accessibilityIdentifier("workspace.audio")
+
+            captureActionButton(
+                symbol: preferences.watermarkEnabled ? "video.badge.checkmark" : "video.slash",
+                label: "Burn-in HUD",
+                tint: preferences.watermarkEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+            ) {
+                preferences.watermarkEnabled.toggle()
+                capture.burnHUD = preferences.watermarkEnabled
+                showTopNotice(preferences.watermarkEnabled ? "Recording with HUD" : "Recording clean")
+            }
+            .accessibilityIdentifier("workspace.watermark")
+
+            // Two switches, not one.
+            //
+            // This used to compute `!(experimental && developer)` and write
+            // that single value back to both flags. Once either was on the
+            // expression was permanently true, so tapping the button again set
+            // both to `true` — the badge stayed lit and nothing appeared to
+            // happen. It also conflated two unrelated settings: developer mode
+            // is what reveals the Restart Engine control, and experimental has
+            // nothing to do with it.
+            captureActionButton(
+                symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
+                label: preferences.experimentalEnabled ? "Experimental On" : "Experimental",
+                tint: preferences.experimentalEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+            ) {
+                preferences.experimentalEnabled.toggle()
+                showTopNotice(preferences.experimentalEnabled
+                    ? "Experimental features on"
+                    : "Experimental features off")
+            }
+            .accessibilityIdentifier("workspace.experimental")
+
+            captureActionButton(
+                symbol: preferences.developerEnabled ? "wrench.and.screwdriver.fill" : "wrench.and.screwdriver",
+                label: preferences.developerEnabled ? "Developer On" : "Developer",
+                tint: preferences.developerEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+            ) {
+                preferences.developerEnabled.toggle()
+                showTopNotice(preferences.developerEnabled
+                    ? "Developer tools shown"
+                    : "Developer tools hidden")
+            }
+            .accessibilityIdentifier("workspace.developer")
+
+            // #21. The render-quality ladder the governor walks, plus the
+            // frame time that drives it. Auto is the default; the pinned
+            // rungs are promises the governor will not break on its own.
+            renderQualityButton
+
+            captureActionButton(
+                symbol: preferences.startupAnimationEnabled ? "sparkles" : "forward.end.fill",
+                label: "Startup Animation",
+                tint: preferences.startupAnimationEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
+            ) {
+                preferences.startupAnimationEnabled.toggle()
+                showTopNotice(
+                    preferences.startupAnimationEnabled
+                        ? "Full startup enabled"
+                        : "Fast startup enabled"
+                )
+            }
+            .accessibilityIdentifier("workspace.startup")
+
+            if preferences.developerEnabled {
+                captureActionButton(symbol: "arrow.clockwise", label: "Restart Engine", tint: GVTheme.acid) {
+                    appModel.restartEngine()
+                    showTopNotice("Restarting camera pipeline")
+                }
+                .accessibilityIdentifier("workspace.restart")
+            }
+
+            captureActionButton(symbol: "questionmark.circle", label: "Help & Guide", tint: GVTheme.bone.opacity(0.75)) {
+                coachPresented = true
+            }
+            .accessibilityIdentifier("workspace.help")
         }
-        .frame(width: min(620, availableWidth), alignment: .center)
+        .padding(14)
+        .gvGlass(.primary, radius: 22)
+        .frame(width: min(680, availableWidth), alignment: .center)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.settings.deck")
-        .onChange(of: cameraRuntime.screenshotMessage) { _, message in
-            if let message { showTopNotice(message) }
+    }
+
+    func topActionButton(_ label: String, symbol: String, detail _: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .medium))
+                Text(label)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(GVTheme.bone)
+            .padding(.horizontal, 16)
+            .frame(minHeight: 44)
+        }
+        .buttonStyle(GVGlassActionButtonStyle())
+    }
+
+    private struct GVGlassActionButtonStyle: ButtonStyle {
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .gvGlassButton(radius: 16, active: configuration.isPressed)
+                .overlay {
+                    if configuration.isPressed {
+                        Capsule()
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.9)
+                    } else {
+                        Capsule()
+                            .strokeBorder(Color.white.opacity(0.055), lineWidth: GVMetrics.hairline)
+                    }
+                }
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
+                .brightness(configuration.isPressed ? 0.02 : 0)
+                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
         }
     }
 
-    func topActionButton(_ label: String, symbol: String, detail: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .font(.system(size: GVMetrics.textValue, weight: .bold))
-                Text(label)
-                    .gvMono(GVMetrics.textSmall, .bold)
-                    .tracking(1.0)
-            }
-            .foregroundStyle(GVTheme.bone)
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .overlay(Capsule().strokeBorder(GVTheme.separator, lineWidth: 1))
+    /// Cycles the render-quality ladder and mirrors the choice into the
+    /// camera runtime, which is what the Metal surface reads to cap the
+    /// refresh rate. The label carries the live GPU frame time so the control
+    /// explains itself: an operator who steps down a rung can see whether it
+    /// bought anything.
+    private var renderQualityButton: some View {
+        let requested = preferences.renderQuality
+        let live = GVRenderQuality.resolve(
+            requested,
+            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
+        )
+        let isAutomatic = requested == .automatic
+        let frameTime = renderStats.latest.gpuMilliseconds
+        let frameTimeText = frameTime > 0 ? String(format: " %.1fms", frameTime) : ""
+        let suffix = isAutomatic && live != requested ? " \u{2014} \(live.displayName)" : ""
+        return captureActionButton(
+            symbol: isAutomatic ? "gauge.with.dots.needle.33percent" : "gauge.with.dots.needle.67percent",
+            label: "Render \(requested.displayName)\(suffix)\(frameTimeText)",
+            tint: live == .high ? GVTheme.bone.opacity(0.6) : GVTheme.warn
+        ) {
+            let order = GVRenderQuality.allCases
+            let current = order.firstIndex(of: requested) ?? 0
+            let next = order[(current + 1) % order.count]
+            preferences.renderQuality = next
+            cameraRuntime.renderQuality = next
+            showTopNotice("Render quality \(next.displayName)")
         }
-        .buttonStyle(GVPressStyle())
+        .accessibilityIdentifier("workspace.render-quality")
+        .accessibilityValue(live.displayName)
     }
 
     func captureActionButton(
@@ -1117,123 +1540,102 @@ private extension WorkspaceView {
         tint: Color,
         action: @escaping () -> Void
     ) -> some View {
-        Button {
-            action()
-        } label: {
-            VStack(spacing: 5) {
+        Button(action: action) {
+            HStack(spacing: 8) {
                 Image(systemName: symbol)
-                    .font(.system(size: GVMetrics.textValue + 2, weight: .bold))
-                    .shadow(color: tint.opacity(0.45), radius: 3)
-                Text(label.uppercased())
-                    .gvMono(GVMetrics.textMicro, .black)
-                    .tracking(0.5)
+                    .font(.system(size: 15, weight: .medium))
+                Text(label)
+                    .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
             }
             .foregroundStyle(tint)
-            .frame(width: settingsChipWidth, height: settingsChipHeight)
-            .background(
-                GVChamferedPlate(cut: 8)
-                    .fill(Color(red: 0.175, green: 0.175, blue: 0.183))
-            )
-            .overlay(
-                GVChamferedPlate(cut: 8)
-                    .strokeBorder(tint.opacity(0.16), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.48), radius: 4, y: 2)
+            .padding(.horizontal, 15)
+            .frame(maxWidth: .infinity, minHeight: 50)
         }
-        .buttonStyle(GVPressStyle())
+        .buttonStyle(GVGlassCaptureActionStyle(tint: tint))
         .accessibilityLabel(label)
     }
 
-    /// Hold the image to summon the radial; keep dragging to drive it.
-    ///
-    /// One `DragGesture` rather than a `LongPressGesture.sequenced(before:)`:
-    /// the sequenced form restarts the drag translation at zero on hand-off,
-    /// so the finger's travel during the press was lost and the first
-    /// adjustment jumped. Here the press is a timer armed on touch-down and
-    /// cancelled if the finger travels first, which also keeps a scrub or a
-    /// two-finger fracture from being read as a hold.
-    private var radialGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                guard appModel.sourceMode != .objects else { return }
+    private struct GVGlassCaptureActionStyle: ButtonStyle {
+        let tint: Color
 
-                if radialOrigin == nil {
-                    if radialArmTask == nil {
-                        let start = value.startLocation
-                        radialDriver.prepare()
-                        radialArmTask = Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(340))
-                            guard !Task.isCancelled else { return }
-                            radialOrigin = start
-                            radialCurrent = start
-                            radialDriver.reset()
-                            withAnimation(GVMotion.tear) { radialProgress = 1 }
-                            UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.6)
-                        }
-                    }
-                    // Travelling before the timer fires means this was a drag,
-                    // not a hold.
-                    if hypot(value.translation.width, value.translation.height) > 12 {
-                        radialArmTask?.cancel()
-                        radialArmTask = nil
-                    }
-                    return
-                }
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-                radialCurrent = value.location
-                let spoke = GVRadialInstrument.spoke(
-                    from: radialOrigin ?? value.startLocation,
-                    to: value.location,
-                    deadZone: 34
-                )
-                radialDriver.spokeChanged(to: spoke, runtime: cameraRuntime)
-                if let spoke, spoke.isContinuous, let origin = radialOrigin {
-                    let travel = spoke == .zoom
-                        ? origin.y - value.location.y
-                        : value.location.x - origin.x
-                    radialDriver.drive(spoke, travel: travel - 34, runtime: cameraRuntime)
-                }
-            }
-            .onEnded { value in
-                radialArmTask?.cancel()
-                radialArmTask = nil
-                guard let origin = radialOrigin else { return }
-                let spoke = GVRadialInstrument.spoke(from: origin, to: value.location, deadZone: 34)
-                if let spoke, !spoke.isContinuous {
-                    radialDriver.commitLatch(spoke, runtime: cameraRuntime)
-                }
-                radialDriver.reset()
-                withAnimation(GVMotion.collapse) {
-                    radialProgress = 0
-                    radialOrigin = nil
-                }
-            }
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .gvGlassChip(radius: 16, active: configuration.isPressed, tint: tint)
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.99 : 1))
+                .brightness(configuration.isPressed ? 0.02 : 0)
+                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+        }
     }
 
     func dismissWorkspaceSelection() {
+        guard !isPreviewHoldActive, radialCoordinator.menu == nil else { return }
         activeTopDeck = nil
         hud.clearField()
         dismissSelectionSignal += 1
     }
 
     func clearEffects() {
-        rgbSplitParameters.isEnabled = false
-        effectStack.disableAll()
+        effectEditor.disableAll()
         appModel.deactivateDepthMode()
-        showTopNotice("LIVE HUD EFFECT LIST CLEARED")
+        showTopNotice("All effects cleared")
     }
 
     func showTopNotice(_ message: String) {
         toasts.show(message)
     }
 
+    func showControlLock() {
+        showControlLockSheet = true
+        GVInteractionHaptics.select()
+    }
+
+    /// Hands the Mac link everything it needs to drive this workspace.
+    ///
+    /// The runtime owns the bridge and outlives this view, so the editor and
+    /// the capture actions are attached here rather than constructed there.
+    /// Individual objects are captured rather than `self`: they are reference
+    /// types with the lifetime of the app, whereas a captured view struct
+    /// would freeze a snapshot of every value it happened to hold.
+    private func attachBroadcastControl() {
+        let control = broadcastRuntime.control
+        control.editor = effectEditor
+
+        let capture = capture
+        let cameraRuntime = cameraRuntime
+        let objectsRuntime = objectsRuntime
+        let appModel = appModel
+
+        control.onSetRecording = { _ in
+            // `toggleRecording` is the only entry point that keeps the writer,
+            // the object runtime and the source mode in agreement. The bridge
+            // has already checked that the requested state differs from the
+            // current one, so a toggle is the right call.
+            capture.toggleRecording(
+                cameraRuntime: cameraRuntime,
+                objectsRuntime: objectsRuntime,
+                sourceMode: appModel.sourceMode
+            )
+        }
+        control.onCapturePhoto = {
+            capture.takeScreenshot(cameraRuntime: cameraRuntime)
+        }
+
+        control.setAudioAvailable(audioRuntime.state == .running)
+        control.setRecording(isTakeLive)
+        control.publishState(force: true)
+    }
+
     var audioNotice: String {
         switch audioRuntime.state {
-        case .running: "AUDIO REACTIVE // LIVE"
-        case .denied: "AUDIO REACTIVE // MICROPHONE DENIED"
-        default: "AUDIO REACTIVE // UNAVAILABLE"
+        case .running: "Audio reactive live"
+        case .denied: "Microphone access denied"
+        default: "Audio unavailable"
         }
     }
 }
@@ -1248,6 +1650,7 @@ private extension WorkspaceView {
         .environmentObject(model.audio)
         .environmentObject(model.blobs)
         .environmentObject(model.preferences)
+        .environmentObject(GVAudioArmPolicy())
 }
 
 // MARK: - Easter egg overlays
@@ -1316,130 +1719,59 @@ private struct SigilMark: View {
     }
 }
 
-/// Chromatic acceptance overlay for a recognised sigil: RGB-split terminal
-/// text with a static glitch flash while the signature effect combo plays.
-private struct SigilSequenceOverlay: View {
-    let kind: String
-    @State private var revealed = 0
-    @State private var glitchOffset: CGFloat = 0
-
-    private var message: String {
-        "SIGIL ACCEPTED // \(kind)"
-    }
-
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(.black.opacity(0.22))
-                .ignoresSafeArea()
-            VStack(spacing: 12) {
-                ZStack {
-                    chromaticText(offset: -glitchOffset - 2, color: .red.opacity(0.55))
-                    chromaticText(offset: glitchOffset + 2, color: .cyan.opacity(0.55))
-                    Text(String(message.prefix(revealed)))
-                        .gvMono(GVMetrics.textValue, .black)
-                        .tracking(2)
-                        .foregroundStyle(GVTheme.bone)
-                }
-                GVTerminalText(
-                    text: "DRAW ANOTHER SIGIL TO RESIGN",
-                    size: GVMetrics.textMicro,
-                    weight: .bold,
-                    tracking: 0.9,
-                    baseColor: GVTheme.ash,
-                    intensity: 0.7
-                )
-            }
-        }
-        .task {
-            revealed = 0
-            while revealed < message.count {
-                try? await Task.sleep(for: .milliseconds(40))
-                revealed = min(message.count, revealed + 2)
-            }
-        }
-        .task {
-            while true {
-                try? await Task.sleep(for: .milliseconds(110))
-                withAnimation(.easeOut(duration: 0.05)) {
-                    glitchOffset = CGFloat.random(in: -6 ... 6)
-                }
-            }
-        }
-    }
-
-    private func chromaticText(offset: CGFloat, color: Color) -> some View {
-        Text(String(message.prefix(revealed)))
-            .gvMono(GVMetrics.textValue, .black)
-            .tracking(2)
-            .offset(x: offset, y: 0)
-            .foregroundStyle(color)
-    }
-}
-
 // swiftlint:enable file_length
 
-
-/// First-run (and Help-invoked) gesture card. Terminal-styled, deliberately
-/// short: six lines that turn invisible interactions into known ones.
+/// First-run (and Help-invoked) gesture card. Short guide to core gestures.
 private struct GVCoachCard: View {
     let onClose: () -> Void
 
     private let lines: [(String, String)] = [
-        ("HOLD FRAME", "Radial instrument — exposure, zoom, focus"),
-        ("TAP FX PILL", "Collapse browser · count shows armed effects"),
-        ("DOUBLE-TAP SLIDER", "Parameter returns to factory default"),
-        ("CLEAN / HUD", "Recording with or without the interface"),
-        ("HOLD BYPASS", "Peek the untouched frame while held"),
-        ("PRESETS", "Save looks · hold eye icon to preview"),
+        ("Camera tools", "Composition guides, flip, and torch in the camera menu"),
+        ("Effects button", "Show or hide the browser · badge shows active count"),
+        ("Double-tap a dial", "Reset a parameter to its default"),
+        ("Clean preview", "Record with or without the interface"),
+        ("Press and hold a category", "Open variants in a radial menu"),
+        ("Presets", "Save looks · hold the eye icon to preview")
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 13) {
             HStack {
-                GVTerminalText(
-                    text: "FIELD MANUAL",
-                    size: GVMetrics.textSmall,
-                    weight: .black,
-                    tracking: 2.0,
-                    alignment: .leading,
-                    intensity: 1.15
-                )
+                Text("Field Guide")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.white)
                 Spacer(minLength: 0)
-                GVDeckChip(label: "", symbol: "xmark", id: "coach.close") { onClose() }
+                GVDeckChip(label: "", symbol: "xmark", accessibilityLabel: "Close field guide", id: "coach.close") { onClose() }
             }
 
             ForEach(lines, id: \.0) { key, value in
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
                     Text(key)
-                        .gvMono(GVMetrics.textSmall, .black)
-                        .tracking(1.0)
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.92))
-                        .frame(width: 128, alignment: .leading)
+                        .frame(width: 168, alignment: .leading)
                     Text(value)
-                        .gvMono(GVMetrics.textSmall, .bold)
-                        .tracking(0.4)
-                        .foregroundStyle(GVTheme.bone.opacity(0.7))
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(GVTheme.bone.opacity(0.78))
                 }
             }
 
-            Text("TAP ANYWHERE TO RESUME")
-                .gvMono(GVMetrics.textMicro, .bold)
-                .tracking(1.6)
-                .foregroundStyle(GVTheme.ash.opacity(0.8))
+            Text("Tap anywhere to continue")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(GVTheme.ash.opacity(0.85))
                 .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 4)
+                .padding(.top, 6)
         }
-        .padding(18)
+        .padding(26)
+        .frame(maxWidth: 620)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.97))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
-                        .shadow(color: .white.opacity(0.18), radius: 10)
-                )
-                .shadow(color: .black.opacity(0.65), radius: 24, y: 12)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(red: 0.09, green: 0.09, blue: 0.10).opacity(0.98))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
         )
         .padding(.horizontal, 26)
         .transition(.scale(scale: 0.94).combined(with: .opacity))

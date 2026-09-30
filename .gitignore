@@ -7,3 +7,4 @@ xcuserdata/
 .orkestra/
 __pycache__/
 *.pyc
+.hive/

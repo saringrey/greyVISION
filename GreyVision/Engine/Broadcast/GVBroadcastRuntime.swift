@@ -4,7 +4,7 @@ import SwiftUI
 
 /// UI-facing state for the Mac link.
 ///
-/// Owns the engine, holds the passcode the operator reads off the screen, and
+/// Owns the engine and advertises the local GreyVision link.
 /// polls stats on a timer. Same split as `CameraRuntime` and
 /// `CameraMetalRenderer`: everything observable lives on the main actor,
 /// everything per-frame lives off it.
@@ -12,14 +12,16 @@ import SwiftUI
 final class GVBroadcastRuntime: ObservableObject {
     @Published private(set) var state: GVBroadcastLinkState = .idle
     @Published private(set) var stats = GVBroadcastStats.idle
-    /// Regenerated per session. Shown on the phone, typed on the Mac.
-    @Published private(set) var passcode = ""
-
     /// The service name the Mac sees while browsing.
     @AppStorage("gv.broadcast.name") var serviceName = "greyVISION"
 
     private let engine = GVBroadcastEngine()
     private var statsTimer: Timer?
+
+    /// Translates desktop commands into composition changes and publishes the
+    /// result back. Owned here because it has to outlive any one presentation
+    /// of the workspace, which attaches its editor to it on appear.
+    let control = GVBroadcastControlBridge()
 
     var isArmed: Bool {
         if case .idle = state { return false }
@@ -38,15 +40,39 @@ final class GVBroadcastRuntime: ObservableObject {
     init() {
         engine.onStateChange = { [weak self] newState in
             Task { @MainActor in
-                self?.state = newState
+                guard let self else { return }
+                self.state = newState
+                // A peer that just attached has never seen the catalogue or
+                // the composition. Sent from here rather than from the engine
+                // so it lands on the main actor, where the editor lives.
+                switch newState {
+                case .connected: self.control.peerAttached()
+                default: self.control.peerDetached()
+                }
             }
         }
+        engine.onControlCommand = { [weak self] command in
+            Task { @MainActor in
+                _ = self?.control.handle(command)
+            }
+        }
+        // The bridge encodes; the engine transports. Keeping the closure here
+        // is what lets the bridge stay free of any link or queue knowledge.
+        control.send = { [weak engine] kind, payload in
+            engine?.sendControl(kind: kind, payload: payload)
+        }
+    }
+
+    func configureProfile(frameRate: Int, requestedCodec: String) {
+        engine.configureProfile(frameRate: frameRate, requestedCodec: requestedCodec)
     }
 
     func start() {
         guard !isArmed else { return }
-        passcode = Self.makePasscode()
-        engine.start(serviceName: serviceName, passcode: passcode)
+        engine.start(
+            serviceName: serviceName,
+            passcode: GVBroadcastProtocol.automaticPairingSecret
+        )
         startPolling()
     }
 
@@ -55,7 +81,6 @@ final class GVBroadcastRuntime: ObservableObject {
         statsTimer?.invalidate()
         statsTimer = nil
         stats = .idle
-        passcode = ""
     }
 
     private func startPolling() {
@@ -71,21 +96,12 @@ final class GVBroadcastRuntime: ObservableObject {
         statsTimer = timer
     }
 
-    /// Six digits, from the system CSPRNG.
-    ///
-    /// Short because a person types it, and single-use because it only has to
-    /// survive one handshake. It is stretched through HKDF before it reaches
-    /// TLS — see `GVBroadcastLink.makeParameters`.
-    private static func makePasscode() -> String {
-        String(format: "%06d", Int.random(in: 0 ..< 1_000_000))
-    }
-
     var statusLine: String {
         switch state {
         case .idle:
             "LINK OFFLINE"
         case .advertising:
-            "LINK // WAITING FOR MAC \u{2014} CODE \(passcode)"
+            "LINK // WAITING FOR MAC \u{2014} AUTO-PAIR"
         case let .connected(peer):
             "LINK // \(peer.uppercased()) \(Int(stats.framesPerSecond))FPS \(Int(stats.kilobitsPerSecond))KBPS"
         case let .failed(reason):

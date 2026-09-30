@@ -24,17 +24,28 @@ struct GVLogoReconstruction<Content: View>: View {
                 let time = timeline.date.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: 60)
 
-                content
-                    .layerEffect(
-                        ShaderLibrary.bootReconstruct(
-                            .float2(size),
-                            .float(Float(progress)),
-                            .float(Float(time))
-                        ),
-                        maxSampleOffset: CGSize(width: 38, height: 22)
-                    )
-                    .opacity(min(0.25 + progress * 1.4, 1))
-                    .scaleEffect(1 + (1 - progress) * 0.012)
+                if progress >= 0.995 {
+                    // Reconstruction finished: render the mark through the
+                    // normal path. Keeping the layerEffect wrapped around it
+                    // forever rasterised the artwork into a layer clipped to
+                    // its own bounds, and pinch-zooming then magnified that
+                    // clipped raster — the hard edge showed as seams around
+                    // the mark. The shader is a pass-through at this point
+                    // anyway, so dropping it costs nothing visually.
+                    content
+                } else {
+                    content
+                        .layerEffect(
+                            ShaderLibrary.bootReconstruct(
+                                .float2(size),
+                                .float(Float(progress)),
+                                .float(Float(time))
+                            ),
+                            maxSampleOffset: CGSize(width: 38, height: 22)
+                        )
+                        .opacity(min(0.25 + progress * 1.4, 1))
+                        .scaleEffect(1 + (1 - progress) * 0.012)
+                }
             }
         }
     }

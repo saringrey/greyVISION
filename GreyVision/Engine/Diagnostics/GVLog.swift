@@ -9,4 +9,5 @@ enum GVLog {
     static let recording = Logger(subsystem: subsystem, category: "recording")
     static let analysis = Logger(subsystem: subsystem, category: "analysis")
     static let audio = Logger(subsystem: subsystem, category: "audio")
+    static let performance = Logger(subsystem: subsystem, category: "performance")
 }

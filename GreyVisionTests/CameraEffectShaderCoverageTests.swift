@@ -71,10 +71,27 @@ final class CameraEffectShaderCoverageTests: XCTestCase {
         }
     }
 
+    func testStyleKernelSupportsFunctionConstantSpecialization() throws {
+        let source = try shaderSource()
+        XCTAssertTrue(source.contains("gvStyleModeConstant [[function_constant(0)]]"))
+        XCTAssertTrue(source.contains("kernel void gvCameraStyleEffectGeneric"))
+        XCTAssertTrue(source.contains("position, gvStyleModeConstant"))
+        XCTAssertTrue(source.contains("switch (styleMode)"))
+    }
+
+    func testFlowFieldsUseAnalyticNoiseGradients() throws {
+        let source = try shaderSource()
+        XCTAssertTrue(source.contains("GVNoiseGradient gvNoiseGradient"))
+        XCTAssertFalse(
+            source.contains("gvFbm(p + float2(epsilon"),
+            "FBM gradients must not regress to four complete finite-difference evaluations per pixel"
+        )
+    }
+
     // MARK: - Shader parsing
 
-    /// The `case N:` arms of each `switch (uniforms.mode.x)` in the kernel
-    /// source, in source order: style first, then temporal.
+    /// The `case N:` arms of each top-level mode switch in kernel source order:
+    /// specialized style first, then uniform-selected temporal.
     ///
     /// Depth-tracked rather than regex-scanned over the whole file, so a
     /// `case` inside a nested switch or an initialiser list cannot be mistaken
@@ -93,10 +110,13 @@ final class CameraEffectShaderCoverageTests: XCTestCase {
         let characters = Array(stripped)
         var switches: [Set<UInt32>] = []
         var index = characters.startIndex
-        let marker = Array("switch (uniforms.mode.x) {")
+        let markers = [
+            Array("switch (styleMode) {"),
+            Array("switch (uniforms.mode.x) {")
+        ]
 
         while index < characters.count {
-            guard matches(characters, at: index, marker) else {
+            guard let marker = markers.first(where: { matches(characters, at: index, $0) }) else {
                 index += 1
                 continue
             }
@@ -145,8 +165,8 @@ final class CameraEffectShaderCoverageTests: XCTestCase {
     private func shaderSource() throws -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let shader = testFile
-            .deletingLastPathComponent()      // GreyVisionTests
-            .deletingLastPathComponent()      // repository root
+            .deletingLastPathComponent() // GreyVisionTests
+            .deletingLastPathComponent() // repository root
             .appendingPathComponent("GreyVision/Resources/Shaders/CameraShaders.metal")
         guard FileManager.default.fileExists(atPath: shader.path) else {
             throw XCTSkip("Kernel source not reachable from \(shader.path); bundle built elsewhere")

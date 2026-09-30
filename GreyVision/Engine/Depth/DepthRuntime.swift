@@ -11,6 +11,8 @@ final class DepthRuntime: ObservableObject {
     let capability: DepthCapability
     let mailbox: LatestDepthFrameMailbox
 
+    private var modeParameters: [DepthEffectMode: DepthEffectParameters] = [:]
+
     private let source: ARDepthFrameSource
 
     init(capability: DepthCapability = .discover()) {
@@ -35,11 +37,14 @@ final class DepthRuntime: ObservableObject {
     }
 
     func setEffect(_ effect: DepthEffectMode) {
+        guard effect != self.effect else { return }
+        modeParameters[self.effect] = parameters.sanitized
         self.effect = effect
+        parameters = modeParameters[effect] ?? .defaults(for: effect)
     }
 
     func start(effect: DepthEffectMode) async -> Bool {
-        self.effect = effect
+        setEffect(effect)
         guard capability.isSupported else {
             snapshot = DepthRuntimeSnapshot(
                 state: .unsupported,
@@ -109,12 +114,12 @@ final class DepthRuntime: ObservableObject {
         snapshot = .idle
     }
 
-    func refreshOrientation() {
-        let interfaceOrientation = UIApplication.shared.connectedScenes
+    func refreshOrientation(_ requestedOrientation: UIInterfaceOrientation? = nil) {
+        let interfaceOrientation = requestedOrientation ?? UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first(where: { $0.activationState == .foregroundActive })?
             .interfaceOrientation ?? .portrait
-        let orientation: CapturedFrameOrientation = switch interfaceOrientation {
+        let orientation: CapturedFrameOrientation? = switch interfaceOrientation {
         case .portrait:
             .portrait
         case .portraitUpsideDown:
@@ -124,8 +129,9 @@ final class DepthRuntime: ObservableObject {
         case .landscapeRight:
             .landscapeRight
         default:
-            .portrait
+            nil
         }
+        guard let orientation else { return }
         source.updateOrientation(orientation)
     }
 

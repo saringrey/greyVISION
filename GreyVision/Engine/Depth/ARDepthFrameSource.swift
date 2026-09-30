@@ -123,6 +123,7 @@ extension ARDepthFrameSource: ARSessionDelegate {
         }
         guard state.isRunning else { return }
 
+        let actualSmoothed = state.usesSmoothedDepth && frame.smoothedSceneDepth != nil
         let depthData = state.usesSmoothedDepth
             ? frame.smoothedSceneDepth ?? frame.sceneDepth
             : frame.sceneDepth
@@ -158,7 +159,7 @@ extension ARDepthFrameSource: ARSessionDelegate {
                 timestamp: frame.timestamp,
                 sequence: frameSequence,
                 hasConfidence: depthData.confidenceMap != nil,
-                usesSmoothedDepth: state.usesSmoothedDepth
+                usesSmoothedDepth: actualSmoothed
             )
         }
         if let eventMetadata {

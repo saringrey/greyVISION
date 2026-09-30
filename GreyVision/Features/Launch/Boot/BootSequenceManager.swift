@@ -127,8 +127,8 @@ final class BootSequenceManager: ObservableObject {
             try? await Task.sleep(for: .milliseconds(1500))
             guard !Task.isCancelled else { return }
 
-            await self.advanceTo(.complete)
-            await self.unblockTouch()
+            self.advanceTo(.complete)
+            self.unblockTouch()
         }
     }
 

@@ -142,6 +142,14 @@ final class GVHUDState: ObservableObject {
         }
     }
 
+    /// Marks the start and end of a scrub on a field control. The idle timer
+    /// checks this, so an open control survives exactly as long as a finger is
+    /// on it and collapses four seconds after it lets go.
+    func setAdjusting(_ adjusting: Bool) {
+        isAdjusting = adjusting
+        keepAlive()
+    }
+
     func revealChrome(for seconds: TimeInterval = 3) {
         revealUntil = .now.addingTimeInterval(seconds)
     }

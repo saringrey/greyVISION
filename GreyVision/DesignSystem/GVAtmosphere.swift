@@ -2,6 +2,7 @@ import SwiftUI
 
 struct GVTerminalText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.gvTerminalTextScale) private var textScale
 
     let text: String
     var size: CGFloat = 8
@@ -10,6 +11,12 @@ struct GVTerminalText: View {
     var baseColor = GVTheme.bone
     var alignment: TextAlignment = .center
     var intensity = 1.0
+    /// Kept configurable so the splash can remain strictly monochrome without
+    /// changing the workspace terminal treatment.
+    var emissiveColor = GVTheme.violet
+    var emissiveShadowColor = GVTheme.violetDeep
+
+    private var scaledTracking: CGFloat { tracking * textScale }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 24, paused: reduceMotion)) { timeline in
@@ -30,7 +37,7 @@ struct GVTerminalText: View {
 
             Text(text)
                 .gvMono(size, weight)
-                .tracking(tracking)
+                .tracking(scaledTracking)
                 .multilineTextAlignment(alignment)
                 .foregroundStyle(
                     LinearGradient(
@@ -38,7 +45,7 @@ struct GVTerminalText: View {
                             baseColor.opacity(0.68),
                             baseColor,
                             .white,
-                            GVTheme.violet.opacity(0.88),
+                            emissiveColor.opacity(0.88),
                             baseColor.opacity(0.72)
                         ],
                         startPoint: start,
@@ -46,7 +53,7 @@ struct GVTerminalText: View {
                     )
                 )
                 .shadow(
-                    color: GVTheme.violetDeep.opacity((0.22 + pulse * 0.46) * intensity),
+                    color: emissiveShadowColor.opacity((0.22 + pulse * 0.46) * intensity),
                     radius: 2 + pulse * 5
                 )
                 .overlay {
@@ -54,14 +61,14 @@ struct GVTerminalText: View {
                         ZStack {
                             Text(text)
                                 .gvMono(size, weight)
-                                .tracking(tracking)
+                                .tracking(scaledTracking)
                                 .multilineTextAlignment(alignment)
-                                .foregroundStyle(GVTheme.violet.opacity(0.10 * intensity))
+                                .foregroundStyle(emissiveColor.opacity(0.10 * intensity))
                                 .offset(x: sin(time * 13.0) * 0.7, y: cos(time * 9.0) * 0.35)
 
                             Text(mutatedText(tick: characterTick))
                                 .gvMono(size, weight)
-                                .tracking(tracking)
+                                .tracking(scaledTracking)
                                 .multilineTextAlignment(alignment)
                                 .foregroundStyle(
                                     .white.opacity(
@@ -103,6 +110,7 @@ struct GVTerminalText: View {
 
 struct GVAnimatedGlassPanel<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var cornerRadius: CGFloat = 28
     var tint = GVTheme.violetDeep
@@ -126,50 +134,59 @@ struct GVAnimatedGlassPanel<Content: View>: View {
 
     var body: some View {
         content
-            .background {
-                if !isTransparent {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                                .fill(Color.black.opacity(fillOpacity))
-                        }
-                }
-            }
-            .overlay {
-                TimelineView(
-                    .animation(minimumInterval: reduceMotion ? 1 : 1 / 24, paused: reduceMotion)
-                ) { timeline in
-                    let time = timeline.date.timeIntervalSinceReferenceDate
-                    let phase = reduceMotion ? 0.28 : 0.5 + sin(time * 0.86) * 0.5
-                    let start = UnitPoint(x: max(0, phase - 0.48), y: 0)
-                    let end = UnitPoint(x: min(1, phase + 0.48), y: 1)
-
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    tint.opacity(0.22),
-                                    tint.opacity(0.92),
-                                    .white.opacity(0.62),
-                                    GVTheme.violet.opacity(0.76),
-                                    tint.opacity(0.18)
-                                ],
-                                startPoint: start,
-                                endPoint: end
-                            ),
-                            lineWidth: 1.1
-                        )
-                }
-                .allowsHitTesting(false)
-            }
+            .background { panelBackground }
+            .overlay { animatedBorder }
             .shadow(color: tint.opacity(0.24), radius: 18, y: 7)
             .shadow(color: GVTheme.violet.opacity(0.13), radius: 4)
+    }
+
+    private var panelBackground: some View {
+        if isTransparent { return AnyView(EmptyView()) }
+
+        let baseTint = Color.black.opacity(fillOpacity)
+
+        return AnyView(
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(baseTint)
+            }
+        )
+    }
+
+    private var animatedBorder: some View {
+        TimelineView(
+            .animation(minimumInterval: reduceMotion ? 1 : 1 / 24, paused: reduceMotion)
+        ) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            let phase = reduceMotion ? 0.28 : 0.5 + sin(time * 0.86) * 0.5
+            let start = UnitPoint(x: max(0, phase - 0.48), y: 0)
+            let end = UnitPoint(x: min(1, phase + 0.48), y: 1)
+
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            tint.opacity(0.22),
+                            tint.opacity(0.92),
+                            .white.opacity(0.62),
+                            GVTheme.violet.opacity(0.76),
+                            tint.opacity(0.18)
+                        ],
+                        startPoint: start,
+                        endPoint: end
+                    ),
+                    lineWidth: 1.1
+                )
+        }
+        .allowsHitTesting(false)
     }
 }
 
 struct GVTopGlassPanel<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var cornerRadius: CGFloat = 38
     var fillOpacity = 0.10
@@ -190,41 +207,50 @@ struct GVTopGlassPanel<Content: View>: View {
 
     var body: some View {
         content
-            .background {
-                if !isTransparent {
-                    panelShape
-                        .fill(.ultraThinMaterial)
-                        .overlay(panelShape.fill(Color.black.opacity(fillOpacity)))
-                }
-            }
-            .overlay {
-                TimelineView(
-                    .animation(minimumInterval: reduceMotion ? 1 : 1 / 24, paused: reduceMotion)
-                ) { timeline in
-                    let time = timeline.date.timeIntervalSinceReferenceDate
-                    let phase = reduceMotion ? 0.3 : 0.5 + sin(time * 0.72) * 0.5
-                    panelShape.strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                GVTheme.violetDeep.opacity(0.18),
-                                GVTheme.violet.opacity(0.92),
-                                .white.opacity(0.52),
-                                GVTheme.violetDeep.opacity(0.16)
-                            ],
-                            startPoint: UnitPoint(x: max(0, phase - 0.46), y: 0),
-                            endPoint: UnitPoint(x: min(1, phase + 0.46), y: 1)
-                        ),
-                        lineWidth: 1.15
-                    )
-                }
-                .allowsHitTesting(false)
-            }
+            .background { panelBackground }
+            .overlay { animatedBorder }
             .shadow(color: .black.opacity(0.62), radius: 20, y: 11)
             .shadow(color: GVTheme.violetDeep.opacity(0.2), radius: 10, y: 3)
     }
 
-    private var panelShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    private var panelBackground: some View {
+        if isTransparent { return AnyView(EmptyView()) }
+
+        let baseTint = Color.black.opacity(fillOpacity)
+
+        return AnyView(
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(baseTint)
+            }
+        )
+    }
+
+    private var animatedBorder: some View {
+        TimelineView(
+            .animation(minimumInterval: reduceMotion ? 1 : 1 / 24, paused: reduceMotion)
+        ) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            let phase = reduceMotion ? 0.3 : 0.5 + sin(time * 0.72) * 0.5
+
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            GVTheme.violetDeep.opacity(0.18),
+                            GVTheme.violet.opacity(0.92),
+                            .white.opacity(0.52),
+                            GVTheme.violetDeep.opacity(0.16)
+                        ],
+                        startPoint: UnitPoint(x: max(0, phase - 0.46), y: 0),
+                        endPoint: UnitPoint(x: min(1, phase + 0.46), y: 1)
+                    ),
+                    lineWidth: 1.15
+                )
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -232,6 +258,7 @@ struct GVDualScanner: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var isActive = true
+    var tint = GVTheme.violet
 
     @State private var firstProgress: CGFloat = -0.06
     @State private var secondProgress: CGFloat = -0.13
@@ -245,7 +272,7 @@ struct GVDualScanner: View {
                 scannerLine(
                     width: geometry.size.width,
                     y: geometry.size.height * firstProgress,
-                    color: GVTheme.violet
+                    color: tint
                 )
                 scannerLine(
                     width: geometry.size.width,
@@ -320,6 +347,7 @@ struct GVSnowField: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let particles = GVSnowParticle.seeded(count: 138, seed: 0x534E_4F57_4756)
+    var accent = GVTheme.violet
 
     var body: some View {
         TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 30, paused: reduceMotion)) { timeline in
@@ -336,7 +364,7 @@ struct GVSnowField: View {
                     context.fill(
                         Path(ellipseIn: rect),
                         with: .color(
-                            (particle.isViolet ? GVTheme.violet : .white)
+                            (particle.isViolet ? accent : .white)
                                 .opacity(max(0.08, flicker))
                         )
                     )

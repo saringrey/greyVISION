@@ -6,7 +6,7 @@ struct GVSnowOverlay: View {
     var body: some View {
         TimelineView(.animation) { context in
             GeometryReader { _ in
-                let time = context.date.timeIntervalSince1970
+                let _ = context.date.timeIntervalSince1970
 
                 // Using standard SwiftUI graphics or colorEffect if available
                 // We'll use a fast shader or a noise image.

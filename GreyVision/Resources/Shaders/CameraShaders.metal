@@ -2,6 +2,18 @@
 
 using namespace metal;
 
+// The renderer builds a lazy, per-mode pipeline cache from this constant.
+// A separate generic entry point remains available while a specialization
+// compiles in the background. Once defined, Metal can remove the other 139
+// switch arms and their register pressure from that pipeline.
+constant uint gvStyleModeConstant [[function_constant(0)]];
+
+// Camera helper function forward declarations (defined later in this file)
+static inline float gvCameraHash(float2 value);
+static inline float gvCameraLuma(float3 color);
+static inline float3 gvCameraSample(texture2d<half, access::sample> texture, float2 uv);
+static inline float3 gvMoshStaleColor(float3 color, float staleness, float2 seed, float time);
+
 struct GVCameraConversionUniforms {
     uint4 source;
     float4 tuning;
@@ -19,6 +31,11 @@ struct GVCameraEffectUniforms {
     float4 audio;
     float4 touch;          // xy = normalized touch position, z = velocity, w = active
     float4 touchImpact;    // xy = impact position, z = age seconds, w = present
+    // Raw drag vector: xy = pointer velocity in screen fractions per second
+    // (direction preserved, unlike `touch.z` which is a scalar speed), w = 1
+    // while the finger is down and moving. The mosh engine injects this as
+    // directional force into the block transport field.
+    float4 touchDrag;
     float4 audioDynamics;  // x = peak, y = transient onset, z = sustain, w = silence
     float4 blobs[4];       // up to 4 tracked fields: xy = normalized center, z = size, w = present
     // Sixteen log-spaced FFT bands, 40 Hz to 14 kHz, each 0...1, packed four
@@ -33,6 +50,7 @@ struct GVCameraPreviewUniforms {
     float4 viewport;       // xy = drawable size, zw = source texture size
     float4 scanlines;      // x = line spacing px, y = drift phase px, z = line width px, w = opacity
     float4 scanlineFlags;  // x = direction (0 h, 1 v, 2 diagonal)
+    float4 overlays;       // y = framing mode; 4 means full-sensor OPEN GATE
 };
 
 struct GVCameraRaster {
@@ -73,6 +91,257 @@ static inline float gvSpectrumAt(constant float4 *spectrum, float position) {
     const int low = int(floor(scaled));
     const float blend = scaled - float(low);
     return mix(gvSpectrumBand(spectrum, low), gvSpectrumBand(spectrum, low + 1), blend);
+}
+
+// MARK: - Datamosh engine
+//
+// Structural, stateful image transport — not a glitch filter. The mosh is a
+// small simulation running beside the camera:
+//
+//     source(t) → block vectors → displaced history → output(t) → history
+//          ▲----------------------------------------------------------┘
+//
+// The history every mosh mode reads is the previous OUTPUT, carried in a
+// dedicated ping-pong pair the renderer swaps every frame whether the camera
+// is live or frozen under a held finger. Corruption therefore compounds frame
+// over frame even while the source clock is stopped — camera time stops, mosh
+// time continues.
+//
+// Block state lives in its own ping-pong pair at one texel per 8px cell:
+//
+//     xy = transport vector, normalised UV per frame
+//     z  = staleness, 0 fresh … 1 fully stale
+//     w  = refresh tick the block last obeyed
+//
+// Any macroblock size reads the same field; linear filtering between cells is
+// what makes neighbouring blocks pull in similar directions, so smears are
+// coherent instead of salt-and-pepper noise.
+
+struct GVMoshState {
+    float2 vector;
+    float staleness;
+    float tick;
+};
+
+static inline GVMoshState gvMoshReadState(
+    texture2d<half, access::sample> state,
+    float2 uv
+) {
+    const float4 raw = float4(state.sample(gvCameraLinearSampler, clamp(uv, 0.0, 1.0)));
+    return GVMoshState{raw.xy, raw.z, raw.w};
+}
+
+static inline float2 gvMoshHash2(float2 value) {
+    return fract(sin(float2(
+        dot(value, float2(127.1, 311.7)),
+        dot(value, float2(269.5, 183.3))
+    )) * 43758.5453123);
+}
+
+/// Touch impact rings expand; radius in UV is age × speed.
+static inline float gvMoshImpactRadius(float age) {
+    return age * 0.85;
+}
+
+/// Drag force as a vector field. Direction and speed come from the raw drag
+/// vector (`touchDrag.xy`, screen fractions per second), positioned around the
+/// contact point with a wide falloff; a recent tap rings outward instead, so
+/// an impulse breaks blocks apart without giving them a direction.
+static inline float2 gvMoshTouchForce(
+    float2 uv,
+    float4 touch,
+    float4 touchImpact,
+    float4 touchDrag,
+    float strength,
+    float dt
+) {
+    float2 force = float2(0.0);
+    if (touchDrag.w > 0.5) {
+        const float2 delta = uv - touch.xy;
+        const float falloff = 1.0 - smoothstep(0.05, 0.46, length(delta));
+        force += touchDrag.xy * falloff * strength * dt;
+    }
+    if (touch.w > 0.5 && touchImpact.w > 0.5) {
+        const float2 toFinger = uv - touchImpact.xy;
+        const float span = max(length(toFinger), 1e-4);
+        const float ring = exp(-abs(span - gvMoshImpactRadius(touchImpact.z)) * 11.0) *
+            exp(-touchImpact.z * 2.4);
+        force += (toFinger / span) * ring * strength * dt * 0.55;
+    }
+    return force;
+}
+
+/// Per-frame evolution of one block's transport vector.
+///
+/// Vectors carry momentum: they follow the live flow field plus finger force,
+/// and decay toward rest over a fraction of a second after the motion stops.
+/// Under MOTION LOCK the vectors present at touch-down keep travelling; under
+/// VECTOR DRIFT they slowly rotate and wander so a frozen frame's prediction
+/// field keeps mutating instead of repeating one displacement forever.
+static inline float2 gvMoshUpdateVector(
+    float2 previousVector,
+    float2 liveFlow,
+    bool flowReady,
+    float gain,
+    float momentumBase,
+    float drift,
+    float4 touch,
+    float4 touchImpact,
+    float4 touchDrag,
+    bool holdActive,
+    uint holdStyle,
+    float holdSeconds,
+    float2 blockId,
+    float2 blockUV,
+    float time,
+    float dt
+) {
+    float momentum = momentumBase;
+    if (holdActive && (holdStyle & 2u) != 0u) {
+        momentum = 0.995;   // MOTION LOCK
+    }
+    // Frame-rate independent follow: how much of this frame's motion the
+    // vector adopts, with the rest carried by its own momentum.
+    const float follow = min((1.0 - momentum) * 1.6, 1.0);
+    float2 vector = previousVector * momentum +
+        (flowReady ? liveFlow : float2(0.0)) * gain * follow +
+        gvMoshTouchForce(blockUV, touch, touchImpact, touchDrag, 0.28 + gain * 0.06, dt) * (1.0 - momentum) * 22.0;
+
+    float driftNow = drift;
+    if (holdActive && (holdStyle & 16u) != 0u) {
+        driftNow *= 1.0 + min(holdSeconds, 6.0) * 0.55;   // VECTOR DRIFT ramps in while held
+    }
+    if (driftNow > 0.0) {
+        const float angle = driftNow * dt * (gvCameraHash(blockId * 3.71) - 0.5) * 4.0;
+        const float ca = cos(angle);
+        const float sa = sin(angle);
+        vector = float2(ca * vector.x - sa * vector.y, sa * vector.x + ca * vector.y);
+        vector += (gvMoshHash2(blockId * 1.91 + fract(time * 0.37)) - 0.5) * driftNow * dt * 0.4;
+    }
+
+    // Hard clamp: an unbounded field samples arbitrarily far away and the
+    // frame collapses to one smeared colour.
+    const float limit = 0.22;
+    const float magnitude = length(vector);
+    if (magnitude > limit) {
+        vector *= limit / magnitude;
+    }
+    return vector;
+}
+
+/// Corruption of stale image data. The failure mode of a lost reference is
+/// colour bleeding off stale prediction and a coarsely re-quantised residual
+/// — deliberately not RGB splitting.
+static inline float3 gvMoshStaleColor(float3 color, float staleness, float2 seed, float time) {
+    if (staleness <= 0.002) {
+        return color;
+    }
+    const float2 direction = gvMoshHash2(seed * 1.37 + floor(time * 0.6)) - 0.5;
+    const float y = gvCameraLuma(color);
+    const float co = color.r - color.b;
+    const float cg = color.g - color.b;
+    const float drift = staleness * 0.22;
+    const float driftedCo = co + direction.x * drift;
+    const float driftedCg = cg + direction.y * drift;
+    float3 rgb = float3(y - driftedCg + driftedCo, y + driftedCg, y - driftedCg - driftedCo);
+    const float levels = mix(48.0, 10.0, staleness);
+    rgb = floor(rgb * levels + 0.5) / levels;
+    return saturate(rgb + staleness * 0.02);
+}
+
+struct GVMoshControls {
+    float blockSize;
+    float gain;           // flow → displacement scaling
+    float momentum;       // per-frame vector persistence at 60 fps
+    float refreshChance;  // probability a block obeys a refresh decision
+    float stalenessRate;  // staleness accrued per second while unrefreshed
+    float drift;          // vector mutation strength
+    float fresh;          // how strongly a refreshed block snaps to the source
+};
+
+/// The core transport: one macroblock grid over the whole frame, per-block
+/// vectors with momentum, partial frame replacement through a coherent
+/// refresh map, and staleness that deepens the longer a block goes
+/// unrefreshed. State is written back for the next frame.
+static inline float3 gvMoshTransport(
+    GVMoshControls mosh,
+    float3 current,
+    texture2d<half, access::sample> history,
+    texture2d<half, access::sample> stateIn,
+    texture2d<half, access::write> stateOut,
+    float2 liveFlow,
+    bool flowReady,
+    float4 touch,
+    float4 touchImpact,
+    float4 touchDrag,
+    bool holdActive,
+    uint holdStyle,
+    float holdSeconds,
+    float time,
+    float dt,
+    float2 uv,
+    float2 size,
+    uint2 position
+) {
+    const float2 blockPos = floor(float2(position) / mosh.blockSize);
+    const float2 blockId = blockPos + 0.5;
+    const float2 centreUV = (blockPos * mosh.blockSize + mosh.blockSize * 0.5) / size;
+    const GVMoshState previous = gvMoshReadState(stateIn, centreUV);
+
+    // Block fates are decided on ~90ms ticks, so a decision survives several
+    // frames the way a decoder's refresh map does, and neighbours inherit it
+    // through the filtered state field — repair fronts sweep instead of
+    // sprinkling.
+    const float tick = floor(time * 11.0);
+    const float decisionHash = gvCameraHash(blockId * 7.13 + float2(tick * 0.311, tick * 0.127));
+
+    float refreshChance = mosh.refreshChance;
+    if (holdActive) {
+        if ((holdStyle & 8u) != 0u) {
+            // FRAME STARVATION: the frozen frame only trickles through, and
+            // the trickle dries up the longer the hold lasts.
+            refreshChance *= exp(-holdSeconds * 0.9);
+        }
+        if ((holdStyle & 4u) != 0u) {
+            // FEEDBACK RUNAWAY: the image slowly consumes itself.
+            refreshChance *= exp(-holdSeconds * 0.45);
+        }
+    }
+    // A block surrounded by stale prediction is far less likely to refresh:
+    // corruption is a region, not a coin flip.
+    const float neighbourStale = max(
+        gvMoshReadState(stateIn, centreUV + float2(mosh.blockSize / size.x, 0.0)).staleness,
+        gvMoshReadState(stateIn, centreUV - float2(mosh.blockSize / size.x, 0.0)).staleness
+    );
+    refreshChance = saturate(refreshChance * (1.0 - neighbourStale * 0.65));
+    const bool refreshed = decisionHash < refreshChance;
+
+    const float2 vector = gvMoshUpdateVector(
+        previous.vector, liveFlow, flowReady, mosh.gain, mosh.momentum, mosh.drift,
+        touch, touchImpact, touchDrag, holdActive, holdStyle, holdSeconds,
+        blockId, centreUV, time, dt
+    );
+
+    float staleness = refreshed
+        ? 0.0
+        : min(previous.staleness + mosh.stalenessRate * dt, 1.0);
+
+    const float3 sampledHistory = gvCameraSample(history, clamp(uv - vector, 0.001, 0.999));
+    const float3 carried = gvMoshStaleColor(sampledHistory, staleness, blockId, time);
+
+    float fresh = mosh.fresh;
+    if (holdActive && (holdStyle & 4u) != 0u) {
+        fresh *= exp(-holdSeconds * 0.35);
+    }
+    // A refreshed block still inherits a trace of what it carried, so repairs
+    // read as compression settling rather than a cut to the live frame.
+    float3 result = mix(carried, current, refreshed ? saturate(fresh) : 0.0);
+    result = mix(result, current, refreshed ? 0.12 : 0.0);
+
+    if (all((position & uint2(7)) == uint2(0))) {
+        stateOut.write(half4(half2(vector), half(staleness), half(tick)), position >> 3);
+    }
+    return result;
 }
 
 // MARK: - Temporal engine
@@ -165,14 +434,18 @@ static inline float gvTemporalAge(float source, float depth, float bias, float c
 
 float gvCameraToLinear(float value, uint transferKind) {
     const float channel = saturate(value);
+    // fast::pow trades a few ULP for a materially cheaper transcendental on
+    // Apple GPUs. This runs three times per pixel of the full-rate conversion
+    // pass every frame, where the error — well under a display step — cannot
+    // survive contact with camera noise.
     if (transferKind == 1) {
         return channel <= 0.04045
             ? channel / 12.92
-            : pow((channel + 0.055) / 1.055, 2.4);
+            : fast::pow((channel + 0.055) / 1.055, 2.4);
     }
     return channel < 0.081
         ? channel / 4.5
-        : pow((channel + 0.099) / 1.099, 1.0 / 0.45);
+        : fast::pow((channel + 0.099) / 1.099, 1.0 / 0.45);
 }
 
 float3 gvCameraToLinear(float3 value, uint transferKind) {
@@ -366,6 +639,16 @@ float3 gvCameraThermal(float value, float shift) {
     return mix(color, white, smoothstep(0.76, 1.0, heat));
 }
 
+/// Compresses an SDR highlight without clipping its channels independently.
+/// Independent `saturate` turns bright cyan/amber/magenta emissions white at
+/// their peaks. Scaling by the peak channel keeps the hue and channel ratios,
+/// while values already inside the display gamut pass through unchanged.
+float3 gvCameraGamutCompress(float3 color) {
+    const float3 positive = max(color, 0.0);
+    const float peak = max(positive.r, max(positive.g, positive.b));
+    return peak > 1.0 ? positive / peak : positive;
+}
+
 /// True for modes that only remap colour and never displace a sample.
 static bool gvIsColourOnlyMode(uint mode) {
     switch (mode) {
@@ -425,12 +708,49 @@ float gvFbm(float2 p) {
     return sum;
 }
 
-/// Analytic gradient of the fbm field, used to build curl/flow directions
-/// without needing a second texture.
+struct GVNoiseGradient {
+    float value;
+    float2 gradient;
+};
+
+/// Value noise and its analytic derivative from the same four hash reads.
+/// The old central difference evaluated four complete FBMs (64 hash calls)
+/// for one gradient. This evaluates four noise cells total (16 hash calls),
+/// is independent of an arbitrary epsilon, and no longer shimmers as scale
+/// changes move that epsilon through the field.
+GVNoiseGradient gvNoiseGradient(float2 p) {
+    const float2 cell = floor(p);
+    const float2 local = fract(p);
+    const float2 blend = local * local * (3.0 - 2.0 * local);
+    const float2 blendDerivative = 6.0 * local * (1.0 - local);
+    const float a = gvCameraHash(cell);
+    const float b = gvCameraHash(cell + float2(1.0, 0.0));
+    const float c = gvCameraHash(cell + float2(0.0, 1.0));
+    const float d = gvCameraHash(cell + float2(1.0, 1.0));
+
+    GVNoiseGradient sample;
+    sample.value = mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y);
+    sample.gradient = float2(
+        mix(b - a, d - c, blend.y) * blendDerivative.x,
+        mix(c - a, d - b, blend.x) * blendDerivative.y
+    );
+    return sample;
+}
+
+/// Analytic gradient of the FBM field, used to build curl/flow directions
+/// without another texture or four redundant FBM evaluations.
 float2 gvFbmGradient(float2 p, float epsilon) {
-    const float dx = gvFbm(p + float2(epsilon, 0.0)) - gvFbm(p - float2(epsilon, 0.0));
-    const float dy = gvFbm(p + float2(0.0, epsilon)) - gvFbm(p - float2(0.0, epsilon));
-    return float2(dx, dy) / (2.0 * epsilon);
+    float2 gradient = float2(0.0);
+    float amplitude = 0.5;
+    float frequency = 1.0;
+    for (int octave = 0; octave < 4; ++octave) {
+        const GVNoiseGradient sample = gvNoiseGradient(p);
+        gradient += sample.gradient * amplitude * frequency;
+        p *= 2.02;
+        frequency *= 2.02;
+        amplitude *= 0.5;
+    }
+    return gradient;
 }
 
 /// Worley / cellular distance field. Returns x = nearest distance,
@@ -459,19 +779,21 @@ float2 gvWorley(float2 p) {
     return float2(nearest, second);
 }
 
-/// Separable 9-tap blur around `uv`. Used by bloom, bokeh and halation.
+/// Nine-tap blur around `uv`. Camera colour and weights stay in half precision:
+/// this is filter accumulation, not geometry, and doubling register width here
+/// only lowers occupancy on Apple GPUs.
 float3 gvBlur(texture2d<half, access::sample> texture, float2 uv, float2 radius) {
-    float3 sum = float3(0.0);
-    sum += gvCameraSample(texture, uv) * 0.24;
-    sum += gvCameraSample(texture, uv + float2(radius.x, 0.0)) * 0.13;
-    sum += gvCameraSample(texture, uv - float2(radius.x, 0.0)) * 0.13;
-    sum += gvCameraSample(texture, uv + float2(0.0, radius.y)) * 0.13;
-    sum += gvCameraSample(texture, uv - float2(0.0, radius.y)) * 0.13;
-    sum += gvCameraSample(texture, uv + radius * 0.7) * 0.06;
-    sum += gvCameraSample(texture, uv - radius * 0.7) * 0.06;
-    sum += gvCameraSample(texture, uv + float2(radius.x, -radius.y) * 0.7) * 0.06;
-    sum += gvCameraSample(texture, uv + float2(-radius.x, radius.y) * 0.7) * 0.06;
-    return sum;
+    half3 sum = half3(0.0h);
+    sum += texture.sample(gvCameraLinearSampler, uv).rgb * 0.24h;
+    sum += texture.sample(gvCameraLinearSampler, uv + float2(radius.x, 0.0)).rgb * 0.13h;
+    sum += texture.sample(gvCameraLinearSampler, uv - float2(radius.x, 0.0)).rgb * 0.13h;
+    sum += texture.sample(gvCameraLinearSampler, uv + float2(0.0, radius.y)).rgb * 0.13h;
+    sum += texture.sample(gvCameraLinearSampler, uv - float2(0.0, radius.y)).rgb * 0.13h;
+    sum += texture.sample(gvCameraLinearSampler, uv + radius * 0.7).rgb * 0.06h;
+    sum += texture.sample(gvCameraLinearSampler, uv - radius * 0.7).rgb * 0.06h;
+    sum += texture.sample(gvCameraLinearSampler, uv + float2(radius.x, -radius.y) * 0.7).rgb * 0.06h;
+    sum += texture.sample(gvCameraLinearSampler, uv + float2(-radius.x, radius.y) * 0.7).rgb * 0.06h;
+    return float3(sum);
 }
 
 /// Samples R, G and B along a direction at different magnitudes. The single
@@ -482,9 +804,9 @@ float3 gvChromaSplit(
     float2 direction
 ) {
     return float3(
-        gvCameraSample(texture, uv + direction).r,
-        gvCameraSample(texture, uv).g,
-        gvCameraSample(texture, uv - direction).b
+        texture.sample(gvCameraLinearSampler, uv + direction).r,
+        texture.sample(gvCameraLinearSampler, uv).g,
+        texture.sample(gvCameraLinearSampler, uv - direction).b
     );
 }
 
@@ -537,11 +859,12 @@ static inline float2 gvChromaCoordinate(float3 color) {
     return float2((color.b - luma) * 0.565, (color.r - luma) * 0.713) * 1.6;
 }
 
-kernel void gvCameraStyleEffect(
-    texture2d<half, access::sample> inputTexture [[texture(0)]],
-    texture2d<half, access::write> outputTexture [[texture(1)]],
-    constant GVCameraEffectUniforms &uniforms [[buffer(0)]],
-    uint2 position [[thread_position_in_grid]]
+static inline void gvCameraStyleEffectBody(
+    texture2d<half, access::sample> inputTexture,
+    texture2d<half, access::write> outputTexture,
+    constant GVCameraEffectUniforms &uniforms,
+    uint2 position,
+    uint styleMode
 ) {
     if (position.x >= outputTexture.get_width() || position.y >= outputTexture.get_height()) {
         return;
@@ -549,7 +872,7 @@ kernel void gvCameraStyleEffect(
 
     const float2 size = uniforms.viewport.xy;
     const float2 texel = uniforms.viewport.zw;
-    const float2 uv = (float2(position) + 0.5) / size;
+    float2 uv = (float2(position) + 0.5) / size;
     float4 controls = uniforms.parameters;
     controls.x = saturate(controls.x + uniforms.audio.y * 0.18);
     controls.y = saturate(controls.y + uniforms.audio.z * 0.10);
@@ -589,30 +912,49 @@ kernel void gvCameraStyleEffect(
         const float ring = exp(-abs(distance(uv, uniforms.touchImpact.xy) - ringRadius) * 14.0);
         touchIntensity += ring * exp(-age * 2.4) * 0.85;
     }
+
+    // Drag inertia. While a finger moves, the sampled coordinate lags behind
+    // the motion, so every style mode shares one physical response to a
+    // flick: the frame has apparent mass. Direction comes from the raw drag
+    // vector, and the clamp keeps a violent swipe from pulling samples far
+    // enough to smear.
+    if (uniforms.touchDrag.w > 0.5) {
+        const float2 lag = clamp(uniforms.touchDrag.xy, float2(-2.0), float2(2.0));
+        uv -= lag * 0.006;
+    }
+
     const float3 base = gvCameraSample(inputTexture, uv);
     const float time = controls.w;
     float3 result = base;
 
-    switch (uniforms.mode.x) {
+    switch (styleMode) {
     case 0: { // Ripple
         // The ripple centres on the finger while it is in contact, and recent
         // impacts add an expanding ring so a tap visibly disturbs the surface.
         const float2 anchor = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
         const float2 centered = uv - anchor;
         const float radius = length(centered);
-        const float amount = mix(0.002, 0.075, controls.x);
+        const float amount = mix(0.002, 0.075, controls.x) * (1.0 + uniforms.audio.y * 0.5);
         const float frequency = mix(4.0, 52.0, controls.y);
         const float speed = mix(-4.0, 4.0, controls.z);
         const float2 direction = radius > 0.0001 ? centered / radius : float2(0.0);
-        const float wave = sin(radius * frequency - time * speed) * amount;
+        // Two harmonics rather than one: the secondary runs at an
+        // incommensurate ratio so rings interfere and break into the choppy
+        // crests real surfaces show, instead of one clean concentric groove.
+        const float wave = (
+            sin(radius * frequency - time * speed) +
+            0.38 * sin(radius * frequency * 2.17 - time * speed * 1.41)
+        ) * amount;
         const float velocityLift = 1.0 + saturate(uniforms.touch.z) * 0.9;
         result = gvCameraSample(inputTexture, uv + direction * wave * velocityLift);
         if (uniforms.touchImpact.w > 0.5) {
             const float2 impactDelta = uv - uniforms.touchImpact.xy;
             const float impactRadius = max(length(impactDelta), 0.0001);
             const float2 impactDirection = impactDelta / impactRadius;
-            const float ring = sin(impactRadius * frequency * 1.6 - uniforms.touchImpact.z * speed * 2.4) *
-                amount * 1.7 * exp(-impactRadius * 2.6) * exp(-uniforms.touchImpact.z * 2.0);
+            const float ring = (
+                sin(impactRadius * frequency * 1.6 - uniforms.touchImpact.z * speed * 2.4) +
+                0.3 * sin(impactRadius * frequency * 3.7 - uniforms.touchImpact.z * speed * 3.1)
+            ) * amount * 1.7 * exp(-impactRadius * 2.6) * exp(-uniforms.touchImpact.z * 2.0);
             result = gvCameraSample(inputTexture, uv + impactDirection * ring);
         }
         // Tracked blobs ring outward too, scaled by their size.
@@ -620,8 +962,10 @@ kernel void gvCameraStyleEffect(
             if (uniforms.blobs[i].w > 0.5) {
                 const float2 blobDelta = uv - uniforms.blobs[i].xy;
                 const float blobRadius = max(length(blobDelta), 0.0001);
-                const float blobRing = sin(blobRadius * frequency * 1.5 - time * speed * 1.8) *
-                    amount * 1.4 * uniforms.blobs[i].z * exp(-blobRadius * 2.8);
+                const float blobRing = (
+                    sin(blobRadius * frequency * 1.5 - time * speed * 1.8) +
+                    0.3 * sin(blobRadius * frequency * 3.3 - time * speed * 2.2)
+                ) * amount * 1.4 * uniforms.blobs[i].z * exp(-blobRadius * 2.8);
                 result = gvCameraSample(inputTexture, uv + blobDelta / blobRadius * blobRing);
             }
         }
@@ -974,19 +1318,28 @@ kernel void gvCameraStyleEffect(
     }
     case 31: { // Water - touch-rippled surface
         const float2 touchPosition = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
-        const float amplitude = mix(0.004, 0.085, controls.x);
+        const float amplitude = mix(0.004, 0.085, controls.x) * (1.0 + uniforms.audio.y * 0.5);
         const float frequency = mix(6.0, 58.0, controls.y);
         const float speed = mix(-3.0, 3.0, controls.z);
         const float2 delta = uv - touchPosition;
         const float radius = max(length(delta), 0.0001);
         const float2 direction = delta / radius;
-        const float fingerWave = sin(radius * frequency - time * speed) * amplitude;
+        // Secondary harmonic at an incommensurate ratio: two wave trains
+        // interfering read as chop on the surface, where a single sinusoid
+        // reads as one machined groove.
+        const float fingerWave = (
+            sin(radius * frequency - time * speed) +
+            0.35 * sin(radius * frequency * 2.19 - time * speed * 1.47)
+        ) * amplitude;
         float displacement = fingerWave;
         if (uniforms.touchImpact.w > 0.5) {
             const float2 impactDelta = uv - uniforms.touchImpact.xy;
             const float impactRadius = max(length(impactDelta), 0.0001);
             const float ringPhase = impactRadius * frequency * 1.5 - uniforms.touchImpact.z * speed * 2.2;
-            displacement += sin(ringPhase) * amplitude * 1.9 *
+            displacement += (
+                sin(ringPhase) +
+                0.28 * sin(ringPhase * 2.31)
+            ) * amplitude * 1.9 *
                 exp(-impactRadius * 3.2) * exp(-uniforms.touchImpact.z * 1.7);
         }
         // Tracked blobs stir the surface like objects dropped in the water.
@@ -1983,6 +2336,672 @@ kernel void gvCameraStyleEffect(
         result = mix(base, drawn, controls.z);
         break;
     }
+    // MARK: SHADERS 104-139
+    //
+    // These are scenes, not renamed grades. Each arm has its own geometry,
+    // palette and motion response while retaining enough of the camera to stay
+    // useful in a live Composition. Audio enters the construction rather than
+    // merely changing final opacity; touch is both directly spatial and fed
+    // through the universal control modulation above.
+    case 104: { // Cyber grid - perspective floor and horizon city
+        const float2 anchor = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5, 0.54);
+        float2 p = (uv - anchor) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float horizon = p.y + 0.12;
+        const float depth = 0.11 / max(abs(horizon), 0.018);
+        const float lane = abs(fract((p.x * depth + time * 0.18) * mix(5.0, 16.0, controls.x)) - 0.5);
+        const float rung = abs(fract(depth * 0.72 - time * (0.7 + uniforms.audio.y * 2.0)) - 0.5);
+        const float grid = smoothstep(0.10, 0.0, min(lane, rung)) * step(0.0, horizon);
+        const float skylineCell = floor((uv.x + time * 0.004) * 42.0);
+        const float skylineHeight = 0.07 + gvCameraHash(float2(skylineCell, 8.0)) * 0.23;
+        const float skyline = step(abs(uv.x * 42.0 - skylineCell - 0.5), 0.43) *
+            step(abs(uv.y - 0.48), skylineHeight);
+        const float3 neon = mix(float3(0.05, 0.75, 1.0), float3(1.0, 0.08, 0.78), saturate(uv.x + uniforms.audio.z));
+        const float3 scene = base * 0.34 + neon * (grid * 1.35 + skyline * 0.24);
+        result = mix(base, gvCameraGamutCompress(scene), controls.z);
+        break;
+    }
+    case 105: { // Astral plasma - layered gaseous interference
+        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float2 p = (uv - origin) * mix(2.0, 7.0, controls.x);
+        const float2 drift = float2(time * 0.10, -time * 0.073);
+        const float fieldA = gvFbm(p + drift + gvFbm(p * 0.7 - drift) * 2.1);
+        const float fieldB = gvFbm(p * 1.8 - drift * 1.3 + 7.1);
+        const float plasma = sin((fieldA - fieldB) * 12.0 + time + uniforms.audio.y * 5.0) * 0.5 + 0.5;
+        const float hue = fract(0.67 + fieldA * 0.34 + fieldB * 0.18 + time * 0.025);
+        const float3 gas = gvCameraHSVToRGB(float3(hue, 0.82, 0.45 + plasma * 0.75));
+        result = mix(base, gvCameraGamutCompress(base * 0.38 + gas * mix(0.8, 2.2, controls.y)), controls.z);
+        break;
+    }
+    case 106: { // Quantum raymarch - audio-breathing torus SDF
+        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float3 ray = normalize(float3(p, 1.35));
+        const float3 origin = float3(0.0, 0.0, -2.6);
+        float distanceTravelled = 0.0;
+        float glow = 0.0;
+        float hit = 0.0;
+        for (int step = 0; step < 28; ++step) {
+            float3 point = origin + ray * distanceTravelled;
+            point.xz = gvCameraRotate(point.xz, time * 0.24 + uniforms.audio.z);
+            point.xy = gvCameraRotate(point.xy, time * -0.17);
+            const float ring = length(float2(length(point.xz) - 0.72, point.y)) -
+                mix(0.08, 0.24, controls.x) * (1.0 + uniforms.audio.y * 0.25);
+            const float distanceValue = abs(ring);
+            glow += 0.004 / max(distanceValue, 0.006);
+            if (distanceValue < 0.006) { hit = 1.0; break; }
+            distanceTravelled += distanceValue * 0.72;
+            if (distanceTravelled > 5.0) { break; }
+        }
+        const float3 quantum = gvCameraHSVToRGB(float3(
+            fract(distanceTravelled * 0.09 + time * 0.035), 0.76, saturate(glow * mix(0.4, 1.3, controls.y))
+        ));
+        result = mix(base, gvCameraGamutCompress(base * (0.30 + hit * 0.22) + quantum), controls.z);
+        break;
+    }
+    case 107: { // Liquid chroma - refractive spectral current
+        const float scale = mix(2.0, 11.0, controls.x);
+        const float2 gradientA = gvFbmGradient(uv * scale + float2(time * 0.12, -time * 0.08), 0.012);
+        const float2 gradientB = gvFbmGradient(uv * scale * 1.7 - float2(time * 0.05, time * 0.11), 0.009);
+        const float2 currentFlow = float2(-gradientA.y, gradientA.x) + gradientB * 0.55;
+        const float spread = mix(0.003, 0.055, controls.y) * (1.0 + uniforms.audio.x);
+        float3 liquid = gvChromaSplit(inputTexture, uv + currentFlow * spread, currentFlow * spread * 0.55);
+        float3 hsv = gvCameraRGBToHSV(liquid);
+        hsv.x = fract(hsv.x + length(currentFlow) * 0.22 + time * 0.018);
+        hsv.y = saturate(hsv.y * 1.45 + uniforms.audio.z * 0.25);
+        result = mix(base, gvCameraHSVToRGB(hsv), controls.z);
+        break;
+    }
+    case 108: { // Holo aurora - parallax light curtains
+        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        float curtain = 0.0;
+        float depthColor = 0.0;
+        for (int layer = 0; layer < 5; ++layer) {
+            const float z = float(layer) / 4.0;
+            const float wave = sin(p.x * mix(5.0, 16.0, controls.x) + time * (0.35 + z) + z * 4.7) *
+                (0.08 + z * 0.05);
+            const float line = exp(-abs(p.y - wave + 0.05 - z * 0.045) * mix(18.0, 48.0, controls.y));
+            curtain += line * (0.35 + z * 0.2);
+            depthColor += line * z;
+        }
+        curtain *= 0.7 + uniforms.audio.z * 1.4;
+        const float3 aurora = gvCameraHSVToRGB(float3(fract(0.42 + depthColor * 0.12 + time * 0.01), 0.72, curtain));
+        result = mix(base, gvCameraGamutCompress(base * 0.46 + aurora * 1.45), controls.z);
+        break;
+    }
+    case 109: { // Neural flow - firing nodes linked by travelling axons
+        const float scale = mix(5.0, 15.0, controls.x);
+        const float2 cell = floor(uv * scale);
+        const float2 local = fract(uv * scale) - 0.5;
+        const float2 node = gvMoshHash2(cell) - 0.5;
+        const float nodeDistance = length(local - node * 0.72);
+        const float soma = smoothstep(0.16, 0.025, nodeDistance);
+        float axon = 0.0;
+        for (int neighbour = 0; neighbour < 4; ++neighbour) {
+            const float angle = float(neighbour) * 1.5707963;
+            const float2 direction = float2(cos(angle), sin(angle));
+            const float2 other = direction + (gvMoshHash2(cell + direction) - 0.5) * 0.72;
+            const float2 segment = other - node * 0.72;
+            const float along = saturate(dot(local - node * 0.72, segment) / max(dot(segment, segment), 1e-4));
+            axon = max(axon, smoothstep(0.045, 0.006, length(local - node * 0.72 - segment * along)));
+        }
+        const float firing = pow(sin(time * mix(1.0, 5.0, controls.y) + gvCameraHash(cell) * 9.0) * 0.5 + 0.5, 8.0);
+        const float signal = soma * (0.35 + firing * 1.8 + uniforms.audioDynamics.y) + axon * (0.22 + firing);
+        const float3 neural = mix(float3(0.12, 0.42, 1.0), float3(1.0, 0.18, 0.72), firing);
+        result = mix(base, gvCameraGamutCompress(base * 0.34 + neural * signal), controls.z);
+        break;
+    }
+    case 110: { // Voxel storm - tumbling depth-sorted cubes
+        const float density = mix(8.0, 28.0, controls.x);
+        const float2 grid = uv * density;
+        const float2 cell = floor(grid);
+        float2 local = fract(grid) - 0.5;
+        const float seed = gvCameraHash(cell);
+        const float depth = fract(seed + time * mix(0.08, 0.55, controls.y) * (0.35 + seed));
+        local = gvCameraRotate(local, time * (seed - 0.5) * 1.4);
+        const float cube = smoothstep(0.48, 0.34, max(abs(local.x), abs(local.y)));
+        const float edge = cube - smoothstep(0.39, 0.30, max(abs(local.x), abs(local.y)));
+        const float3 voxelColor = gvCameraHSVToRGB(float3(fract(seed * 0.45 + depth * 0.2), 0.72, 0.35 + depth));
+        const float3 cameraCell = gvCameraSample(inputTexture, (cell + 0.5) / density);
+        result = mix(base, gvCameraGamutCompress(
+            cameraCell * cube * 0.45 + voxelColor * (cube * 0.25 + edge * 1.4) *
+                (1.0 + uniforms.audio.y)
+        ), controls.z);
+        break;
+    }
+    case 111: { // Fractal zoom - animated Julia set window
+        const float2 centre = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float zoom = exp2(mix(0.0, 7.0, controls.x));
+        float2 z = (uv - centre) * float2(size.x / max(size.y, 1.0), 1.0) * 2.6 / zoom;
+        const float2 c = float2(-0.76 + sin(time * 0.13) * 0.08, 0.16 + cos(time * 0.17) * 0.08);
+        float iterations = 0.0;
+        for (int index = 0; index < 36; ++index) {
+            z = float2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+            if (dot(z, z) > 16.0) { break; }
+            iterations += 1.0;
+        }
+        const float escape = iterations / 36.0;
+        const float3 fractalColor = gvCameraHSVToRGB(float3(
+            fract(escape * 0.72 + time * 0.025 + uniforms.audio.z * 0.18), 0.86, pow(escape, mix(0.4, 1.8, controls.y))
+        ));
+        result = mix(base, gvCameraGamutCompress(base * 0.28 + fractalColor * 1.5), controls.z);
+        break;
+    }
+    case 112: { // Particle life - a deterministic living particle field
+        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        float glow = 0.0;
+        float hueSum = 0.0;
+        for (int index = 0; index < 18; ++index) {
+            const float fi = float(index);
+            const float2 seed = gvMoshHash2(float2(fi, fi * 2.17));
+            const float orbit = time * mix(0.12, 0.9, controls.y) * (seed.x > 0.5 ? 1.0 : -1.0);
+            const float2 particle = (seed - 0.5) * 0.85 + float2(cos(orbit + fi), sin(orbit * 0.73 + fi)) *
+                (0.03 + uniforms.audio.x * 0.08);
+            const float light = smoothstep(mix(0.045, 0.012, controls.x), 0.0, distance(p, particle));
+            glow += light;
+            hueSum += light * seed.y;
+        }
+        const float3 life = gvCameraHSVToRGB(float3(fract(0.48 + hueSum * 0.12 + time * 0.01), 0.76, glow));
+        result = mix(base, gvCameraGamutCompress(base * 0.36 + life), controls.z);
+        break;
+    }
+    case 113: { // Waveform tunnel - spectrum wrapped through a deep corridor
+        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float angle = fract(atan2(p.y, p.x) / 6.2831853 + 0.5);
+        const float radius = max(length(p), 0.004);
+        const float depth = fract(0.16 / radius - time * mix(0.08, 0.6, controls.x));
+        const float band = gvSpectrumAt(uniforms.spectrum, angle);
+        const float wall = smoothstep(0.08 + band * controls.y * 0.26, 0.0, abs(depth - 0.5));
+        const float spoke = smoothstep(0.055, 0.0, abs(fract(angle * 16.0) - 0.5));
+        const float3 tunnel = gvCameraHSVToRGB(float3(fract(angle + time * 0.025), 0.86, wall + spoke * band));
+        result = mix(base, gvCameraGamutCompress(base * 0.30 + tunnel * 1.6), controls.z);
+        break;
+    }
+    case 114: { // Spectral flower - FFT petals around a reactive core
+        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float radius = length(p);
+        const float angle = atan2(p.y, p.x);
+        const float bandPosition = fract(angle / 6.2831853 + 0.5);
+        const float energy = gvSpectrumAt(uniforms.spectrum, bandPosition);
+        const float petals = mix(4.0, 18.0, controls.x);
+        const float petalRadius = 0.17 + abs(cos(angle * petals * 0.5 + time * 0.32)) *
+            (0.10 + energy * mix(0.05, 0.32, controls.y));
+        const float petal = smoothstep(0.025, 0.0, abs(radius - petalRadius));
+        const float core = smoothstep(0.10, 0.0, radius) * (0.4 + uniforms.audio.y);
+        const float3 flower = gvCameraHSVToRGB(float3(fract(bandPosition + time * 0.018), 0.82, petal + core));
+        result = mix(base, gvCameraGamutCompress(base * 0.38 + flower * 1.45), controls.z);
+        break;
+    }
+    case 115: { // Glitch weave - interlocked temporal signal ribbons
+        const float rows = mix(12.0, 90.0, controls.x);
+        const float columns = mix(9.0, 70.0, controls.y);
+        const float row = floor(uv.y * rows);
+        const float column = floor(uv.x * columns);
+        const float rowGate = step(gvCameraHash(float2(row, floor(time * 7.0))), 0.30 + uniforms.audio.y * 0.55);
+        const float columnGate = step(gvCameraHash(float2(column, floor(time * 5.0) + 17.0)), 0.20 + uniforms.audio.z * 0.5);
+        const float2 offset = float2((gvCameraHash(float2(row, time)) - 0.5) * rowGate * 0.16,
+            (gvCameraHash(float2(column, time + 9.0)) - 0.5) * columnGate * 0.12);
+        const float3 woven = gvChromaSplit(inputTexture, uv + offset, offset * 0.18);
+        const float weaveThread = max(rowGate * smoothstep(0.15, 0.0, fract(uv.y * rows)),
+            columnGate * smoothstep(0.15, 0.0, fract(uv.x * columns)));
+        result = mix(base, gvCameraGamutCompress(woven + float3(0.24, 0.04, 0.45) * weaveThread), controls.z);
+        break;
+    }
+    case 116: { // Hologram matrix - falling code reconstructed from the camera
+        const float columns = mix(18.0, 72.0, controls.x);
+        const float2 grid = float2(floor(uv.x * columns), floor(uv.y * columns * 1.55));
+        const float speed = mix(0.35, 2.4, controls.y);
+        const float trail = fract(grid.y * 0.073 - time * speed + gvCameraHash(float2(grid.x, 4.0)) * 5.0);
+        const float glyph = step(0.48, gvCameraHash(grid + floor(time * speed * 5.0))) *
+            smoothstep(0.46, 0.32, abs(fract(uv.x * columns) - 0.5));
+        const float brightness = pow(1.0 - trail, 5.0) * glyph * (0.6 + uniforms.audio.z * 1.8);
+        const float cameraLuma = gvCameraLuma(base);
+        const float3 hologram = float3(0.08, 1.0, 0.56) * brightness * (0.3 + cameraLuma);
+        const float scan = 0.84 + 0.16 * sin(uv.y * size.y * 3.14159);
+        result = mix(base, gvCameraGamutCompress(base * float3(0.24, 0.58, 0.44) * scan + hologram), controls.z);
+        break;
+    }
+    case 117: { // Singularity lens - gravitational camera warp
+        const float2 centre = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float2 p = (uv - centre) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float radius = max(length(p), 0.012);
+        const float pull = mix(0.003, 0.055, controls.x) / (radius * radius + 0.025);
+        const float spin = mix(0.0, 2.8, controls.y) * exp(-radius * 3.2) + time * 0.08;
+        const float2 lensed = centre + gvCameraRotate(p * (1.0 - pull), spin) /
+            float2(size.x / max(size.y, 1.0), 1.0);
+        const float3 warped = gvChromaSplit(inputTexture, lensed, normalize(p + 1e-4) * pull * 0.035);
+        const float photonRing = smoothstep(0.025, 0.0, abs(radius - (0.13 + uniforms.audio.y * 0.035)));
+        result = mix(base, gvCameraGamutCompress(
+            warped * step(0.075, radius) + float3(1.0, 0.48, 0.16) * photonRing
+        ), controls.z);
+        break;
+    }
+    case 118: { // Caustic reactor - colliding refractive wave fronts
+        const float2 p = (uv - 0.5) * mix(5.0, 18.0, controls.x);
+        const float phase = time * mix(0.25, 2.0, controls.y);
+        const float waves = sin(p.x + sin(p.y * 1.3 - phase)) +
+            sin(p.y * 1.4 + cos(p.x * 0.8 + phase * 0.7)) +
+            sin(length(p) * 1.8 - phase * 1.3);
+        const float caustic = pow(saturate(1.0 - abs(waves) * 0.34), 9.0) * (1.0 + uniforms.audio.x * 2.0);
+        const float2 refract = gvFbmGradient(p * 0.35 + phase * 0.04, 0.025) * 0.018;
+        const float3 warped = gvCameraSample(inputTexture, uv + refract);
+        const float3 reactor = warped * 0.62 + mix(float3(0.10, 0.52, 1.0), float3(1.0, 0.24, 0.58), uv.y) * caustic;
+        result = mix(base, gvCameraGamutCompress(reactor), controls.z);
+        break;
+    }
+    case 119: { // Event horizon - accretion disc around a black core
+        const float2 centre = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        float2 p = (uv - centre) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float radius = max(length(p), 0.005);
+        const float angle = atan2(p.y, p.x) + time * mix(0.15, 1.2, controls.y) / (radius + 0.12);
+        const float discRadius = mix(0.16, 0.36, controls.x);
+        const float disc = smoothstep(0.08, 0.0, abs(radius - discRadius - sin(angle * 5.0) * 0.018));
+        const float beam = pow(saturate(cos(angle) * 0.5 + 0.5), 4.0);
+        const float3 accretion = mix(float3(1.0, 0.18, 0.03), float3(0.28, 0.50, 1.0), beam) *
+            disc * (1.0 + uniforms.audio.y * 2.0);
+        const float lens = mix(0.0, 0.07, controls.x) / (radius + 0.04);
+        const float3 warped = gvCameraSample(inputTexture, centre + normalize(p) * (radius + lens) /
+            float2(size.x / max(size.y, 1.0), 1.0));
+        result = mix(base, gvCameraGamutCompress(
+            warped * step(discRadius * 0.42, radius) * 0.55 + accretion
+        ), controls.z);
+        break;
+    }
+    case 120: { // Prism portal - faceted chromatic aperture
+        const float2 centre = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float2 p = (uv - centre) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float radius = length(p);
+        const float angle = atan2(p.y, p.x);
+        const float facets = floor(mix(3.0, 14.0, controls.y));
+        const float facetedRadius = radius * (0.92 + cos(angle * facets) * 0.08);
+        const float portalRadius = mix(0.12, 0.44, controls.x);
+        const float rim = smoothstep(0.035, 0.0, abs(facetedRadius - portalRadius));
+        const float2 normal = normalize(p + 1e-4);
+        const float3 prism = gvChromaSplit(inputTexture, uv + normal * rim * 0.025, normal * rim * 0.022);
+        const float3 spectral = gvCameraHSVToRGB(float3(fract(angle / 6.2831853 + time * 0.035), 0.92, rim));
+        result = mix(base, gvCameraGamutCompress(prism + spectral * (0.8 + uniforms.audio.z)), controls.z);
+        break;
+    }
+    case 121: { // Neon orbit - luminous bodies on nested ellipses
+        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        float light = 0.0;
+        float hue = 0.0;
+        for (int orbitIndex = 0; orbitIndex < 6; ++orbitIndex) {
+            const float fi = float(orbitIndex);
+            const float radius = 0.08 + fi * mix(0.035, 0.075, controls.x);
+            const float phase = time * mix(0.3, 2.4, controls.y) * (0.45 + fi * 0.12) + fi * 1.71;
+            const float2 body = float2(cos(phase) * radius, sin(phase) * radius * (0.42 + fi * 0.06));
+            const float glow = smoothstep(0.045, 0.0, distance(p, body));
+            const float track = smoothstep(0.008, 0.0, abs(length(p / float2(1.0, 0.55)) - radius));
+            light += glow + track * 0.18;
+            hue += glow * fi / 6.0;
+        }
+        const float3 neon = gvCameraHSVToRGB(float3(fract(0.55 + hue + time * 0.018), 0.84, light * (0.7 + uniforms.audio.x)));
+        result = mix(base, gvCameraGamutCompress(base * 0.32 + neon), controls.z);
+        break;
+    }
+    case 122: { // Chrome ripple - liquid-metal camera relief
+        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float2 p = (uv - origin) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float radius = length(p);
+        const float wave = sin(radius * mix(24.0, 90.0, controls.x) - time * mix(1.0, 8.0, controls.y));
+        const float2 normal = normalize(p + 1e-4) * wave;
+        const float3 refracted = gvCameraSample(inputTexture, uv + normal * 0.018);
+        const float luminance = gvCameraLuma(refracted);
+        const float specular = pow(saturate(0.5 + wave * 0.5), 12.0) * (1.0 + uniforms.audioDynamics.x);
+        const float3 chrome = mix(float3(luminance * 0.35), float3(0.65, 0.78, 1.0), specular) + refracted * 0.34;
+        result = mix(base, gvCameraGamutCompress(chrome), controls.z);
+        break;
+    }
+    case 123: { // Laser garden - perspective blades growing from the floor
+        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        float beams = 0.0;
+        float hue = 0.0;
+        for (int index = 0; index < 10; ++index) {
+            const float fi = float(index);
+            const float seed = gvCameraHash(float2(fi, 3.7));
+            const float root = (seed - 0.5) * 1.1;
+            const float bend = sin(time * mix(0.25, 1.8, controls.y) + fi) * mix(0.02, 0.18, controls.x);
+            const float lineX = root + p.y * bend;
+            const float blade = smoothstep(0.012, 0.001, abs(p.x - lineX)) * smoothstep(0.58, -0.3, p.y);
+            beams += blade;
+            hue += blade * seed;
+        }
+        const float3 laser = gvCameraHSVToRGB(float3(fract(hue * 0.17 + time * 0.014), 0.94, beams * (0.6 + uniforms.audio.z * 1.8)));
+        result = mix(base, gvCameraGamutCompress(base * 0.27 + laser), controls.z);
+        break;
+    }
+    case 124: { // Hyper bloom - thresholded camera light becomes a living halo
+        const float threshold = mix(0.82, 0.20, controls.y);
+        const float reach = mix(2.0, 34.0, controls.x);
+        const float3 blurred = gvBlur(inputTexture, uv, texel * reach);
+        const float3 hot = max(blurred - threshold, 0.0);
+        const float halo = gvCameraLuma(hot) * (2.0 + uniforms.audio.x * 5.0);
+        const float hue = fract(gvCameraLuma(base) * 0.38 + time * 0.025);
+        const float3 spectralHalo = gvCameraHSVToRGB(float3(hue, 0.72, halo));
+        const float pulse = 0.76 + 0.24 * sin(time * 2.0 + uniforms.audio.y * 6.0);
+        result = mix(base, gvCameraGamutCompress(base + spectralHalo * pulse), controls.z);
+        break;
+    }
+    case 125: { // Pixel confetti - image cells burst into reactive colour chips
+        const float density = mix(10.0, 55.0, controls.x);
+        const float2 cell = floor(uv * density);
+        const float2 local = fract(uv * density) - 0.5;
+        const float seed = gvCameraHash(cell);
+        const float burst = uniforms.audioDynamics.y + uniforms.audio.y * 0.6;
+        const float2 drift = (gvMoshHash2(cell) - 0.5) * burst * sin(time * (1.0 + seed * 4.0));
+        const float chip = smoothstep(0.42, 0.30, max(abs(local.x - drift.x), abs(local.y - drift.y)));
+        const float enabled = step(seed, mix(0.12, 0.88, controls.y) + burst * 0.2);
+        const float3 color = gvCameraHSVToRGB(float3(fract(seed + time * 0.04), 0.90, 1.0));
+        const float3 sampled = gvCameraSample(inputTexture, (cell + 0.5) / density);
+        result = mix(base, gvCameraGamutCompress(sampled * 0.35 + color * chip * enabled), controls.z);
+        break;
+    }
+    case 126: { // Solar flare - anamorphic star driven from touch
+        const float2 centre = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5, 0.5);
+        const float2 p = (uv - centre) * float2(size.x / max(size.y, 1.0), 1.0);
+        const float radius = max(length(p), 0.003);
+        const float core = pow(saturate(1.0 - radius / mix(0.04, 0.24, controls.x)), 4.0);
+        const float horizontal = exp(-abs(p.y) * mix(20.0, 120.0, controls.y)) /
+            (1.0 + abs(p.x) * 5.0);
+        const float rays = pow(abs(sin(atan2(p.y, p.x) * 9.0 + time * 0.25)), 22.0) /
+            (1.0 + radius * 14.0);
+        const float energy = (core + horizontal + rays) * (0.6 + uniforms.audio.x * 1.8);
+        const float3 flare = mix(float3(1.0, 0.24, 0.05), float3(0.45, 0.72, 1.0), saturate(radius * 2.5)) * energy;
+        result = mix(base, gvCameraGamutCompress(base + flare), controls.z);
+        break;
+    }
+    case 127: { // Candy mesh - glossy warped candy lattice
+        const float2 p = (uv - 0.5) * mix(5.0, 18.0, controls.x);
+        const float warp = sin(p.y * 0.8 + time) + cos(p.x * 0.7 - time * 0.8);
+        const float2 q = p + float2(sin(p.y + time), cos(p.x - time)) * warp * 0.18;
+        const float mesh = min(abs(sin(q.x * 3.14159)), abs(sin(q.y * 3.14159)));
+        const float ribbon = smoothstep(mix(0.42, 0.08, controls.y), 0.0, mesh);
+        const float highlight = pow(1.0 - mesh, 9.0);
+        const float hue = fract(q.x * 0.045 + q.y * 0.035 + time * 0.025 + uniforms.audio.z * 0.2);
+        const float3 candy = gvCameraHSVToRGB(float3(hue, 0.76, ribbon * 0.72 + highlight));
+        result = mix(base, gvCameraGamutCompress(base * 0.32 + candy), controls.z);
+        break;
+    }
+    case 128: { // Aurora glass - layered translucent refraction
+        const float scale = mix(2.0, 9.0, controls.x);
+        const float2 flowA = gvFbmGradient(uv * scale + float2(time * 0.08, 0.0), 0.012);
+        const float2 flowB = gvFbmGradient(uv * scale * 1.9 - float2(0.0, time * 0.06), 0.008);
+        const float2 normal = flowA + float2(-flowB.y, flowB.x) * 0.65;
+        const float sheen = pow(saturate(0.5 + dot(normalize(float3(normal, 0.4)), normalize(float3(-0.3, 0.5, 0.8)))),
+            mix(3.0, 16.0, controls.y));
+        const float3 refracted = gvChromaSplit(inputTexture, uv + normal * 0.025, normal * 0.008);
+        const float hue = fract(0.42 + normal.x * 0.28 + normal.y * 0.18 + time * 0.012);
+        const float3 glass = refracted * 0.72 + gvCameraHSVToRGB(float3(hue, 0.62, sheen * (1.0 + uniforms.audio.z)));
+        result = mix(base, gvCameraGamutCompress(glass), controls.z);
+        break;
+    }
+    case 129: { // Cosmic knot - projected luminous torus knot
+        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
+        float nearest = 1e6;
+        float knotHue = 0.0;
+        const float spin = time * mix(0.08, 0.75, controls.y);
+        for (int index = 0; index < 40; ++index) {
+            const float t = float(index) / 40.0 * 6.2831853;
+            const float radius = 0.23 + 0.075 * cos(3.0 * t + spin);
+            float3 knot = float3(radius * cos(2.0 * t), radius * sin(2.0 * t), 0.075 * sin(3.0 * t + spin));
+            knot.xz = gvCameraRotate(knot.xz, spin * 0.7);
+            const float2 projected = knot.xy / (0.8 + knot.z);
+            const float distanceValue = distance(p, projected);
+            if (distanceValue < nearest) {
+                nearest = distanceValue;
+                knotHue = t / 6.2831853;
+            }
+        }
+        const float line = smoothstep(mix(0.030, 0.008, controls.x), 0.0, nearest);
+        const float glow = smoothstep(0.075, 0.0, nearest) * 0.35;
+        const float3 knotColor = gvCameraHSVToRGB(float3(fract(knotHue + time * 0.02), 0.84, (line + glow) *
+            (0.7 + uniforms.audio.y * 1.5)));
+        result = mix(base, gvCameraGamutCompress(base * 0.30 + knotColor), controls.z);
+        break;
+    }
+    case 130: { // Nebula drift - swirling interstellar clouds with audio-reactivity
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        float2 p = (uv - 0.5) * aspect * mix(2.2, 6.5, controls.y);
+        const float driftSpeed = mix(0.015, 0.18, controls.x);
+        const float2 drift = float2(time * driftSpeed, -time * driftSpeed * 0.63);
+        const float2 warp = float2(gvFbm(p + drift), gvFbm(p - drift + 8.4)) - 0.5;
+        const float cloudA = gvFbm(p + warp * 3.2 + drift);
+        const float cloudB = gvFbm(p * 1.9 - warp * 2.1 - drift * 0.7);
+        const float density = smoothstep(0.25, 0.83, cloudA * 0.72 + cloudB * 0.48 + uniforms.audio.y * 0.16);
+        const float3 cold = float3(0.05, 0.08, 0.34);
+        const float3 hot = float3(0.96, 0.22, 0.62);
+        const float3 gas = mix(cold, hot, saturate(cloudB + uniforms.audio.z * 0.25)) * density * 1.8;
+        const float2 starCell = floor(uv * 180.0);
+        const float stars = pow(gvCameraHash(starCell), 42.0) * (0.4 + uniforms.audioDynamics.x * 1.5);
+        result = mix(base, gvCameraGamutCompress(base * 0.34 + gas + stars), controls.z);
+        break;
+    }
+    case 131: { // Quantum bloom - pulsing quantum-circuit field with temporal glow
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        const float2 p = (uv - 0.5) * aspect;
+        const float radius = length(p);
+        const float growth = fract(time * mix(0.08, 0.7, controls.x) + uniforms.audioDynamics.y * 0.18);
+        float bloom = 0.0;
+        for (int ringIndex = 0; ringIndex < 5; ++ringIndex) {
+            const float ringRadius = fract(growth + float(ringIndex) / 5.0) * 0.62;
+            bloom += smoothstep(0.025, 0.0, abs(radius - ringRadius)) * (1.0 - ringRadius);
+        }
+        const float2 cell = gvWorley(p * mix(5.0, 18.0, controls.y) + time * 0.04);
+        const float circuit = smoothstep(0.055, 0.0, cell.y - cell.x);
+        const float3 quantum = gvCameraHSVToRGB(float3(
+            fract(radius * 0.7 + time * 0.025), 0.78, bloom * 1.3 + circuit * 0.32
+        ));
+        result = mix(base, gvCameraGamutCompress(
+            base * 0.31 + quantum * (0.8 + uniforms.audio.x)
+        ), controls.z);
+        break;
+    }
+    case 132: { // Plasma ripple - fluid plasma tendrils with touch displacement
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float2 p = (uv - origin) * aspect;
+        const float radius = length(p);
+        const float scale = mix(8.0, 32.0, controls.x);
+        const float2 field = gvFbmGradient(uv * scale + float2(time * 0.16, -time * 0.11), 0.009);
+        const float ripple = sin(radius * scale * 1.7 - time * mix(1.0, 7.0, controls.y) +
+            gvFbm(uv * scale * 0.32) * 5.0);
+        const float2 displacement = normalize(p + 1e-4) * ripple * 0.014 + field * 0.020;
+        const float3 warped = gvChromaSplit(inputTexture, uv + displacement, displacement * 0.35);
+        const float filament = pow(saturate(0.5 + ripple * 0.5), 8.0) * (0.5 + uniforms.audio.x * 1.6);
+        const float3 plasma = gvCameraHSVToRGB(float3(fract(0.72 + radius + time * 0.03), 0.88, filament));
+        result = mix(base, gvCameraGamutCompress(warped * 0.62 + plasma), controls.z);
+        break;
+    }
+    case 133: { // Chroma scrape - MTV-style glitch with audio-driven chrome strips
+        const float rows = mix(18.0, 160.0, controls.x);
+        const float row = floor(uv.y * rows);
+        const float tick = floor(time * mix(5.0, 24.0, controls.y));
+        const float seed = gvCameraHash(float2(row, tick));
+        const float active = step(seed, 0.15 + uniforms.audioDynamics.x * 0.75);
+        const float reach = (gvCameraHash(float2(row, tick + 17.0)) - 0.5) *
+            mix(0.015, 0.34, controls.x) * active;
+        const float3 scraped = gvChromaSplit(inputTexture, uv + float2(reach, 0.0), float2(reach * 0.12, 0.0));
+        const float ridge = smoothstep(0.18, 0.0, min(fract(uv.y * rows), 1.0 - fract(uv.y * rows))) * active;
+        const float chrome = pow(saturate(gvCameraLuma(scraped)), 0.45) * ridge * mix(0.5, 2.8, controls.y);
+        const float3 sheen = gvCameraHSVToRGB(float3(fract(uv.x + time * 0.06), 0.58, chrome));
+        result = mix(base, gvCameraGamutCompress(scraped * 0.58 + sheen), controls.z);
+        break;
+    }
+    case 134: { // Singularity weave - gravitational lensing with touch vortex
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float2 p = (uv - origin) * aspect;
+        const float radius = max(length(p), 0.012);
+        const float angle = atan2(p.y, p.x) + mix(0.2, 3.8, controls.x) / (radius + 0.08) + time * 0.18;
+        const float2 wovenCoordinates = float2(angle / 6.2831853, log(radius) * mix(4.0, 15.0, controls.y));
+        const float warpThread = min(abs(fract(wovenCoordinates.x * 18.0) - 0.5),
+            abs(fract(wovenCoordinates.y) - 0.5));
+        const float weave = smoothstep(0.11, 0.0, warpThread);
+        const float lens = mix(0.0, 0.09, controls.x) / (radius + 0.04);
+        const float2 sampleUV = origin + normalize(p) * (radius - lens) / aspect;
+        const float3 warped = gvChromaSplit(inputTexture, sampleUV, normalize(p) * lens * 0.025);
+        const float3 filament = gvCameraHSVToRGB(float3(fract(angle / 6.2831853), 0.82, weave *
+            (0.5 + uniforms.audio.z * 1.4)));
+        result = mix(base, gvCameraGamutCompress(warped * 0.48 + filament), controls.z);
+        break;
+    }
+    case 135: { // Fractal burst - explosive Mandelbrot fractal expansion
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        const float burstScale = mix(3.2, 0.55, controls.x) * (1.0 + uniforms.audioDynamics.y * 0.18);
+        const float2 p = (uv - 0.5) * aspect * burstScale;
+        const float2 c = p + float2(-0.62 + sin(time * 0.11) * 0.06, cos(time * 0.09) * 0.08);
+        float2 z = float2(0.0, 0.0);
+        float iter = 0.0;
+        for (int i = 0; i < 36; i++) {
+            if (dot(z, z) >= 16.0) { break; }
+            z = float2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+            iter = float(i) + 1.0;
+        }
+        const float escaped = iter / 36.0;
+        const float shockwave = smoothstep(0.035, 0.0, abs(length(p) - fract(time * 0.22) * 1.8));
+        const float3 fractal = gvCameraHSVToRGB(float3(
+            fract(iter * 0.055 + time * 0.025), 0.88, pow(escaped, mix(0.45, 1.8, controls.y))
+        ));
+        result = mix(base, gvCameraGamutCompress(
+            base * 0.27 + fractal * 1.6 + float3(1.0, 0.38, 0.08) * shockwave *
+                (0.5 + uniforms.audio.x)
+        ), controls.z);
+        break;
+    }
+    case 136: { // Vortex pulse - radial vortex with audio-pumped intensity
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float2 p = (uv - origin) * aspect;
+        const float radius = max(length(p), 0.004);
+        const float pulse = 0.5 + 0.5 * sin(time * mix(1.0, 7.0, controls.x) - radius * 18.0);
+        const float twist = mix(0.0, 5.0, controls.y) * exp(-radius * 3.4) *
+            (0.45 + pulse + uniforms.audio.y * 0.8);
+        const float2 warpedP = gvCameraRotate(p, twist);
+        const float2 sampleUV = origin + warpedP / aspect;
+        const float3 warped = gvChromaSplit(inputTexture, sampleUV, normalize(p) * pulse * 0.009);
+        const float ring = smoothstep(0.025, 0.0, abs(radius - (0.12 + pulse * 0.25)));
+        const float3 energy = gvCameraHSVToRGB(float3(fract(0.72 + pulse * 0.22 + time * 0.02), 0.86,
+            ring * (0.6 + uniforms.audioDynamics.x * 1.7)));
+        result = mix(base, gvCameraGamutCompress(warped * 0.60 + energy), controls.z);
+        break;
+    }
+    case 137: { // Spectral nova - expanding rainbow ring with FFT-driven colors
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        const float2 p = (uv - 0.5) * aspect;
+        const float radius = length(p);
+        const float angle = fract(atan2(p.y, p.x) / 6.2831853 + 0.5);
+        const float mirroredBand = angle < 0.5 ? angle * 2.0 : (1.0 - angle) * 2.0;
+        const float spectrum = gvSpectrumAt(uniforms.spectrum, mirroredBand);
+        const float expansion = fract(time * mix(0.08, 0.65, controls.x) + uniforms.audioDynamics.y * 0.16);
+        float nova = 0.0;
+        for (int ringIndex = 0; ringIndex < 3; ++ringIndex) {
+            const float ringRadius = fract(expansion + float(ringIndex) / 3.0) * 0.72;
+            nova += smoothstep(0.018 + spectrum * 0.018, 0.0, abs(radius - ringRadius)) *
+                (0.3 + spectrum * mix(0.8, 2.6, controls.y));
+        }
+        const float rays = pow(abs(cos(angle * 6.2831853 * 12.0)), 28.0) * spectrum /
+            (1.0 + radius * 12.0);
+        const float3 rainbow = gvCameraHSVToRGB(float3(fract(angle + time * 0.04), 0.92, nova + rays));
+        result = mix(base, gvCameraGamutCompress(base * 0.29 + rainbow), controls.z);
+        break;
+    }
+    case 138: { // Ion storm - charged flow field that refracts the live image
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
+        const float2 p = (uv - origin) * aspect;
+        const float audioEnergy = saturate(uniforms.audio.x * 0.55 + uniforms.audio.y * 0.90 +
+            uniforms.audioDynamics.y * 0.45);
+        const float scale = mix(3.0, 18.0, controls.x);
+        const float phase = time * mix(0.28, 1.85, controls.y);
+        const float2 field = gvFbmGradient(p * scale + float2(phase, -phase * 0.73), 0.025);
+        const float2 curl = float2(-field.y, field.x);
+        const float2 refractedUV = uv + curl * mix(0.004, 0.050, controls.x) * (0.45 + audioEnergy);
+        const float3 refracted = gvChromaSplit(
+            inputTexture,
+            refractedUV,
+            curl * mix(0.001, 0.014, controls.y) * (0.4 + audioEnergy)
+        );
+        const float filaments = pow(saturate(1.0 - abs(sin(dot(p, curl * 22.0) + phase * 5.0))), 14.0);
+        const float3 charge = gvCameraHSVToRGB(float3(
+            fract(0.55 + gvFbm(p * 5.0 - phase) * 0.42 + audioEnergy * 0.18),
+            0.80,
+            1.0
+        ));
+        result = gvCameraGamutCompress(refracted + charge * filaments * (0.45 + audioEnergy * 1.35));
+        break;
+    }
+    case 139: { // Opal wave - iridescent caustics driven by audio and gesture
+        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
+        const float2 p = (uv - 0.5) * aspect;
+        const float audioEnergy = saturate(uniforms.audio.x * 0.45 + uniforms.audio.z * 0.75 +
+            uniforms.audioDynamics.x * 0.35);
+        const float speed = mix(0.18, 1.35, controls.y);
+        const float timePhase = time * speed;
+        const float2 warp = float2(
+            gvFbm(p * mix(4.0, 14.0, controls.x) + float2(timePhase, 1.7)),
+            gvFbm(p * mix(4.0, 14.0, controls.x) + float2(-2.3, -timePhase))
+        ) - 0.5;
+        const float wave = sin((p.x + warp.x * 0.42) * 17.0 +
+            (p.y + warp.y * 0.42) * 13.0 + timePhase * 3.0);
+        const float caustic = pow(saturate(0.5 + 0.5 * wave), mix(7.0, 2.2, controls.x));
+        const float radius = length(p + warp * 0.18);
+        const float hue = fract(radius * 0.78 - wave * 0.13 + timePhase * 0.08 + audioEnergy * 0.22);
+        const float3 iridescence = gvCameraHSVToRGB(float3(hue, 0.72 + audioEnergy * 0.28, 1.0));
+        const float2 offset = warp * mix(0.002, 0.022, controls.x) * (1.0 + audioEnergy);
+        const float3 refracted = gvChromaSplit(inputTexture, uv + offset, offset * 0.72);
+        result = gvCameraGamutCompress(
+            refracted * (0.74 + caustic * 0.26) + iridescence * caustic *
+                (0.28 + audioEnergy * 0.82)
+        );
+        break;
+    }
+    case 140: { // CMYK press: four independent, rotated subtractive screens.
+        const float pitch = mix(3.5, 22.0, controls.x);
+        const float registration = controls.y * pitch * 0.32;
+        const float angles[4] = {0.261799, 1.308997, 0.0, 0.785398};
+        const float2 offsets[4] = {float2(1, 0.2), float2(-0.4, 1), float2(-0.6, -0.8), float2(0)};
+        float4 screens = float4(0);
+        for (uint plate = 0; plate < 4; ++plate) {
+            const float2 registered = float2(position) + offsets[plate] * registration;
+            const float2 rotated = gvCameraRotate(registered, angles[plate]);
+            const float2 cellCenter = (floor(rotated / pitch) + 0.5) * pitch;
+            const float2 samplePosition = gvCameraRotate(cellCenter, -angles[plate]) - offsets[plate] * registration;
+            const float3 rgb = saturate(gvCameraSample(inputTexture, (samplePosition + 0.5) / size));
+            const float black = 1.0 - max(rgb.r, max(rgb.g, rgb.b));
+            const float3 cmy = saturate((1.0 - rgb - black) / max(1.0 - black, 0.001));
+            const float ink = plate == 3 ? black : cmy[plate];
+            const float dotRadius = sqrt(ink) * 0.7071;
+            const float radius = length(fract(rotated / pitch) - 0.5);
+            screens[plate] = 1.0 - smoothstep(dotRadius - 0.7 / pitch, dotRadius + 0.7 / pitch, radius);
+        }
+        const float density = mix(0.45, 1.0, controls.z);
+        const float3 paper = float3(0.97, 0.945, 0.89);
+        const float3 colorInk = 1.0 - screens.xyz * density;
+        result = paper * colorInk * (1.0 - screens.w * density);
+        break;
+    }
+    case 141: { // Highlight-gated multiorder spectral diffraction, bounded to 24 taps.
+        const float pitch = mix(0.002, 0.030, controls.x);
+        const uint orders = 1u + uint(round(controls.y * 3.0));
+        const float gate = mix(0.25, 0.92, controls.z);
+        float3 spectrum = float3(0);
+        float normalization = 0;
+        for (uint order = 1; order <= 4; ++order) {
+            if (order > orders) break;
+            const float weight = 1.0 / float(order * order);
+            for (int side = -1; side <= 1; side += 2) {
+                for (uint channel = 0; channel < 3; ++channel) {
+                    const float wavelength = channel == 0 ? 0.650 : (channel == 1 ? 0.530 : 0.460);
+                    const float displacement = float(side) * float(order) * pitch * wavelength / 0.530;
+                    const float3 light = gvCameraSample(inputTexture, uv + float2(displacement, displacement * 0.22));
+                    const float highlight = smoothstep(gate, min(gate + 0.15, 1.0), gvCameraLuma(light));
+                    spectrum[channel] += light[channel] * highlight * weight;
+                }
+                normalization += weight;
+            }
+        }
+        result = base + spectrum / max(normalization, 1.0) * 0.75;
+        break;
+    }
     default:
         break;
     }
@@ -1990,7 +3009,7 @@ kernel void gvCameraStyleEffect(
     // Colour-only modes have no geometry to push, so the parameter coupling
     // above is invisible on them. For those, the finger drives the palette
     // instead: X rotates hue, Y trades saturation, proximity lifts value.
-    if (uniforms.touch.w > 0.5 && gvIsColourOnlyMode(uniforms.mode.x)) {
+    if (uniforms.touch.w > 0.5 && gvIsColourOnlyMode(styleMode)) {
         const float proximity = 1.0 - smoothstep(0.0, 0.55, distance(uv, uniforms.touch.xy));
         float3 hsv = gvCameraRGBToHSV(result);
         hsv.x = fract(hsv.x + (uniforms.touch.x - 0.5) * 0.5 * proximity);
@@ -2000,8 +3019,31 @@ kernel void gvCameraStyleEffect(
     }
 
     result = mix(base, result, saturate(uniforms.extra.x * touchIntensity));
-	    outputTexture.write(half4(half3(saturate(result)), 1.0h), position);
+	    outputTexture.write(half4(half3(gvCameraGamutCompress(result)), 1.0h), position);
 	}
+
+/// Correct fallback while a mode specialization compiles. Keeping this as a
+/// distinct entry point is required by Metal: a function with an unresolved
+/// function constant can be retrieved from a library but cannot form a PSO.
+kernel void gvCameraStyleEffectGeneric(
+    texture2d<half, access::sample> inputTexture [[texture(0)]],
+    texture2d<half, access::write> outputTexture [[texture(1)]],
+    constant GVCameraEffectUniforms &uniforms [[buffer(0)]],
+    uint2 position [[thread_position_in_grid]]
+) {
+    gvCameraStyleEffectBody(inputTexture, outputTexture, uniforms, position, uniforms.mode.x);
+}
+
+/// Function-constant entry point. The inlined body receives a compile-time
+/// mode, allowing the compiler to dead-strip every unrelated effect arm.
+kernel void gvCameraStyleEffect(
+    texture2d<half, access::sample> inputTexture [[texture(0)]],
+    texture2d<half, access::write> outputTexture [[texture(1)]],
+    constant GVCameraEffectUniforms &uniforms [[buffer(0)]],
+    uint2 position [[thread_position_in_grid]]
+) {
+    gvCameraStyleEffectBody(inputTexture, outputTexture, uniforms, position, gvStyleModeConstant);
+}
 
 	float2 gvCameraRotate(float2 value, float angle) {
 	    const float sine = sin(angle);
@@ -2074,6 +3116,11 @@ kernel void gvCameraStyleEffect(
     texture2d<half, access::sample> flowField [[texture(7)]],
     // Timestamped history. Addressed in seconds via gvTemporalSample.
     texture2d_array<half, access::sample> temporalRing [[texture(8)]],
+    // Datamosh engine block state, one texel per 8px cell. Read is the field
+    // as of last frame; write is the field this frame produces. The renderer
+    // ping-pongs both pairs; non-mosh modes never touch them.
+    texture2d<half, access::sample> moshStateIn [[texture(9)]],
+    texture2d<half, access::write> moshStateOut [[texture(10)]],
     constant float *ringTimestamps [[buffer(1)]],
     constant GVTemporalRing &ringInfo [[buffer(2)]],
     constant GVCameraEffectUniforms &uniforms [[buffer(0)]],
@@ -2131,7 +3178,18 @@ kernel void gvCameraStyleEffect(
 	    const float2 flow = flowReady ? gvCameraSampleVector(flowField, uv) : float2(0.0);
 	    const float flowMagnitude = length(flow);
 	    const bool holdActive = uniforms.extra.y > 0.5 && uniforms.mode.x >= 4u;
-	    const float3 current = holdActive ? gvCameraSample(historyTexture, uv) : gvCameraSample(inputTexture, uv);
+
+	    // SOURCE CLOCK vs SIMULATION CLOCK. `holdActive` means the camera
+	    // frame is frozen — the renderer simply stopped ingesting, so
+	    // `inputTexture` already IS the frozen frame; the pipeline above kept
+	    // running and the mosh keeps evolving underneath it. The hold has been
+	    // running for `holdSeconds`, `holdStyle` selects the mixed hold
+	    // behaviours (see gvMoshUpdateVector), and `dt` arrives packed in
+	    // mode.z as seconds × 65536 so momentum is frame-rate independent.
+	    const float holdSeconds = max(uniforms.extra.w, 0.0);
+	    const uint holdStyle = uniforms.mode.y;
+	    const float dt = clamp(float(uniforms.mode.z) / 65536.0, 1.0 / 240.0, 0.1);
+	    const float3 current = gvCameraSample(inputTexture, uv);
 	    const float time = controls.w;
 	    float3 result = current;
 
@@ -2172,62 +3230,28 @@ kernel void gvCameraStyleEffect(
         result = mix(current, saturate(frozen + noise), controls.x);
         break;
     }
-	    case 4: { // Datamosh - motion reprojection against frame history
-	        // Real reprojection, not block displacement. Each pixel asks where
-	        // the image it is showing came from and samples history there:
-	        //
-	        //     sourceUV = uv - motionVector * strength
-	        //
-	        // Because the vector comes from the persistent field, it outlives
-	        // the frame that produced it. That is the whole effect - motion
-	        // detaches from the image and keeps dragging content after the
-	        // thing that moved has gone. A hash-driven block offset, which is
-	        // what this used to be, cannot do that: it has no idea which way
-	        // anything was travelling.
-	        const float gain = mix(0.4, 6.0, controls.x);
-
-	        // Reference age in SECONDS, read from the timestamped ring.
-	        //
-	        // This used to pick between three fixed taps, which meant the same
-	        // slider setting reached back four times further at 120fps than at
-	        // 30fps - the exact failure the ring was built to remove. Asking
-	        // for a duration makes the effect behave the same on every device.
-	        const float age = mix(0.03, 1.6, controls.y);
-
-	        // Macroblock quantisation of the vector. Codec datamoshing moves
-	        // blocks, not pixels, and snapping the displacement to a grid is
-	        // what gives the smear its characteristic tiling. Only the vector
-	        // is quantised - the sample position keeps its sub-pixel offset, so
-	        // the blocks slide rather than snapping between whole cells.
-	        const float blockSize = mix(1.0, 40.0, controls.z);
-	        float2 displacement = flow * gain;
-	        if (blockSize > 1.5 && flowReady) {
-	            const float2 block = floor(float2(position) / blockSize) * blockSize;
-	            const float2 blockUV = (block + blockSize * 0.5) / size;
-	            displacement = gvCameraSampleVector(flowField, blockUV) * gain;
-	        }
-
-	        float3 reference = gvTemporalSample(
-	            temporalRing, ringTimestamps, ringInfo, uv - displacement, age, current
+case 4: { // Datamosh - stateful macroblock transport
+        // The previous OUTPUT is the reference: each block carries a
+        // transport vector with momentum, and either obeys a refresh
+        // decision (fresh source pixels) or keeps carrying displaced,
+        // progressively staler history. Corruption compounds frame over
+        // frame because the history this mode reads is its own output —
+        // held or not. DECAY deepens staleness and thins refresh; BLOCK
+        // sets the macroblock size; FLOW scales motion into displacement.
+const GVMoshControls mosh = GVMoshControls{
+            mix(8.0, 64.0, controls.z),
+            mix(0.4, 6.0, controls.x),
+            mix(0.55, 0.93, controls.y),
+            mix(0.50, 0.045, controls.y),
+            mix(0.25, 1.5, controls.y),
+            0.35,
+            0.9
+        };
+	        result = gvMoshTransport(
+	            mosh, current, historyTexture, moshStateIn, moshStateOut,
+	            flow, flowReady, uniforms.touch, uniforms.touchImpact, uniforms.touchDrag,
+	            holdActive, holdStyle, holdSeconds, time, dt, uv, size, position
 	        );
-	        // Residual: the block carries a fraction of the difference between
-	        // where it was told to look and where it actually sits. Without it
-	        // a heavily quantised field reads as flat tiles of colour.
-	        if (blockSize > 1.5) {
-	            const float3 residual = gvCameraSample(historyTexture, uv - displacement * 0.5) - reference;
-	            reference += residual * controls.z * 0.35;
-	        }
-
-	        // Fresh-frame injection. Where the scene is still, live pixels come
-	        // back and the image repairs itself; where it moves, the reference
-	        // wins and the corruption spreads along the motion. Holding freezes
-	        // the field upstream, so during a hold this keeps melting along
-	        // motion that has already stopped.
-	        const float motionWeight = saturate(flowMagnitude * mix(60.0, 8.0, controls.x));
-	        const float corruption = holdActive
-	            ? 1.0
-	            : max(motionWeight, controls.x * 0.35);
-	        result = mix(current, saturate(reference), saturate(corruption));
 	        break;
 	    }
 	    case 5: { // Sort
@@ -2303,17 +3327,17 @@ kernel void gvCameraStyleEffect(
 	        break;
 	    }
 	    case 12: { // Freeze brush
-	        const float2 brush = 0.5 + float2(sin(time * 0.37), cos(time * 0.29)) * controls.y * 0.28;
+	        const float2 brush = uniforms.touch.xy;
 	        const float radius = mix(0.08, 0.42, controls.x);
-	        const float mask = 1.0 - smoothstep(radius * 0.72, radius, distance(uv, brush));
+	        const float mask = uniforms.touch.w * (1.0 - smoothstep(radius * 0.72, radius, distance(uv, brush)));
 	        const float3 held = gvCameraSample(historyTexture, uv + float2(sin(time + uv.y * 12.0), cos(time + uv.x * 10.0)) * 0.006);
 	        result = mix(current, held, max(mask, holdActive ? controls.z : 0.0));
 	        break;
 	    }
 	    case 13: { // Sort brush
-	        const float2 brush = 0.5 + float2(cos(time * 0.31), sin(time * 0.41)) * 0.24;
+	        const float2 brush = uniforms.touch.xy;
 	        const float radius = mix(0.07, 0.36, controls.x);
-	        const float mask = 1.0 - smoothstep(radius * 0.72, radius, distance(uv, brush));
+	        const float mask = uniforms.touch.w * (1.0 - smoothstep(radius * 0.72, radius, distance(uv, brush)));
 	        const float2 direction = normalize((uv - brush) + float2(0.0001)) * texel * mix(4.0, 76.0, controls.y);
 	        const float3 sorted = gvCameraLumaRankedSample(historyTexture, uv, direction, fract(time * 0.17 + uv.x + uv.y));
 	        result = mix(current, sorted, mask * controls.z);
@@ -2862,91 +3886,129 @@ kernel void gvCameraStyleEffect(
 	        result = max(current * 0.80, canvas);
 	        break;
 	    }
-	    case 39: { // Liquid mosh - iterated advection along the motion field
-	        // DATAMOSH reprojects once. This walks the trajectory: every step
-	        // moves further back along the flow *and* further back through the
-	        // ring, so a pixel is rebuilt from the whole path its content
-	        // travelled rather than from one displaced tap. That integration is
-	        // what reads as liquid instead of as a block smear, and it is why
-	        // this can no longer share mode 4 with the other two moshes.
+	    case 39: { // Liquid mosh - iterated advection through the block vector field
+	        // Every step walks further back along the transport vectors AND
+	        // samples the previous OUTPUT, so a pixel is rebuilt from the path
+	        // its content travelled through its own corruption. That integration
+	        // reads as liquid instead of as a block smear. INJECT decides how
+	        // much live frame re-enters the flow; VISCOSITY weights the walk.
 	        const float gain = mix(0.25, 2.2, controls.x);
 	        const float viscosity = mix(0.35, 0.97, controls.y);
-	        const float span = mix(0.02, 0.24, controls.y);
+	        const float blockSize = mix(10.0, 30.0, controls.y);
+	        const float2 blockPos = floor(float2(position) / blockSize);
+	        const float2 blockId = blockPos + 0.5;
+	        const float2 centreUV = (blockPos * blockSize + blockSize * 0.5) / size;
+	        const GVMoshState previous = gvMoshReadState(moshStateIn, centreUV);
+
+	        const float2 vector = gvMoshUpdateVector(
+	            previous.vector, flow, flowReady, gain, mix(0.60, 0.94, controls.y), 0.2,
+	            uniforms.touch, uniforms.touchImpact, uniforms.touchDrag,
+	            holdActive, holdStyle, holdSeconds, blockId, centreUV, time, dt
+	        );
+
 	        float2 trace = uv;
 	        float3 accumulated = float3(0.0);
 	        float weightSum = 0.0;
-	        for (int index = 0; index < 6; index++) {
-	            const float2 localFlow = flowReady
-	                ? gvCameraSampleVector(flowField, trace)
-	                : float2(0.0);
-	            trace -= localFlow * gain;
+	        for (int index = 0; index < 5; index++) {
+	            const float2 cellVector = gvCameraSampleVector(moshStateIn, clamp(trace, 0.0, 1.0));
+	            trace = clamp(trace - cellVector, 0.001, 0.999);
 	            const float weight = pow(viscosity, float(index));
-	            accumulated += gvTemporalSample(
-	                temporalRing, ringTimestamps, ringInfo,
-	                trace, float(index + 1) * span, current
-	            ) * weight;
+	            accumulated += gvCameraSample(historyTexture, trace) * weight;
 	            weightSum += weight;
 	        }
-	        const float3 liquid = accumulated / max(weightSum, 1e-4);
-	        // Still regions repair; moving ones keep melting.
-	        const float motionWeight = holdActive
-	            ? 1.0
-	            : saturate(flowMagnitude * mix(70.0, 10.0, controls.x));
-	        result = mix(current, liquid, saturate(max(motionWeight, controls.z * 0.6)));
+	        float3 liquid = accumulated / max(weightSum, 1e-4);
+	        // Staleness deepens the longer the field has been running, so held
+	        // frames darken and quantise instead of smearing forever.
+	        const float staleness = min(previous.staleness + dt * mix(0.18, 0.72, controls.y), 1.0);
+	        liquid = gvMoshStaleColor(liquid, staleness, blockId, time);
+
+	        float injection = mix(0.01, 0.58, controls.z);
+	        if (holdActive && (holdStyle & 4u) != 0u) {
+	            injection *= exp(-holdSeconds * 0.55);   // FEEDBACK RUNAWAY
+	        }
+	        // INJECT is genuinely source injection: zero leaves the recursive
+	        // liquid prediction alone, one continually repairs it with camera.
+	        // Motion increases corruption, never the amount of fresh source.
+	        const float liquidPresence = saturate(0.62 + length(vector) * 16.0);
+	        result = mix(current, mix(liquid, current, injection), liquidPresence);
+
+	        if (all((position & uint2(7)) == uint2(0))) {
+	            moshStateOut.write(
+	                half4(half2(vector), half(staleness), half(floor(time * 11.0))),
+	                position >> 3
+	            );
+	        }
 	        break;
 	    }
 	    case 40: { // Heavy mosh - the reference frame never refreshes
-	        // The difference from DATAMOSH is not a larger number, it is that no
-	        // fresh pixel is ever injected. A decoder that has lost its I-frame
-	        // keeps applying motion vectors to a reference nothing is
-	        // correcting, so the image is rebuilt entirely out of stale content
-	        // and drifts further from the scene the longer it runs.
-	        const float gain = mix(2.0, 16.0, controls.x);
-	        const float blockSize = max(mix(4.0, 64.0, controls.z), 2.0);
-	        const float2 block = floor(float2(position) / blockSize) * blockSize;
-	        const float2 blockUV = (block + blockSize * 0.5) / size;
-	        const float2 blockFlow = flowReady
-	            ? gvCameraSampleVector(flowField, blockUV) * gain
-	            : float2(0.0);
-	        const float age = mix(0.25, 3.2, controls.y);
-	        float3 reference = gvTemporalSample(
-	            temporalRing, ringTimestamps, ringInfo, uv - blockFlow, age, current
+	        // The difference from DATAMOSH is not a larger number, it is that
+	        // no fresh pixel is ever injected: refreshChance is zero. A decoder
+	        // that has lost its I-frame keeps applying motion vectors to a
+	        // reference nothing is correcting, so the image is rebuilt entirely
+	        // out of its own stale output and drifts further from the scene the
+	        // longer it runs. GAIN scales the vectors, BLOCK sets the grid, ROT
+	        // mutates the prediction field over time.
+const GVMoshControls mosh = GVMoshControls{
+            mix(8.0, 64.0, controls.y),
+            mix(2.0, 14.0, controls.x),
+            0.97,
+            0.0,
+            mix(0.6, 2.0, controls.z),
+            mix(0.0, 1.4, controls.z),
+            0.0
+        };
+	        result = gvMoshTransport(
+	            mosh, current, historyTexture, moshStateIn, moshStateOut,
+	            flow, flowReady, uniforms.touch, uniforms.touchImpact, uniforms.touchDrag,
+	            holdActive, holdStyle, holdSeconds, time, dt, uv, size, position
 	        );
-	        // Residual bleed: a block inherits part of its neighbour's error,
-	        // which is the chroma smearing that makes heavy mosh look wet.
-	        const float3 neighbour = gvCameraSample(tap3, uv - blockFlow * 1.6);
-	        reference = mix(reference, neighbour, saturate(length(blockFlow) * 6.0) * 0.45);
-	        result = reference;
 	        break;
 	    }
 	    case 41: { // Mosh brush - motion painted by the finger
-	        // Replaces a paint controller that was written, never wired to
-	        // anything, and would have needed its own vector texture to work.
-	        // The touch uniform already carries position and speed every frame,
-	        // so the brush is the same idea with none of the plumbing: drag and
-	        // the stroke deposits displacement, which drags history with it.
+	        // The touch uniforms carry position and speed every frame, and
+	        // strokes persist in the block state: drag and the stroke deposits
+	        // displacement that keeps dragging history after the finger lifts,
+	        // decaying with momentum instead of vanishing the moment the
+	        // gesture ends. PUSH is stroke strength, REACH the brush radius,
+	        // BLOCK the grid the strokes live on.
+	        const float blockSize = mix(8.0, 40.0, controls.z);
 	        const float reach = mix(0.06, 0.44, controls.y);
 	        const float push = mix(0.02, 0.26, controls.x);
+	        const float2 blockPos = floor(float2(position) / blockSize);
+	        const float2 blockId = blockPos + 0.5;
+	        const float2 centreUV = (blockPos * blockSize + blockSize * 0.5) / size;
+	        const GVMoshState previous = gvMoshReadState(moshStateIn, centreUV);
+
 	        float2 painted = float2(0.0);
-	        if (uniforms.touch.w > 0.5) {
-	            const float2 toFinger = uv - uniforms.touch.xy;
+	        if (uniforms.touch.w > 0.5 || uniforms.touchDrag.w > 0.5) {
+	            const float2 toFinger = centreUV - uniforms.touch.xy;
 	            const float span = length(toFinger);
 	            const float falloff = 1.0 - smoothstep(reach * 0.35, reach, span);
 	            const float2 direction = span > 1e-4 ? toFinger / span : float2(0.0);
+	            // Radial push while the finger rests, directional drag while it
+	            // moves.
 	            painted = direction * saturate(uniforms.touch.z) * falloff * push;
+	            painted += uniforms.touchDrag.xy * falloff * push * 8.0 * dt;
 	        }
-	        if (uniforms.touchImpact.w > 0.5) {
-	            const float2 toImpact = uv - uniforms.touchImpact.xy;
-	            const float span = max(length(toImpact), 1e-4);
-	            const float ring = exp(-abs(span - uniforms.touchImpact.z * 0.8) * 12.0) *
-	                exp(-uniforms.touchImpact.z * 2.2);
-	            painted += (toImpact / span) * ring * push * 1.5;
+	        const float momentum = mix(0.82, 0.97, controls.z);
+	        float2 vector = previous.vector * momentum + painted * (1.0 - momentum) * 10.0;
+	        const float limit = 0.22;
+	        const float magnitude = length(vector);
+	        if (magnitude > limit) {
+	            vector *= limit / magnitude;
 	        }
-	        const float3 dragged = gvTemporalSample(
-	            temporalRing, ringTimestamps, ringInfo,
-	            uv - painted, mix(0.05, 1.2, controls.z), current
-	        );
-	        result = mix(current, dragged, saturate(length(painted) * 22.0));
+
+	        const float staleness = min(previous.staleness + dt * 0.3, 1.0);
+	        const float3 dragged = gvCameraSample(historyTexture, clamp(uv - vector, 0.001, 0.999));
+	        const float3 carried = gvMoshStaleColor(dragged, staleness, blockId, time);
+	        result = mix(current, carried, saturate(length(vector) * 22.0));
+
+	        if (all((position & uint2(7)) == uint2(0))) {
+	            moshStateOut.write(
+	                half4(half2(vector), half(staleness), half(floor(time * 11.0))),
+	                position >> 3
+	            );
+	        }
 	        break;
 	    }
 	    case 42: { // Luma time map - brightness chooses how far back a pixel reaches
@@ -2966,6 +4028,149 @@ kernel void gvCameraStyleEffect(
 	        );
 	        break;
 	    }
+	    case 43: { // Prediction drift - differential-motion video feedback
+        // Inspired by luma's differential-motion construction: compare the
+        // live frame with a motion-compensated prediction, preserve the parts
+        // that prediction explains, and feed the unexplained residual back as
+        // new motion. Unlike a difference matte drawn over the camera, the
+        // prediction is this Slot's previous output, so errors accumulate into
+        // drifting decoder memory while stationary detail remains anchored.
+        const float blockSize = mix(8.0, 36.0, controls.z);
+        const float2 blockPos = floor(float2(position) / blockSize);
+        const float2 blockId = blockPos + 0.5;
+        const float2 centreUV = (blockPos * blockSize + blockSize * 0.5) / size;
+        const GVMoshState previous = gvMoshReadState(moshStateIn, centreUV);
+
+        const float3 priorPrediction = gvCameraSample(
+            historyTexture,
+            clamp(uv - previous.vector, 0.001, 0.999)
+        );
+        const float lumaResidual = abs(gvCameraLuma(current) - gvCameraLuma(priorPrediction));
+        const float chromaResidual = length(current - priorPrediction) * 0.24;
+        const float threshold = mix(0.20, 0.025, controls.z);
+        const float differential = smoothstep(
+            threshold * 0.35,
+            threshold,
+            lumaResidual + chromaResidual + flowMagnitude * 2.0
+        );
+
+        // Residual regions accept the new measured vector; predicted regions
+        // retain their old vector and slowly rotate. DECAY controls how long a
+        // correct prediction survives, DRIFT controls the mutation rate.
+        const float gain = mix(1.0, 10.0, controls.x) * mix(0.28, 1.0, differential);
+        float2 vector = gvMoshUpdateVector(
+            previous.vector,
+            flow,
+            flowReady,
+            gain,
+            mix(0.74, 0.992, controls.y),
+            mix(0.10, 2.1, controls.x) * (0.25 + differential),
+            uniforms.touch,
+            uniforms.touchImpact,
+            uniforms.touchDrag,
+            holdActive,
+            holdStyle,
+            holdSeconds,
+            blockId,
+            centreUV,
+            time,
+            dt
+        );
+
+        // Coherent row loss turns large residuals into prediction tears rather
+        // than independent noisy pixels. The decision persists for several
+        // frames, matching the cadence of a damaged inter-frame stream.
+        const float row = floor(float(position.y) / blockSize);
+        const float tearTick = floor(time * 9.0);
+        const float tearDecision = gvCameraHash(float2(row, tearTick));
+        const float tearGate = step(tearDecision, differential * controls.z * 0.72);
+        const float tear = (gvCameraHash(float2(row, tearTick + 19.0)) - 0.5) *
+            tearGate * mix(0.0, 0.12, controls.z);
+
+        const float2 predictionUV = clamp(uv - vector + float2(tear, 0.0), 0.001, 0.999);
+        float3 prediction = gvCameraSample(historyTexture, predictionUV);
+        float staleness = previous.staleness;
+        staleness = differential > 0.18
+            ? max(staleness - dt * mix(0.4, 2.0, 1.0 - controls.y), 0.0)
+            : min(staleness + dt * mix(0.10, 0.9, controls.y), 1.0);
+        prediction = gvMoshStaleColor(prediction, staleness, blockId, time);
+
+        // Only the differential can write substantial new image data. A tiny
+        // floor prevents total lock-up when both the camera and field settle.
+        const float sourceLeak = 0.025 + differential * mix(0.18, 0.72, 1.0 - controls.y);
+        result = mix(prediction, current, sourceLeak);
+        const float residualEdge = smoothstep(threshold, threshold * 2.4, lumaResidual);
+        result += float3(0.08, 0.22, 0.42) * residualEdge * controls.x * 0.18;
+
+        if (all((position & uint2(7)) == uint2(0))) {
+            moshStateOut.write(
+                half4(half2(vector), half(staleness), half(tearTick)),
+                position >> 3
+            );
+        }
+	        break;
+	    }
+    case 44: { // Vector codebook: quantize measured direction AND magnitude before transport.
+        const uint2 stateCell = position >> 3;
+        const float2 cellUV = (float2(stateCell * 8u) + 4.0) / size;
+        const GVMoshState previous = gvMoshReadState(moshStateIn, cellUV);
+        const float2 measured = flowReady ? gvCameraSampleVector(flowField, cellUV) : float2(0);
+        const float directions = 2.0 + round(controls.x * 14.0);
+        const float angleStep = 6.2831853 / directions;
+        const float angle = round(atan2(measured.y, measured.x) / angleStep) * angleStep;
+        const float magnitudeStep = mix(0.0005, 0.008, controls.y);
+        const float magnitude = round(length(measured) / magnitudeStep) * magnitudeStep;
+        const float2 coded = float2(cos(angle), sin(angle)) * magnitude;
+        const float memory = pow(mix(0.35, 0.98, controls.z), dt * 60.0);
+        const float2 vector = clamp(mix(coded * 4.0, previous.vector, memory), -0.08, 0.08);
+        const float3 carried = gvCameraSample(historyTexture, clamp(uv - vector * dt * 60.0, 0.001, 0.999));
+        result = mix(current, carried, mix(0.40, 0.985, controls.z));
+        if (all((position & uint2(7)) == uint2(0)))
+            moshStateOut.write(half4(half2(vector), half(length(measured)), 0), stateCell);
+        break;
+    }
+    case 45: { // Transplant a stable permutation of measured donor-region flow.
+        const float regions = 2.0 + round(controls.x * 6.0);
+        const float2 region = min(floor(uv * regions), regions - 1.0);
+        // Translation modulo N is bijective, has no fixed region, and remains
+        // stable until REGION changes. Motion comes from this donor, never noise.
+        const float2 donor = fmod(region + float2(1.0, ceil(regions * 0.5)), regions);
+        const float2 donorUV = (donor + 0.5) / regions;
+        const float2 measured = flowReady ? gvCameraSampleVector(flowField, donorUV) : float2(0);
+        const float2 cellUV = (float2((position >> 3) * 8u) + 4.0) / size;
+        const GVMoshState previous = gvMoshReadState(moshStateIn, cellUV);
+        const float memory = pow(mix(0.25, 0.96, controls.z), dt * 60.0);
+        const float2 vector = clamp(mix(measured * mix(1.0, 9.0, controls.y), previous.vector, memory), -0.1, 0.1);
+        const float3 carried = gvCameraSample(historyTexture, clamp(uv - vector * dt * 60.0, 0.001, 0.999));
+        result = mix(current, carried, mix(0.35, 0.99, controls.z));
+        if (all((position & uint2(7)) == uint2(0)))
+            moshStateOut.write(half4(half2(vector), half(length(measured)), 0), position >> 3);
+        break;
+    }
+    case 46: { // Independent bit planes latch or refresh against motion.
+        constexpr sampler nearest(coord::normalized, address::clamp_to_edge, filter::nearest);
+        const uint planes = 1u + uint(round(controls.x * 7.0));
+        const uint levels = (1u << planes) - 1u;
+        const uint3 liveBits = uint3(round(saturate(current) * float(levels)));
+        const uint3 memoryBits = uint3(round(saturate(float3(historyTexture.sample(nearest, uv).rgb)) * float(levels)));
+        const float moving = smoothstep(0.0003, mix(0.02, 0.001, controls.z), flowMagnitude);
+        const float refresh = 1.0 - pow(1.0 - mix(0.002, 0.28, controls.y) * (0.08 + moving * 0.92), dt * 60.0);
+        const float tick = floor(time * 60.0);
+        uint3 assembled = uint3(0);
+        for (uint plane = 0; plane < 8; ++plane) {
+            if (plane >= planes) break;
+            const uint mask = 1u << plane;
+            for (uint channel = 0; channel < 3; ++channel) {
+                const float hash = gvCameraHash(float2(position >> 3) + float2(float(plane) * 19.17 + tick * 0.317, float(channel) * 31.73));
+                const bool replace = hash < refresh * mix(1.6, 0.65, float(plane) / max(float(planes - 1u), 1.0));
+                assembled[channel] |= (replace ? liveBits[channel] : memoryBits[channel]) & mask;
+            }
+        }
+        result = float3(assembled) / float(levels);
+        if (all((position & uint2(7)) == uint2(0)))
+            moshStateOut.write(half4(0, 0, half(moving), half(planes)), position >> 3);
+        break;
+    }
 	    default:
 	        break;
 	    }
@@ -2985,8 +4190,7 @@ struct GVFractureUniforms {
 };
 
 /// Bounded downsampling copy used to age a frame into the temporal ring.
-kernel void gvCameraHistoryTap(
-    texture2d<half, access::sample> inputTexture [[texture(0)]],
+kernel void gvCameraHistoryTap(    texture2d<half, access::sample> inputTexture [[texture(0)]],
     texture2d<half, access::write> outputTexture [[texture(1)]],
     uint2 position [[thread_position_in_grid]]
 ) {
@@ -2996,6 +4200,19 @@ kernel void gvCameraHistoryTap(
     const float2 uv = (float2(position) + 0.5) /
         float2(outputTexture.get_width(), outputTexture.get_height());
     outputTexture.write(inputTexture.sample(gvCameraLinearSampler, uv), position);
+}
+
+/// Zeroes the datamosh block-state field. Dispatched over both ping-pong
+/// halves when the operator explicitly clears temporal memory (double tap):
+/// vectors, staleness and refresh ticks all return to a clean decoder.
+kernel void gvMoshClearState(
+    texture2d<half, access::write> state [[texture(0)]],
+    uint2 position [[thread_position_in_grid]]
+) {
+    if (position.x >= state.get_width() || position.y >= state.get_height()) {
+        return;
+    }
+    state.write(half4(0.0h, 0.0h, 0.0h, 0.0h), position);
 }
 
 kernel void gvCameraCompositeWatermark(
@@ -3244,7 +4461,23 @@ fragment half4 gvCameraPreviewFragment(
     const float viewportAspect = uniforms.viewport.x / max(uniforms.viewport.y, 1.0);
     const float sourceAspect = uniforms.viewport.z / max(uniforms.viewport.w, 1.0);
     float2 uv = input.uv;
-    if (sourceAspect > viewportAspect) {
+    // OPEN GATE + NATIVE is the one preview mode that must show every sensor
+    // edge. Aspect-fill made a true 4:3 readout look identical to 16:9 because
+    // the extra image area was immediately cropped back off.
+    const bool showFullSensor = uniforms.overlays.y > 3.5;
+    if (showFullSensor && sourceAspect > viewportAspect) {
+        const float imageHeight = viewportAspect / sourceAspect;
+        if (abs(uv.y - 0.5) > imageHeight * 0.5) {
+            return half4(0.0h, 0.0h, 0.0h, 1.0h);
+        }
+        uv.y = (uv.y - 0.5) / imageHeight + 0.5;
+    } else if (showFullSensor) {
+        const float imageWidth = sourceAspect / viewportAspect;
+        if (abs(uv.x - 0.5) > imageWidth * 0.5) {
+            return half4(0.0h, 0.0h, 0.0h, 1.0h);
+        }
+        uv.x = (uv.x - 0.5) / imageWidth + 0.5;
+    } else if (sourceAspect > viewportAspect) {
         uv.x = (uv.x - 0.5) * (viewportAspect / sourceAspect) + 0.5;
     } else {
         uv.y = (uv.y - 0.5) * (sourceAspect / viewportAspect) + 0.5;
@@ -3609,11 +4842,25 @@ struct GVFlowUniforms {
     // z = decay applied to the persistent field each frame
     // w = gain applied to the live estimate before accumulation
     float4 controls;
-    // x = 1 while the persistent field is frozen (MOTION HOLD engaged)
+    // x = 1 while the source is frozen under a held finger
     // y = 1 while a captured field is being applied (MOTION TRANSPLANT)
-    // z,w = reserved
+    // z = packed hold-style bits (see the mosh engine above)
+    // w = hold duration in seconds × 65536
     uint4 flags;
 };
+
+/// Private Metal textures are not zero-initialised. Every shared flow field is
+/// cleared before its first estimate so an idle first frame cannot seed the
+/// temporal stack with arbitrary vectors.
+kernel void gvFlowClear(
+    texture2d<half, access::write> field [[texture(0)]],
+    uint2 position [[thread_position_in_grid]]
+) {
+    if (position.x >= field.get_width() || position.y >= field.get_height()) {
+        return;
+    }
+    field.write(half4(0.0h), position);
+}
 
 kernel void gvFlowLuma(
     texture2d<half, access::sample> source [[texture(0)]],
@@ -3734,13 +4981,20 @@ kernel void gvFlowAccumulate(
 
     const float2 prior = float2(gvCameraSampleVector(priorPersistent, uv));
 
-    // MOTION HOLD. The captured field keeps driving displacement while new
-    // camera frames continue to arrive, so the image keeps melting along
-    // motion that is no longer happening. Freezing the image instead would be
-    // a still frame, which is the thing this must not be.
+    // SOURCE FREEZE, as seen by the motion estimator. The captured field
+    // keeps driving displacement while the camera frame is held, so the mosh
+    // keeps melting along motion that is no longer happening — but unless
+    // MOTION LOCK is engaged the captured field bleeds away over a second or
+    // two, which is the "motion has inertia, then settles" half of the feel.
+    // Locking it forever for every hold is what turned the old hold into a
+    // static frame after the initial slide.
     if (uniforms.flags.x != 0u) {
         const float2 held = float2(gvCameraSampleVector(frozenFlow, uv));
-        persistent.write(half4(half2(held), 0.0h, 1.0h), position);
+        const bool motionLock = (uniforms.flags.z & 2u) != 0u;
+        const float holdSeconds = float(uniforms.flags.w) / 65536.0;
+        const float decay = motionLock ? 0.0 : 0.55;
+        const float2 decayed = held * exp(-holdSeconds * decay);
+        persistent.write(half4(half2(decayed), 0.0h, 1.0h), position);
         return;
     }
 

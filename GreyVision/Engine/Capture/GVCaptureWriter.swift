@@ -32,6 +32,15 @@ final class GVRecordingStateMailbox: @unchecked Sendable {
     }
 }
 
+/// Audited handoff: `finishWriting` retains the writer past the lock release.
+/// The box is the sole owner across the @Sendable completion boundary.
+private final class GVWriterBox: @unchecked Sendable {
+    let writer: AVAssetWriter
+    init(_ writer: AVAssetWriter) {
+        self.writer = writer
+    }
+}
+
 /// A one-shot request for a processed still.
 final class GVStillRequestMailbox: @unchecked Sendable {
     private let lock = NSLock()
@@ -85,14 +94,38 @@ final class GVVideoRecorder: @unchecked Sendable {
     private var input: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var textureCache: CVMetalTextureCache?
-    private var outputURL: URL?
+    private(set) var outputURL: URL?
     private var startTime: CMTime?
     private var frameIndex: Int64 = 0
     private var frameDuration = CMTime(value: 1, timescale: 60)
     private var size = CGSize.zero
+    /// Frames dropped due to encoder backpressure (not ready for more media data)
+    private var droppedFrames: Int64 = 0
+    /// Frames dropped due to pixel buffer pool exhaustion
+    private var poolExhaustionFrames: Int64 = 0
 
     var isRecording: Bool {
         stateMailbox.latest.isRecording
+    }
+
+    /// Total frames successfully encoded.
+    var encodedFrameCount: Int64 {
+        lock.withLock { frameIndex }
+    }
+
+    /// Frames dropped due to encoder not ready.
+    var droppedFrameCount: Int64 {
+        lock.withLock { droppedFrames }
+    }
+
+    /// Frames dropped due to pixel buffer pool exhaustion.
+    var poolExhaustionFrameCount: Int64 {
+        lock.withLock { poolExhaustionFrames }
+    }
+
+    /// Total frames presented to recorder (encoded + dropped).
+    var totalFramesPresented: Int64 {
+        lock.withLock { frameIndex + droppedFrames + poolExhaustionFrames }
     }
 
     /// Prepares the writer. Returns false if the codec or destination is
@@ -103,7 +136,8 @@ final class GVVideoRecorder: @unchecked Sendable {
         width: Int,
         height: Int,
         framesPerSecond: Int,
-        codec: CaptureSetupDraft.VideoCodec
+        codec: CaptureSetupDraft.VideoCodec,
+        videoOrientation _: CGImagePropertyOrientation = .up
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -122,8 +156,12 @@ final class GVVideoRecorder: @unchecked Sendable {
             return false
         }
 
+        guard let writerCodec = codec.assetWriterCodec else {
+            stateMailbox.publish(.failed("\(codec.rawValue) UNAVAILABLE"))
+            return false
+        }
         let settings: [String: Any] = [
-            AVVideoCodecKey: codec.assetWriterCodec,
+            AVVideoCodecKey: writerCodec,
             AVVideoWidthKey: evenWidth,
             AVVideoHeightKey: evenHeight
         ]
@@ -134,6 +172,9 @@ final class GVVideoRecorder: @unchecked Sendable {
 
         let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         writerInput.expectsMediaDataInRealTime = true
+
+        // Orientation transform applied by the caller (CameraMetalSurface for main recording path)
+        // Use identity transform since frames are already display-oriented
 
         let pixelAdaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: writerInput,
@@ -189,12 +230,16 @@ final class GVVideoRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let adaptor, let pool = adaptor.pixelBufferPool, let textureCache else { return nil }
-        guard input?.isReadyForMoreMediaData == true else { return nil }
+        guard input?.isReadyForMoreMediaData == true else {
+            droppedFrames &+= 1
+            return nil
+        }
 
         var pixelBuffer: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer) == kCVReturnSuccess,
               let pixelBuffer
         else {
+            poolExhaustionFrames &+= 1
             return nil
         }
 
@@ -223,7 +268,10 @@ final class GVVideoRecorder: @unchecked Sendable {
     func append(_ pixelBuffer: CVPixelBuffer) {
         lock.lock()
         defer { lock.unlock() }
-        guard let adaptor, input?.isReadyForMoreMediaData == true else { return }
+        guard let adaptor, input?.isReadyForMoreMediaData == true else {
+            droppedFrames &+= 1
+            return
+        }
         let presentation = CMTimeMultiply(frameDuration, multiplier: Int32(truncatingIfNeeded: frameIndex))
         if adaptor.append(pixelBuffer, withPresentationTime: presentation) {
             frameIndex &+= 1
@@ -248,9 +296,10 @@ final class GVVideoRecorder: @unchecked Sendable {
 
         stateMailbox.publish(.finishing)
         input.markAsFinished()
-        writer.finishWriting { [stateMailbox] in
-            guard wroteFrames, writer.status == .completed else {
-                let message = writer.error?.localizedDescription.uppercased() ?? "NO FRAMES WRITTEN"
+        let boxed = GVWriterBox(writer)
+        boxed.writer.finishWriting { [stateMailbox] in
+            guard wroteFrames, boxed.writer.status == .completed else {
+                let message = boxed.writer.error?.localizedDescription.uppercased() ?? "NO FRAMES WRITTEN"
                 stateMailbox.publish(.failed(message))
                 try? FileManager.default.removeItem(at: url)
                 completion(false)
@@ -346,18 +395,9 @@ enum GVPhotoLibrary {
 }
 
 extension CaptureSetupDraft.VideoCodec {
-    /// Codec identifier the asset writer understands. ProRes variants fall back
-    /// to HEVC where the platform does not offer them.
-    var assetWriterCodec: AVVideoCodecType {
-        switch rawValue.uppercased() {
-        case let value where value.contains("H.264") || value.contains("H264"):
-            .h264
-        case let value where value.contains("PRORES 422"):
-            .proRes422
-        case let value where value.contains("PRORES 4444"):
-            .proRes4444
-        default:
-            .hevc
-        }
+    /// Exact codec identifier. A professional format must never silently turn
+    /// into HEVC; unsupported selections fail before a take begins.
+    var assetWriterCodec: AVVideoCodecType? {
+        avVideoCodecType
     }
 }

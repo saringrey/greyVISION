@@ -8,9 +8,9 @@ import SwiftUI
 /// the same weight, so the selected one had no way to announce itself — the
 /// accent had become wallpaper.
 ///
-/// Now only `.armed` gets a violet edge. Everything else is dark glass with a
-/// boundary at the threshold of visibility, and selection is the one thing on
-/// screen that glows.
+/// Now only `.armed` gets a violet edge. Everything else is dark frosted glass
+/// with a boundary at the threshold of visibility, and selection is the one
+/// thing on screen that glows.
 enum GVSurfaceTier {
     /// Backs anything holding controls. Dark, readable over the camera.
     case primary
@@ -21,28 +21,19 @@ enum GVSurfaceTier {
     /// Recording or failed. Earns the only other accent.
     case critical
 
-    var fill: Color {
+    var materialRole: GVMaterialRole {
         switch self {
-        case .primary: GVTheme.surfacePrimary
-        case .secondary: GVTheme.surfaceSecondary
-        case .armed: GVTheme.surfaceArmed
-        case .critical: GVTheme.surfaceArmed
+        case .primary, .armed: .deck
+        case .secondary: .rail
+        case .critical: .notice
         }
     }
 
-    var border: Color {
+    var materialState: GVMaterialState {
         switch self {
-        case .primary: Color.white.opacity(0.07)
-        case .secondary: Color.white.opacity(0.035)
-        case .armed: GVTheme.violet.opacity(0.75)
-        case .critical: GVTheme.record.opacity(0.75)
-        }
-    }
-
-    var borderWidth: CGFloat {
-        switch self {
-        case .primary, .secondary: GVMetrics.hairline
-        case .armed, .critical: 1.2
+        case .primary, .secondary: .inactive
+        case .armed: .selected(GVTheme.color(.selected))
+        case .critical: .critical(GVTheme.color(.recording))
         }
     }
 
@@ -58,7 +49,8 @@ enum GVSurfaceTier {
 }
 
 extension View {
-    /// Applies a surface tier with a plain rounded rectangle.
+    /// Applies a surface tier with a plain rounded rectangle, using the unified
+    /// frosted glass system.
     func gvSurface(
         _ tier: GVSurfaceTier,
         radius: CGFloat = GVMetrics.radius
@@ -86,25 +78,12 @@ private struct GVSurfaceModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background {
-                shape
-                    .fill(tier.fill)
-                    .overlay {
-                        shape
-                            .stroke(tier.border, lineWidth: tier.borderWidth)
-                    }
-                    .modifier(GVSurfaceGlow(color: tier.glow))
-            }
-            .contentShape(shape)
-    }
-
-    /// `AnyShape` rather than a `@ViewBuilder`: the builder yields
-    /// `_ConditionalContent`, which is a View and not a Shape, so it cannot be
-    /// used for `fill`, `stroke` or `contentShape`.
-    private var shape: AnyShape {
-        clipped
-            ? AnyShape(GVClippedRectangle(cut: radius + 3))
-            : AnyShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .gvMaterial(
+                tier.materialRole,
+                shape: .rounded(radius: radius, clipped: clipped),
+                state: tier.materialState
+            )
+            .modifier(GVSurfaceGlow(color: tier.glow))
     }
 }
 
@@ -116,28 +95,9 @@ private struct GVSurfaceGlow: ViewModifier {
     func body(content: Content) -> some View {
         if let color {
             content
-                .shadow(color: color, radius: 6)
-                .shadow(color: color.opacity(0.5), radius: 14)
+                .shadow(color: color, radius: 8, y: 2)
         } else {
             content
         }
-    }
-}
-
-/// Two opposite corners cut flat. The instrument's shape signature.
-struct GVClippedRectangle: Shape {
-    var cut: CGFloat = 10
-
-    func path(in rect: CGRect) -> Path {
-        let cut = min(self.cut, min(rect.width, rect.height) / 2)
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX + cut, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - cut))
-        path.addLine(to: CGPoint(x: rect.maxX - cut, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + cut))
-        path.closeSubpath()
-        return path
     }
 }

@@ -8,15 +8,11 @@ import SwiftUI
 /// capture session: `AppModel.startEngine()` is still the single entry point
 /// into the workspace and is only invoked from the LAUNCH control.
 ///
-/// **EPIC DRAMATIC SEQUENCE (9.8 seconds total):**
-/// 1. void (1.5s) - absolute darkness
-/// 2. spark (0.8s) - single purple pixel awakens
-/// 3. bloom (1.8s) - phosphor explosion
-/// 4. wake (1.2s) - star field emerges
-/// 5. discovery (2.5s) - terminal lines cascade
-/// 6. materialize (1.5s) - logo reconstructs
-/// 7. sync (0.5s) - CRT sync sweep
-/// 8. armed - ready to launch
+/// **EPIC DRAMATIC SEQUENCE (~12-15s actual):**
+/// Void and spark holds are randomised so repeat launches are not metronomic,
+/// which is why wall-clock time runs longer than the nominal phase budgets in
+/// `GVBootTiming`. First launch plays the full ceremony once; later launches
+/// take the fast path (see `seenKey`).
 enum GVBootPhase: Int, Comparable, Sendable {
     /// Phase 0: Pure void - absolute darkness, building anticipation
     case void
@@ -384,11 +380,15 @@ final class GVBootSequence: ObservableObject {
 }
 
 enum GVBootTiming {
-    /// PHASE 0: Pure void darkness
+    /// Nominal budgets, not wall-clock promises. `GVBootSequence.run()` holds
+    /// void, spark and discovery for randomised intervals, so the ceremony
+    /// lands around 12-15s. Only the shader-driven durations below (bloom,
+    /// reconstruction, sweep) are read as exact seconds.
+    /// PHASE 0: Pure void darkness (nominal; run() uses 1900-2500ms random)
     static let voidMilliseconds = 1500
     static let voidSeconds = 1.5
 
-    /// PHASE 1: Single spark awakens
+    /// PHASE 1: Single spark awakens (nominal; run() blinks 3-5s random)
     static let sparkMilliseconds = 800
     static let sparkSeconds = 0.8
 
@@ -396,11 +396,11 @@ enum GVBootTiming {
     static let bloomMilliseconds = 1800
     static let bloomSeconds = 1.8
 
-    /// PHASE 3: Star field wake
+    /// PHASE 3: Star field wake (nominal; run() holds 1100ms)
     static let wakeMilliseconds = 1200
     static let wakeSeconds = 1.2
 
-    /// PHASE 4: Terminal cascade
+    /// PHASE 4: Terminal cascade (nominal; run() holds 2600-3200ms random)
     static let discoveryMilliseconds = 2500
     static let discoverySeconds = 2.5
 
@@ -418,7 +418,7 @@ enum GVBootTiming {
     /// PHASE 8: Departure raster tear
     static let departSeconds = 0.34
 
-    /// Total dramatic sequence: ~9.8 seconds
+    /// Total dramatic sequence: ~9.8 seconds nominal (actual ~12-15s randomised)
     static let totalSeconds = voidSeconds + sparkSeconds + bloomSeconds +
         wakeSeconds + discoverySeconds + reconstructionSeconds +
         sweepSeconds

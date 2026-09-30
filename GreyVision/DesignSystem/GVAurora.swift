@@ -15,6 +15,9 @@ import SwiftUI
 /// cost off the boot's critical path.
 struct GVAurora: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Gates the ambient clock: a decoration that is not on screen should
+    /// not be scheduling frames.
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Vertical band the aurora occupies, in unit coordinates.
     var band: ClosedRange<Double> = 0.04 ... 0.62
@@ -33,7 +36,7 @@ struct GVAurora: View {
     ]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: reduceMotion ? 2 : 1 / 24, paused: false)) { timeline in
+        TimelineView(GVAmbientClock.ambient(hertz: reduceMotion ? 0.5 : 24, scenePhase: scenePhase)) { timeline in
             let time = timeline.date.timeIntervalSinceReferenceDate
 
             Canvas { context, size in

@@ -34,24 +34,27 @@ struct GVTelemetryStrip: View {
         TimelineView(.periodic(from: tickStart, by: reduceMotion ? 1.0 : 0.25)) { _ in
             let snapshot = cameraRuntime.snapshot
             let exposure = cameraRuntime.deviceTelemetryMailbox.latest
-            let shed = statsMailbox.latest.shedEffects
+            let renderStats = statsMailbox.latest
+            let shed = renderStats.shedEffects
             let audio = audioRuntime.snapshot
 
-            HStack(spacing: GVMetrics.stepRelated) {
+            HStack(spacing: 14) {
                 ForEach(Self.order, id: \.self) { field in
                     item(field, value: value(field, snapshot: snapshot, exposure: exposure))
                 }
                 if audio.rms > 0.005 || audio.peak > 0.005 {
                     audioSpectrogram(audio)
                 }
+                if renderStats.reducedDetail {
+                    Text("Adaptive")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(GVTheme.warn)
+                        .accessibilityLabel("Internal effect detail reduced to maintain frame rate")
+                }
                 if shed > 0 {
                     shedNotice(shed)
                 }
             }
-            // No identifier on the row itself: SwiftUI propagates a container
-            // identifier down over its children, so one here overwrote every
-            // field's own — which is why `workspace.status.shed` and each
-            // field button all resolved as `workspace.status.line`.
             .frame(maxWidth: .infinity)
         }
     }
@@ -65,13 +68,13 @@ struct GVTelemetryStrip: View {
             audio.treble,
             audio.peak
         ]
-        return HStack(spacing: 1.5) {
+        return HStack(spacing: 2) {
             ForEach(0 ..< values.count, id: \.self) { idx in
                 let val = values[idx]
                 let barHeight = max(2.0, min(10.0, CGFloat(val) * 12.0))
-                RoundedRectangle(cornerRadius: 0.5)
-                    .fill(val > 0.7 ? GVTheme.record : (val > 0.35 ? GVTheme.violet : GVTheme.ash))
-                    .frame(width: 1.5, height: barHeight)
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(GVTheme.bone.opacity(0.45))
+                    .frame(width: 2, height: barHeight)
             }
         }
         .frame(height: 10, alignment: .bottom)
@@ -83,12 +86,10 @@ struct GVTelemetryStrip: View {
     /// Only present while the governor is actually shedding. `warn`, not
     /// `record`: the instrument is degrading, not failing.
     private func shedNotice(_ count: Int) -> some View {
-        Text("SHED \(count)")
-            .gvFont(.telemetry)
+        Text("Shed \(count)")
+            .font(.system(size: 11, weight: .medium))
             .monospacedDigit()
-            .tracking(GVTheme.TypeLevel.telemetry.tracking)
             .foregroundStyle(GVTheme.warn)
-            .shadow(color: .black.opacity(0.9), radius: 2, y: 0.5)
             .lineLimit(1)
             .fixedSize()
             .padding(.vertical, GVMetrics.stepRelated)
@@ -101,7 +102,7 @@ struct GVTelemetryStrip: View {
     private func restoreAutoExposure() {
         cameraRuntime.resumeAutoExposure()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        onExposureNotice("EXPOSURE // AUTO RESTORED")
+        onExposureNotice("Auto exposure restored")
     }
 
     private static let order: [GVTelemetryField] = [
@@ -122,38 +123,34 @@ struct GVTelemetryStrip: View {
             // `M` for manual, the way a cine camera marks it. Not colour
             // alone: warn on its own would be invisible to anyone who cannot
             // separate it from ash.
-            Text(isManual ? "\(value) M" : value)
-                .gvFont(.telemetry)
+            Text(isManual ? "\(value) · Manual" : value)
+                .font(.system(size: 12, weight: isActive ? .semibold : .regular, design: .monospaced))
                 .monospacedDigit()
-                .tracking(GVTheme.TypeLevel.telemetry.tracking)
-                .foregroundStyle(isActive ? GVTheme.violet : (isManual ? GVTheme.warn : GVTheme.ash))
-                .shadow(color: .black.opacity(0.9), radius: 2, y: 0.5)
+                .foregroundStyle(isActive ? GVTheme.bone : (isManual ? GVTheme.warn : GVTheme.bone.opacity(0.62)))
                 .lineLimit(1)
                 .fixedSize()
+                .padding(.horizontal, 3)
                 .overlay(alignment: .bottom) {
                     // Selection is a rule under the value, not a box around
                     // it. A pill here would make seven pills.
                     Rectangle()
-                        .fill(GVTheme.violet)
+                        .fill(Color.white.opacity(0.5))
                         .frame(height: 1)
                         .offset(y: 3)
-                        .opacity(isActive ? 1 : 0)
+                        .opacity(isActive ? 0.6 : 0)
                 }
                 // Drawn small, tapped at full height.
                 .padding(.vertical, GVMetrics.stepRelated)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Hold either exposure field to hand metering back. The first time the
-        // camera goes manual the workspace says so in the notice line, so this
-        // is a stated gesture rather than a discovered one.
+        .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: isActive)
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.45).onEnded { _ in
                 guard isManual else { return }
                 restoreAutoExposure()
             }
         )
-        .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: isActive)
         .accessibilityIdentifier("workspace.status.\(field.rawValue)")
         .accessibilityLabel(field.railLabel)
         .accessibilityValue(isManual ? "\(value), manual" : value)

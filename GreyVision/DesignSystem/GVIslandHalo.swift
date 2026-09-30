@@ -9,6 +9,9 @@ import SwiftUI
 /// a phantom button appear behind it.
 struct GVIslandHalo: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Gates the ambient clock: a decoration that is not on screen should
+    /// not be scheduling frames.
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Cutout metrics for the current device family. The island is a fixed
     /// size across the Pro models; anything without one reports a short inset
@@ -28,13 +31,18 @@ struct GVIslandHalo: View {
 
     var body: some View {
         if hasIsland {
-            ZStack {
-                ring(inset: -3, width: 1.4, opacity: 0.85)
-                ring(inset: -8, width: 1.0, opacity: 0.40)
-                ring(inset: -14, width: 0.8, opacity: 0.18)
+            GeometryReader { geometry in
+                ZStack {
+                    ring(inset: -3, width: 1.4, opacity: 0.85)
+                    ring(inset: -8, width: 1.0, opacity: 0.40)
+                    ring(inset: -14, width: 0.8, opacity: 0.18)
+                }
+                .frame(width: islandWidth, height: islandHeight)
+                // The workspace can be hosted in a resized scene. Screen-wide
+                // coordinates put the halo off-centre in that case; the local
+                // container is the only reliable horizontal boundary.
+                .position(x: geometry.size.width / 2, y: islandTop + islandHeight / 2)
             }
-            .frame(width: islandWidth, height: islandHeight)
-            .position(x: UIScreen.main.bounds.width / 2, y: islandTop + islandHeight / 2)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
             .ignoresSafeArea()
@@ -47,7 +55,7 @@ struct GVIslandHalo: View {
                 capsule(inset: inset)
                     .stroke(tint.opacity(opacity), lineWidth: width)
             } else {
-                TimelineView(.animation(minimumInterval: 1 / 20, paused: false)) { timeline in
+                TimelineView(GVAmbientClock.ambient(hertz: 20, scenePhase: scenePhase)) { timeline in
                     let time = timeline.date.timeIntervalSinceReferenceDate
                     // A slow breath so the port reads as powered, not printed.
                     let breath = 0.82 + sin(time * 1.6 + inset * 0.2) * 0.18

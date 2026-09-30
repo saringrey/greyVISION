@@ -1,7 +1,7 @@
-import CoreVideo
-import CoreText
-import Foundation
 import CoreGraphics
+import CoreText
+import CoreVideo
+import Foundation
 import UIKit
 
 /// Renders the branding, signature and running duration into the final video

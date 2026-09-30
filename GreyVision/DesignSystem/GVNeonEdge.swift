@@ -16,6 +16,9 @@ struct GVNeonEdge: View {
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Gates the ambient clock: a decoration that is not on screen should
+    /// not be scheduling frames.
+    @Environment(\.scenePhase) private var scenePhase
 
     let edge: Edge
     /// How far the glow penetrates, in points.
@@ -29,7 +32,7 @@ struct GVNeonEdge: View {
             if reduceMotion {
                 tube(flicker: 0.85, sweep: 0.5, tear: 0)
             } else {
-                TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { timeline in
+                TimelineView(GVAmbientClock.ambient(hertz: 30, scenePhase: scenePhase)) { timeline in
                     let time = timeline.date.timeIntervalSinceReferenceDate
                     tube(
                         flicker: GVNeonEdge.flicker(at: time, seed: edge == .top ? 3 : 91),

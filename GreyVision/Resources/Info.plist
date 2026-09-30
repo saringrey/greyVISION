@@ -35,9 +35,14 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>grey//VISION uses microphone audio for recording and audio-reactive modulation when you enable it.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>grey//VISION saves captures to Photos only when you ask it to.</string>
+	<string>grey//VISION saves your captures straight to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>grey//VISION saves captures to Photos only when you ask it to.</string>
+	<string>grey//VISION saves your captures straight to your photo library.</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>MadhouseSans.otf</string>
+		<string>Code.ttf</string>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>

@@ -47,24 +47,18 @@ struct GVFieldAdjuster: View {
         }
         .padding(.horizontal, GVMetrics.stepInternal)
         .padding(.vertical, GVMetrics.stepMicro)
-        // Measured, not guessed. A fixed plate is invisible over a night
-        // scene and not nearly enough over a white wall — and this panel is
-        // the one place a wrong number gets set if the label cannot be read.
-        .gvAdaptivePlate(
-            statsMailbox,
-            band: \.topChromeLoad,
-            cornerRadius: GVMetrics.radius,
-            quiet: 0.30,
-            loud: 0.88
-        )
+        .background { fieldBackground }
         .overlay(
             RoundedRectangle(cornerRadius: GVMetrics.radius, style: .continuous)
-                .strokeBorder(GVTheme.separatorActive.opacity(0.5), lineWidth: GVMetrics.hairline)
+                .strokeBorder(Color.white.opacity(0.055), lineWidth: GVMetrics.hairline)
         )
+        .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
         .task(id: field) { seed() }
-        // No identifier on the panel: SwiftUI propagates a container's
-        // identifier down over its children's own, so one here would rename
-        // every chip inside it. Each shape names its own head element instead.
+    }
+
+    private var fieldBackground: some View {
+        RoundedRectangle(cornerRadius: GVMetrics.radius, style: .continuous)
+            .fill(Color.black)
     }
 
     private var shape: GVFieldControl.Shape {
@@ -106,9 +100,17 @@ private extension GVFieldAdjuster {
                 range: continuous.range,
                 step: continuous.step,
                 display: GVFieldControl.display(field, drive: drive),
-                tint: GVTheme.violet,
-                fontSize: GVMetrics.textSmall,
-                identifier: "workspace.field.\(field.rawValue)"
+                tint: Color.white,
+                // Doubled from textSmall so the spawned slider matches the
+                // enlarged telemetry row text.
+                fontSize: GVMetrics.textSmall * 2,
+                identifier: "workspace.field.\(field.rawValue)",
+                // Camera fields are not part of the composition, so there is
+                // no undo to bracket — but the HUD idle timer must not close
+                // the control out from under a finger that is still moving.
+                onEditingChanged: { editing in
+                    hud.setAdjusting(editing)
+                }
             )
 
             // Only for the two fields whose setters stop the device metering,
@@ -125,12 +127,11 @@ private extension GVFieldAdjuster {
         Button {
             cameraRuntime.resumeAutoExposure()
             UINotificationFeedbackGenerator().notificationOccurred(.success)
-            onNotice("EXPOSURE // AUTO RESTORED")
+            onNotice("Auto exposure restored")
             hud.keepAlive()
         } label: {
-            Text("AUTO")
-                .gvMono(GVMetrics.textSmall, .black)
-                .tracking(0.7)
+            Text("Auto")
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(GVTheme.warn)
                 .lineLimit(1)
                 .fixedSize()
@@ -153,60 +154,121 @@ private extension GVFieldAdjuster {
     func chooser(_ discrete: GVFieldControl.Discrete) -> some View {
         HStack(spacing: GVMetrics.stepInternal) {
             Text(field.controlLabel)
-                .gvMono(GVMetrics.textSmall, .bold)
-                .tracking(0.68)
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(GVTheme.ash)
                 .lineLimit(1)
                 .fixedSize()
                 .accessibilityIdentifier("workspace.field.\(field.rawValue)")
 
-            // Codec can be a dozen entries on a ProRes-capable device; frame
-            // rate is three. Scrolling handles both without a second layout.
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: GVMetrics.stepMicro) {
+            // FPS + RES have 3 options — shrink to fit with no scroll.
+            // Codec may have many (HEVC/H264/ProRes) so it keeps horizontal
+            // scroll, but now at the same shrunken scale and shared styling.
+            if field == .codec {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: GVMetrics.stepMicro) {
+                        ForEach(discrete.options) { option in
+                            chip(option, isSelected: option.id == discrete.selectedID)
+                        }
+                    }
+                    .padding(.trailing, GVMetrics.stepMicro)
+                }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            } else {
+                HStack(spacing: 5) {
                     ForEach(discrete.options) { option in
                         chip(option, isSelected: option.id == discrete.selectedID)
                     }
                 }
-                .padding(.trailing, GVMetrics.stepMicro)
             }
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         }
     }
 
     func chip(_ option: GVFieldControl.Option, isSelected: Bool) -> some View {
-        let visualScale: CGFloat = field == .codec ? 0.9 : 1
+        // Unified at 0.82 — small enough for FPS/RES (3 chips) to fit
+        // without scrolling, and codec now shares the same language.
+        let visualScale: CGFloat = 0.82
+        let isCodec = false
 
         return Button {
             select(option)
         } label: {
             Text(option.label)
-                .gvMono(GVMetrics.textSmall * visualScale, isSelected ? .black : .bold)
-                .tracking(0.6 * visualScale)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                 .foregroundStyle(isSelected ? GVTheme.bone : GVTheme.ash)
                 .lineLimit(1)
                 .fixedSize()
                 .padding(.horizontal, GVMetrics.stepInternal * visualScale)
                 .frame(height: 26 * visualScale)
-                .background(
-                    RoundedRectangle(cornerRadius: GVMetrics.radiusTight, style: .continuous)
-                        .fill(isSelected ? GVTheme.violet.opacity(0.34) : Color.white.opacity(0.05))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: GVMetrics.radiusTight, style: .continuous)
-                        .strokeBorder(
-                            isSelected ? GVTheme.violet : GVTheme.separator,
-                            lineWidth: GVMetrics.hairline
-                        )
-                )
-                // Drawn at 26pt, tapped at the full minimum.
-                .frame(height: GVMetrics.touchTarget)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVStardustFieldChipStyle(selected: isSelected, scale: visualScale, isCodec: isCodec))
+        .frame(height: GVMetrics.touchTarget)
+        .contentShape(Rectangle())
         .accessibilityIdentifier("workspace.field.\(field.rawValue).\(option.id.gvSlug)")
         .accessibilityLabel(option.label)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    /// Stardust chip style — darker, starfield-backed, monochrome.
+    /// Used for codec selection and format fields to match CameraControlsView.
+    private struct GVStardustFieldChipStyle: ButtonStyle {
+        let selected: Bool
+        let scale: CGFloat
+        let isCodec: Bool
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+        private var pulseTint: SIMD3<Float> {
+            SIMD3<Float>(0.7, 0.2, 1.0)
+        }
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .background { stardustBackground(isPressed: configuration.isPressed) }
+                .overlay { stardustBorder(isPressed: configuration.isPressed) }
+                .clipShape(RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous))
+                .scaleEffect(configuration.isPressed ? 0.96 : 1)
+                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+        }
+
+        @ViewBuilder
+        private func stardustBackground(isPressed: Bool) -> some View {
+            let baseTint = Color.black.opacity(isPressed ? 0.52 : (selected ? 0.62 : 0.58))
+            ZStack {
+                // Darker veil
+                RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous)
+                    .fill(baseTint)
+                if !reduceTransparency {
+                    // Stardust field — very dim, slow
+                    DeterministicStarfield()
+                        .opacity(0.22)
+                        .blur(radius: 0.6)
+                        .clipShape(RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous))
+                    // Frost on top to keep blur + readability
+                    RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous)
+                        .fill(.ultraThinMaterial.opacity(0.55))
+                    RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous)
+                        .fill(Color.black.opacity(0.22))
+                }
+            }
+            .overlay {
+                // subtle inner glow when pressed or selected
+                if isPressed || selected {
+                    RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous)
+                        .fill(Color.white.opacity(isPressed ? 0.06 : (selected ? 0.04 : 0)))
+                }
+            }
+        }
+
+        private func stardustBorder(isPressed: Bool) -> some View {
+            RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous)
+                .strokeBorder(
+                    isPressed ? Color.white.opacity(0.28) : (selected ? Color.white.opacity(0.4) : Color.white.opacity(0.10)),
+                    lineWidth: isPressed ? 1.0 : (selected ? 1.0 : 0.5)
+                )
+                .modifier(GVLightReactiveBorderOverlay(radius: GVMetrics.radiusTight * scale, baseOpacity: isPressed ? 0.22 : (selected ? 0.18 : 0.10), lightLevel: GVAmbientLight.shared.level, lineWidth: 0.5))
+        }
     }
 
     /// Format changes are not live. Frame rate, resolution and codec are all
@@ -219,9 +281,48 @@ private extension GVFieldAdjuster {
             return
         }
         GVParameterHaptics.select()
-        onNotice("\(field.controlLabel) // \(option.label) — RECONFIGURING")
+        onNotice("\(field.controlLabel): \(option.label) · Reconfiguring")
         appModel.restartEngine()
         hud.clearField()
+    }
+}
+
+/// A quiet white shimmer behind the codec chooser. It traverses slowly and
+/// never changes the tray's black base color; only the edge and a narrow band
+/// of reflected light move.
+private struct GVCodecTrayGlimmer: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 30, paused: reduceMotion)) { timeline in
+            GeometryReader { geometry in
+                let width = max(geometry.size.width, 1)
+                let period = 7.5
+                let phase = reduceMotion
+                    ? 0.42
+                    : timeline.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: period) / period
+                let x = -width * 0.35 + CGFloat(phase) * width * 1.7
+
+                LinearGradient(
+                    colors: [
+                        .clear,
+                        .white.opacity(0.008),
+                        .white.opacity(0.045),
+                        .white.opacity(0.012),
+                        .clear
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: max(72, width * 0.24), height: geometry.size.height * 1.8)
+                .rotationEffect(.degrees(-12))
+                .blur(radius: 5)
+                .offset(x: x, y: -geometry.size.height * 0.4)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -232,16 +333,15 @@ private extension GVFieldAdjuster {
     func readOnly(_ note: String) -> some View {
         HStack(spacing: GVMetrics.stepInternal) {
             Text(field.controlLabel)
-                .gvMono(GVMetrics.textSmall, .bold)
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(GVTheme.ash)
             Text(note)
-                .gvMono(GVMetrics.textMicro, .bold)
+                .font(.system(size: 11, weight: .regular))
                 .foregroundStyle(GVTheme.faint)
             Spacer(minLength: 0)
         }
-        .tracking(0.68)
         .lineLimit(1)
-        .minimumScaleFactor(0.7)
+        .minimumScaleFactor(0.8)
         .frame(height: GVMetrics.touchTarget)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("workspace.field.\(field.rawValue)")

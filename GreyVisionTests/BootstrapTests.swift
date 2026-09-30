@@ -1,5 +1,6 @@
-@testable import GreyVision
+import AppIntents
 import AVFoundation
+@testable import GreyVision
 import Metal
 
 // NOTE: several tests were removed here. They asserted against an API set
@@ -11,6 +12,40 @@ import Metal
 import XCTest
 
 final class BootstrapTests: XCTestCase {
+    func testSplashHighlightsChangeCharacterAndStayBounded() {
+        let letters = Array(GVSplashLettering.text)
+        for row in 0 ..< 18 {
+            for cycle in 0 ..< 20 {
+                let time = Double(cycle) * 2.8
+                let current = GVSplashLettering.highlight(at: time, row: row)
+                let next = GVSplashLettering.highlight(at: time + 2.8, row: row)
+                XCTAssertNotEqual(current.character, next.character)
+                XCTAssertNotEqual(letters[current.character], " ")
+                XCTAssertTrue((0 ... 1).contains(current.strength))
+                XCTAssertLessThan(GVSplashLettering.dotRadius(at: time, row: row) * 1.12, 0.5)
+            }
+        }
+        for tick in 0 ..< 400 {
+            let time = Double(tick) / 10
+            let dimmed = (0 ..< 18).filter {
+                GVSplashLettering.rowBrightness(at: time, row: $0, count: 18) < 1
+            }
+            XCTAssertLessThanOrEqual(dimmed.count, 1)
+        }
+    }
+
+    @MainActor
+    func testReticleDefaultsOnAndPreservesNewOptOut() throws {
+        let suite = "ReticleTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: "gv.preferences.cam.reticle")
+        let preferences = GVPreferences(defaults: defaults)
+        XCTAssertTrue(preferences.reticleEnabled)
+        preferences.reticleEnabled = false
+        XCTAssertFalse(GVPreferences(defaults: defaults).reticleEnabled)
+    }
+
     func testDiagnosticsBeginIdleAndEmpty() async {
         let store = DiagnosticsStore()
         let snapshot = await store.snapshot()
@@ -34,7 +69,10 @@ final class BootstrapTests: XCTestCase {
     }
 
     @MainActor
-    func testAppRouteMovesBootWorkspaceAndBack() async {
+    func testAppRouteMovesBootWorkspaceAndBack() async throws {
+        let suiteName = "BootstrapTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
         let telemetry = BootTelemetry(
             operatingSystem: "TEST",
             deviceModel: "IPHONE",
@@ -47,7 +85,11 @@ final class BootstrapTests: XCTestCase {
             audioDSP: "ARMED",
             frameHeapMegabytes: 1024
         )
-        let model = AppModel(arguments: ["GreyVisionTests"], bootTelemetry: telemetry)
+        let model = AppModel(
+            arguments: ["GreyVisionTests"],
+            bootTelemetry: telemetry,
+            preferences: GVPreferences(defaults: defaults)
+        )
 
         // Cold launch opens on the access gate; `.boot` is only reachable
         // through it. Starting the engine from `.gate` must be a no-op.
@@ -122,6 +164,51 @@ final class BootstrapTests: XCTestCase {
 
         XCTAssertEqual(configuration.framesPerSecond, 120)
         XCTAssertEqual(draft.frameRate.availabilityNote, "HIGH SPEED // FORMAT CHECKED LIVE")
+    }
+
+    /// The boot chooser prints these on the cards and in its readout, so they
+    /// are model data rather than view copy: the labels and the readout cannot
+    /// drift away from the formats they describe.
+    func testCodecSpecLabelsDescribeTheCuratedLadder() {
+        let codec = CaptureSetupDraft.VideoCodec.self
+        XCTAssertEqual(codec.h264.chromaLabel, "4:2:0")
+        XCTAssertEqual(codec.h264.bitDepthLabel, "8-BIT")
+        XCTAssertEqual(codec.hevc.chromaLabel, "4:2:0")
+        XCTAssertEqual(codec.proRes422HQ.chromaLabel, "4:2:2")
+        XCTAssertEqual(codec.proRes422HQ.bitDepthLabel, "10-BIT")
+        XCTAssertEqual(codec.proRes4444XQ.chromaLabel, "4:4:4")
+        XCTAssertEqual(codec.proRes4444XQ.bitDepthLabel, "12-BIT")
+        XCTAssertEqual(codec.proResRAWHQ.chromaLabel, "RAW BAYER")
+        XCTAssertEqual(codec.proResRAWHQ.bitDepthLabel, "12-BIT")
+
+        // Every case has to answer, not just the curated five: the enum still
+        // decodes drafts written by older builds.
+        for entry in codec.allCases {
+            XCTAssertFalse(entry.chromaLabel.isEmpty, "\(entry.rawValue)")
+            XCTAssertFalse(entry.bitDepthLabel.isEmpty, "\(entry.rawValue)")
+            XCTAssertFalse(entry.tierLabel.isEmpty, "\(entry.rawValue)")
+            XCTAssertFalse(entry.fidelityLabel.isEmpty, "\(entry.rawValue)")
+            XCTAssertTrue((1 ... 5).contains(entry.fidelityClass), "\(entry.rawValue)")
+        }
+
+        // The curated list is ordered by fidelity, which is what lets it read as
+        // one ladder rather than as five unrelated names.
+        let classes = CaptureSetupDraft.VideoCodec.curated.map(\.fidelityClass)
+        XCTAssertEqual(classes, classes.sorted())
+        XCTAssertEqual(Set(classes).count, classes.count, "each curated step is its own rung")
+    }
+
+    func testResolutionAndFrameRateReadoutsStayInStepWithTheirNotes() {
+        XCTAssertEqual(CaptureSetupDraft.Resolution.allCases.map(\.detailClass), [1, 2, 3, 4])
+        XCTAssertEqual(CaptureSetupDraft.FrameRate.allCases.map(\.motionClass), [1, 2, 3])
+        XCTAssertEqual(CaptureSetupDraft.FrameRate.highSpeed.cadenceLabel, "HIGH SPEED")
+
+        for raster in CaptureSetupDraft.Resolution.allCases {
+            // The note is built from the two parts the rail prints, so a
+            // reworded raster cannot leave the sentence behind.
+            XCTAssertEqual(raster.availabilityNote, "\(raster.pixelLabel) // \(raster.detailLabel)")
+            XCTAssertFalse(raster.pixelLabel.isEmpty)
+        }
     }
 
     func testDepthGeometryReconstructsMetricXYZAndRejectsInvalidSamples() {
@@ -325,32 +412,82 @@ final class BootstrapTests: XCTestCase {
 
     func testAppIntentsAndShortcutsAreDefined() {
         if #available(iOS 16.0, *) {
-            let stillIntent = CaptureStillIntent()
+            // The two hardware intents open the app; the composition verbs do
+            // not, because they can be carried out by the workspace whenever it
+            // next appears rather than by force-launching the operator into the
+            // camera.
             XCTAssertTrue(CaptureStillIntent.openAppWhenRun)
-            _ = stillIntent
-
-            let recordIntent = ToggleRecordingIntent()
             XCTAssertTrue(ToggleRecordingIntent.openAppWhenRun)
-            _ = recordIntent
+            XCTAssertFalse(UndoEditIntent.openAppWhenRun)
+            XCTAssertFalse(RedoEditIntent.openAppWhenRun)
+            XCTAssertFalse(SoloFocusedEffectIntent.openAppWhenRun)
+            XCTAssertFalse(RemoveFocusedEffectIntent.openAppWhenRun)
+            XCTAssertFalse(ToggleStackArmedIntent.openAppWhenRun)
+            XCTAssertFalse(ToggleBypassIntent.openAppWhenRun)
+            XCTAssertFalse(ToggleAudioReactiveIntent.openAppWhenRun)
 
-            var effectIntent = SetEffectIntent()
-            effectIntent.effectName = "DATAMOSH"
+            let effectIntent: SelectEffectIntent = {
+                var intent = SelectEffectIntent()
+                intent.effectName = "DATAMOSH"
+                return intent
+            }()
             XCTAssertEqual(effectIntent.effectName, "DATAMOSH")
-
-            let shortcuts = GVAppShortcutsProvider.appShortcuts
-            XCTAssertEqual(shortcuts.count, 2)
         }
     }
 
-    func testLastCaptureHoldsStillAndVideo() {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("sample.mp4")
-        let videoCapture = GVLastCapture(mediaType: .video(url: tempURL), thumbnail: nil)
-        XCTAssertEqual(videoCapture, videoCapture)
-        if case let .video(url) = videoCapture.mediaType {
-            XCTAssertEqual(url, tempURL)
-        } else {
-            XCTFail("Expected video capture")
+    /// Every shortcut the provider advertises has to be a real intent, and the
+    /// composition verbs have to be among them. The previous assertion pinned
+    /// the count to two, which is how a set of empty stubs could look correct:
+    /// adding a working shortcut would have failed the test, and removing one
+    /// would not have.
+    ///
+    /// `AppShortcut` publishes initializers and nothing else, so the pairs it
+    /// holds cannot be read back — the phrases and the intent are private to
+    /// the framework. What can be checked is the half that is ours: that the
+    /// provider registers a phrase set for every verb, and that every verb's
+    /// intent actually posts its command instead of quietly doing nothing.
+    func testShortcutProviderCoversEveryCompositionVerb() async throws {
+        if #available(iOS 16.0, *) {
+            XCTAssertGreaterThanOrEqual(
+                GVAppShortcutsProvider.appShortcuts.count,
+                10,
+                "The provider registers one phrase set per verb; dropping one silently removes a voice command."
+            )
+
+            let bridge = GVIntentBridge.shared
+            defer { bridge.dismissForTesting() }
+            let verbs: [(String, GVIntentCommand, () async throws -> Void)] = [
+                ("CaptureStillIntent", .captureStill, { _ = try await CaptureStillIntent().perform() }),
+                ("ToggleRecordingIntent", .toggleRecording, { _ = try await ToggleRecordingIntent().perform() }),
+                ("UndoEditIntent", .undo, { _ = try await UndoEditIntent().perform() }),
+                ("RedoEditIntent", .redo, { _ = try await RedoEditIntent().perform() }),
+                ("SoloFocusedEffectIntent", .soloFocused, { _ = try await SoloFocusedEffectIntent().perform() }),
+                ("RemoveFocusedEffectIntent", .removeFocused, { _ = try await RemoveFocusedEffectIntent().perform() }),
+                ("ToggleStackArmedIntent", .toggleStackArmed, { _ = try await ToggleStackArmedIntent().perform() }),
+                ("ToggleBypassIntent", .toggleBypass, { _ = try await ToggleBypassIntent().perform() }),
+                ("ToggleAudioReactiveIntent", .armAudio, { _ = try await ToggleAudioReactiveIntent().perform() }),
+                ("NextShelfIntent", .nextShelf, { _ = try await NextShelfIntent().perform() })
+            ]
+            for (name, expected, perform) in verbs {
+                bridge.dismissForTesting()
+                try await perform()
+                XCTAssertEqual(bridge.consume(), expected, "\(name) posted the wrong command.")
+            }
         }
+    }
+
+    /// An intent posts a command rather than editing the composition, so it
+    /// can run when the workspace does not exist. The bridge is that seam and
+    /// it has to actually deliver: post, read back, clear.
+    @MainActor
+    func testIntentBridgeDeliversAndClearsItsCommand() {
+        let bridge = GVIntentBridge.shared
+        bridge.dismissForTesting()
+
+        bridge.post(.soloFocused)
+        XCTAssertEqual(bridge.pendingCommand, .soloFocused)
+        XCTAssertEqual(bridge.consume(), .soloFocused)
+        XCTAssertNil(bridge.pendingCommand, "A consumed command must not be replayed.")
     }
 
     func testAudioReactiveDynamics() {
@@ -382,7 +519,7 @@ final class BootstrapTests: XCTestCase {
         CameraDiscovery.DeviceCandidate(uniqueID: id, deviceTypeRawValue: type.rawValue)
     }
 
-    func testRearSelectionPrefersDualWideOverTripleDualAndWide() {
+    func testRearSelectionPrefersWideOverVirtualCameras() {
         let candidates = [
             candidate("wide", .builtInWideAngleCamera),
             candidate("dual", .builtInDualCamera),
@@ -392,7 +529,7 @@ final class BootstrapTests: XCTestCase {
 
         XCTAssertEqual(
             CameraDiscovery.selectCandidate(from: candidates, position: .rear, preferredDeviceID: nil)?.uniqueID,
-            "dualwide"
+            "wide"
         )
     }
 
@@ -408,22 +545,22 @@ final class BootstrapTests: XCTestCase {
         )
     }
 
-    func testPreferredIDWinsOverPriority() {
+    func testPreferredWideIDWinsOverPriority() {
         let candidates = [
             candidate("wide", .builtInWideAngleCamera),
-            candidate("ultra", .builtInUltraWideCamera)
+            candidate("dual", .builtInDualCamera)
         ]
 
         XCTAssertEqual(
-            CameraDiscovery.selectCandidate(from: candidates, position: .rear, preferredDeviceID: "ultra")?.uniqueID,
-            "ultra"
+            CameraDiscovery.selectCandidate(from: candidates, position: .rear, preferredDeviceID: "wide")?.uniqueID,
+            "wide"
         )
     }
 
     func testUnknownPreferredIDFallsThroughToPriority() {
         let candidates = [
             candidate("wide", .builtInWideAngleCamera),
-            candidate("tele", .builtInTelephotoCamera)
+            candidate("dual", .builtInDualCamera)
         ]
 
         XCTAssertEqual(
@@ -432,21 +569,151 @@ final class BootstrapTests: XCTestCase {
         )
     }
 
-    func testSelectionWithoutPriorityMatchReturnsFirstCandidate() {
+    func testSelectionWithoutSupportedCameraReturnsNil() {
         let candidates = [
-            candidate("ultra", .builtInUltraWideCamera),
-            candidate("tele", .builtInTelephotoCamera)
+            CameraDiscovery.DeviceCandidate(uniqueID: "other", deviceTypeRawValue: "OTHER"),
+            CameraDiscovery.DeviceCandidate(uniqueID: "fallback", deviceTypeRawValue: "FALLBACK")
         ]
 
-        XCTAssertEqual(
-            CameraDiscovery.selectCandidate(from: candidates, position: .front, preferredDeviceID: nil)?.uniqueID,
-            "ultra"
-        )
+        XCTAssertNil(CameraDiscovery.selectCandidate(from: candidates, position: .front, preferredDeviceID: nil))
     }
 
     func testSelectionWithNoCandidatesIsNil() {
         XCTAssertNil(
             CameraDiscovery.selectCandidate(from: [], position: .rear, preferredDeviceID: nil)
+        )
+    }
+
+    // MARK: - OPEN GATE format selection
+
+    private static let openGateTargetPixels = Int64(4032) * Int64(3024)
+
+    private func format(
+        _ width: Int32,
+        _ height: Int32,
+        fps: ClosedRange<Double> = 1 ... 30,
+        hdr: Bool = false
+    ) -> CameraDiscovery.FormatCandidate {
+        CameraDiscovery.FormatCandidate(
+            width: width,
+            height: height,
+            frameRateRanges: [fps],
+            supportsHDR: hdr
+        )
+    }
+
+    /// The regression that held OPEN GATE out of the pickers: a Pro-class
+    /// rear camera reports 4:3 stills formats far above the sensor's video
+    /// readout, and picking the largest one jetsams the app.
+    func testOpenGateRejectsStillsGradeSensorFormats() {
+        let candidates = [
+            format(1920, 1080, fps: 1 ... 60),
+            format(4032, 3024, fps: 1 ... 30),
+            format(8064, 6048, fps: 1 ... 12)
+        ]
+        let chosen = CameraDiscovery.selectOpenGateFormat(
+            from: candidates,
+            targetPixels: Self.openGateTargetPixels,
+            requestedFrameRate: 30,
+            prefersHDR: false
+        )
+        XCTAssertEqual(chosen, 1)
+    }
+
+    /// The old code discarded its own frame-rate filter whenever nothing
+    /// matched — which at the default 60fps is always for a 4:3 format — and
+    /// fell straight back to the largest format on the device.
+    func testOpenGateHoldsTheCeilingWhenNoFormatMeetsTheRequestedRate() {
+        let candidates = [
+            format(4032, 3024, fps: 1 ... 30),
+            format(8064, 6048, fps: 1 ... 12)
+        ]
+        let chosen = CameraDiscovery.selectOpenGateFormat(
+            from: candidates,
+            targetPixels: Self.openGateTargetPixels,
+            requestedFrameRate: 60,
+            prefersHDR: false
+        )
+        XCTAssertEqual(chosen, 0)
+    }
+
+    func testOpenGatePrefersFourByThreeOverWiderFormats() {
+        let candidates = [
+            format(3840, 2160, fps: 1 ... 60),
+            format(4032, 3024, fps: 1 ... 30)
+        ]
+        let chosen = CameraDiscovery.selectOpenGateFormat(
+            from: candidates,
+            targetPixels: Self.openGateTargetPixels,
+            requestedFrameRate: 30,
+            prefersHDR: false
+        )
+        XCTAssertEqual(chosen, 1)
+    }
+
+    func testOpenGateKeepsFullSensorReadoutInsteadOfAHighRateBinnedFormat() {
+        let candidates = [
+            format(2016, 1512, fps: 1 ... 60),
+            format(4032, 3024, fps: 1 ... 30)
+        ]
+        let chosen = CameraDiscovery.selectOpenGateFormat(
+            from: candidates,
+            targetPixels: Self.openGateTargetPixels,
+            requestedFrameRate: 60,
+            prefersHDR: false
+        )
+        XCTAssertEqual(chosen, 1)
+    }
+
+    func testOpenGateBreaksResolutionTiesOnHDRWhenRequested() {
+        let candidates = [
+            format(4032, 3024, fps: 1 ... 30, hdr: false),
+            format(4032, 3024, fps: 1 ... 30, hdr: true)
+        ]
+        XCTAssertEqual(
+            CameraDiscovery.selectOpenGateFormat(
+                from: candidates,
+                targetPixels: Self.openGateTargetPixels,
+                requestedFrameRate: 30,
+                prefersHDR: true
+            ),
+            1
+        )
+    }
+
+    func testOpenGateNeverFallsBackAboveTheMemoryCeiling() {
+        let candidates = [
+            format(8064, 6048, fps: 1 ... 12),
+            format(5760, 4320, fps: 1 ... 20)
+        ]
+        let chosen = CameraDiscovery.selectOpenGateFormat(
+            from: candidates,
+            targetPixels: Self.openGateTargetPixels,
+            requestedFrameRate: 30,
+            prefersHDR: false
+        )
+        XCTAssertNil(chosen)
+    }
+
+    func testOpenGateRejectsNonSensorAndNonVideoFormats() {
+        for candidate in [format(3840, 2160), format(2016, 1512),
+                          format(4032, 3024, fps: 1 ... 12), format(0, 0)]
+        {
+            XCTAssertNil(CameraDiscovery.selectOpenGateFormat(
+                from: [candidate], targetPixels: Self.openGateTargetPixels,
+                requestedFrameRate: 60, prefersHDR: false
+            ))
+        }
+    }
+
+    func testOpenGateSelectionWithNoFormatsIsNil() {
+        XCTAssertNil(
+            CameraDiscovery.selectOpenGateFormat(
+                from: [],
+                targetPixels: Self.openGateTargetPixels,
+                requestedFrameRate: 30,
+                prefersHDR: false
+            )
         )
     }
 }

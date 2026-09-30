@@ -10,6 +10,9 @@ import SwiftUI
 /// needing a second animation driver.
 struct GVGlitchText: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Gates the ambient clock: a decoration that is not on screen should
+    /// not be scheduling frames.
+    @Environment(\.scenePhase) private var scenePhase
 
     let text: String
     var size: CGFloat = 16
@@ -34,7 +37,7 @@ struct GVGlitchText: View {
         if reduceMotion {
             glyphs.foregroundStyle(fill)
         } else {
-            TimelineView(.animation(minimumInterval: 1 / 20, paused: false)) { timeline in
+            TimelineView(GVAmbientClock.ambient(hertz: 20, scenePhase: scenePhase)) { timeline in
                 let time = timeline.date.timeIntervalSinceReferenceDate
                 ZStack {
                     layer(time: time, duration: speed * 2, offset: -5, shadow: .cyan)

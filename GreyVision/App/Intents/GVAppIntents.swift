@@ -1,6 +1,12 @@
 import AppIntents
 import SwiftUI
 
+/// Capture and record.
+///
+/// These are the two intents that must reach the hardware rather than the
+/// composition, so they post through the same bridge and let the workspace
+/// decide what "take a still" means in the current state — a still while a
+/// take is running is a frame grab, not a new file.
 @available(iOS 16.0, *)
 struct CaptureStillIntent: AppIntent {
     static let title: LocalizedStringResource = "Capture Still"
@@ -9,7 +15,8 @@ struct CaptureStillIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        .result()
+        GVIntentBridge.shared.post(.captureStill)
+        return .result()
     }
 }
 
@@ -21,21 +28,7 @@ struct ToggleRecordingIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        .result()
-    }
-}
-
-@available(iOS 16.0, *)
-struct SetEffectIntent: AppIntent {
-    static let title: LocalizedStringResource = "Set Active Visual Effect"
-    static let description = IntentDescription("Selects a visual filter effect in grey//VISION.")
-    static let openAppWhenRun: Bool = true
-
-    @Parameter(title: "Effect Name")
-    var effectName: String
-
-    @MainActor
-    func perform() async throws -> some IntentResult {
-        .result()
+        GVIntentBridge.shared.post(.toggleRecording)
+        return .result()
     }
 }

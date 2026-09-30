@@ -11,9 +11,10 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
 
     private let sessionQueue = DispatchQueue(label: "com.saringrey.greyvision.capture.session", qos: .userInitiated)
     private let outputQueue = DispatchQueue(label: "com.saringrey.greyvision.camera.output", qos: .userInteractive)
-    
+
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
+    private let movieOutput = AVCaptureMovieFileOutput()
     private let handlerLock = NSLock()
     private let metadataLock = NSLock()
 
@@ -23,9 +24,12 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
     private var eventHandler: (@Sendable (CameraEvent) -> Void)?
     private var audioHandler: (@Sendable (CMSampleBuffer) -> Void)?
     private var frameOrientation = CapturedFrameOrientation.portrait
+    private var requestedVideoRotation: (angle: CGFloat, orientation: CapturedFrameOrientation) = (90, .portrait)
     /// Read on the output queue for HUD telemetry; guarded by `metadataLock`.
     private var telemetryDevice: AVCaptureDevice?
     private var telemetryFrameCounter: UInt64 = 0
+    private var activeConfiguration: CaptureConfiguration?
+    private var nativeRecordingDelegate: NativeMovieRecordingDelegate?
 
     override init() {
         super.init()
@@ -51,6 +55,46 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
         }
     }
 
+    /// Records the sensor-compressed ProRes RAW stream directly. RAW cannot
+    /// pass through the Metal effect graph without being demosaiced, so this
+    /// path deliberately belongs to AVFoundation rather than the frame writer.
+    func startNativeRAWRecording(
+        codec: AVVideoCodecType,
+        onStarted: @escaping @Sendable (Bool) -> Void,
+        onFinished: @escaping @Sendable (NativeCaptureResult) -> Void
+    ) {
+        sessionQueue.async { [weak self] in
+            guard let self,
+                  captureSession.isRunning,
+                  !movieOutput.isRecording,
+                  let configuration = activeConfiguration,
+                  configuration.videoCodec.isProResRAW,
+                  movieOutput.availableVideoCodecTypes.contains(codec),
+                  let connection = movieOutput.connection(with: .video)
+            else {
+                onStarted(false)
+                return
+            }
+
+            movieOutput.setOutputSettings([AVVideoCodecKey: codec], for: connection)
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("greyvision-raw-\(UUID().uuidString).mov")
+            let delegate = NativeMovieRecordingDelegate(
+                onStarted: onStarted,
+                onFinished: onFinished
+            )
+            nativeRecordingDelegate = delegate
+            movieOutput.startRecording(to: url, recordingDelegate: delegate)
+        }
+    }
+
+    func stopNativeRAWRecording() {
+        sessionQueue.async { [weak self] in
+            guard let self, movieOutput.isRecording else { return }
+            movieOutput.stopRecording()
+        }
+    }
+
     func start(configuration: CaptureConfiguration) async throws -> ActiveCameraInfo {
         try await withCheckedThrowingContinuation { continuation in
             sessionQueue.async { [self] in
@@ -60,6 +104,7 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
                     }
                     removeNotificationObservers()
                     let activeInfo = try configure(configuration: configuration)
+                    applyRequestedVideoRotation()
                     installNotificationObservers()
                     captureSession.startRunning()
                     continuation.resume(returning: activeInfo)
@@ -135,9 +180,25 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
                 try activeDevice.lockForConfiguration()
                 defer { activeDevice.unlockForConfiguration() }
                 let format = activeDevice.activeFormat
+                guard requested.isFinite,
+                      format.minISO.isFinite,
+                      format.maxISO.isFinite,
+                      format.minISO > 0,
+                      format.maxISO >= format.minISO,
+                      let range = Self.exposureDurationRange(for: format)
+                else { return }
                 let clamped = min(max(requested, format.minISO), format.maxISO)
+                // `currentExposureDuration` is not guaranteed to be valid while
+                // AVFoundation changes formats or resumes a session. Passing an
+                // invalid duration to custom exposure raises an Objective-C
+                // exception (which Swift cannot catch), taking down the app.
+                // Resolve and clamp it while the device is locked instead.
+                let current = CMTimeGetSeconds(activeDevice.exposureDuration)
+                let seconds = current.isFinite
+                    ? min(max(current, range.lowerBound), range.upperBound)
+                    : range.lowerBound
                 activeDevice.setExposureModeCustom(
-                    duration: AVCaptureDevice.currentExposureDuration,
+                    duration: CMTime(seconds: seconds, preferredTimescale: 1_000_000),
                     iso: clamped
                 )
             } catch {
@@ -155,15 +216,16 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
                 try activeDevice.lockForConfiguration()
                 defer { activeDevice.unlockForConfiguration() }
                 let format = activeDevice.activeFormat
-                let requested = CMTime(value: 1, timescale: CMTimeScale(denominator))
-                let clamped = CMTimeClampToRange(
-                    requested,
-                    range: CMTimeRange(
-                        start: format.minExposureDuration,
-                        end: format.maxExposureDuration
-                    )
+                guard let range = Self.exposureDurationRange(for: format) else { return }
+                let requested = 1 / Double(denominator)
+                guard requested.isFinite, requested > 0 else { return }
+                let seconds = min(max(requested, range.lowerBound), range.upperBound)
+                let iso = AVCaptureDevice.currentISO
+                guard iso.isFinite, iso > 0 else { return }
+                activeDevice.setExposureModeCustom(
+                    duration: CMTime(seconds: seconds, preferredTimescale: 1_000_000),
+                    iso: iso
                 )
-                activeDevice.setExposureModeCustom(duration: clamped, iso: AVCaptureDevice.currentISO)
             } catch {
                 emit(.failed(message: "Shutter configuration failed: \(error.localizedDescription)"))
             }
@@ -179,15 +241,28 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
         sessionQueue.async { [weak self] in
             guard let self, let activeDevice else { return }
             guard activeDevice.isWhiteBalanceModeSupported(.locked) else { return }
+            // `setWhiteBalanceModeLocked(with:)` raises an Objective-C
+            // exception (which Swift cannot catch, so it kills the process)
+            // when custom gains are not supported on the active device.
+            // The mode check above is not sufficient: some devices support
+            // .locked mode only through the preset, not through custom
+            // gains. This guard is the one that prevents the crash.
+            guard activeDevice.isLockingWhiteBalanceWithCustomDeviceGainsSupported else { return }
             do {
                 try activeDevice.lockForConfiguration()
                 defer { activeDevice.unlockForConfiguration() }
+                guard (2_000 ... 8_000).contains(kelvin) else { return }
                 let values = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(
                     temperature: Float(kelvin),
                     tint: 0
                 )
                 var gains = activeDevice.deviceWhiteBalanceGains(for: values)
                 let maximum = activeDevice.maxWhiteBalanceGain
+                guard maximum.isFinite, maximum >= 1,
+                      gains.redGain.isFinite,
+                      gains.greenGain.isFinite,
+                      gains.blueGain.isFinite
+                else { return }
                 gains.redGain = min(max(gains.redGain, 1), maximum)
                 gains.greenGain = min(max(gains.greenGain, 1), maximum)
                 gains.blueGain = min(max(gains.blueGain, 1), maximum)
@@ -325,14 +400,32 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
 
     func updateVideoRotation(angle: CGFloat, orientation: CapturedFrameOrientation) {
         metadataLock.withLock {
-            frameOrientation = orientation
+            requestedVideoRotation = (angle, orientation)
         }
         sessionQueue.async { [weak self] in
-            guard let connection = self?.videoOutput.connection(with: .video) else { return }
-            if connection.isVideoRotationAngleSupported(angle) {
-                connection.videoRotationAngle = angle
-            }
+            self?.applyRequestedVideoRotation()
         }
+    }
+
+    private func applyRequestedVideoRotation() {
+        let requested = metadataLock.withLock { requestedVideoRotation }
+        guard let connection = videoOutput.connection(with: .video) else { return }
+        let rawActive = activeConfiguration?.videoCodec.isProResRAW == true
+        let angle: CGFloat = rawActive ? 0 : requested.angle
+        if connection.isVideoRotationAngleSupported(angle) {
+            connection.videoRotationAngle = angle
+        }
+        if let movieConnection = movieOutput.connection(with: .video),
+           movieConnection.isVideoRotationAngleSupported(requested.angle)
+        {
+            // Movie output stores orientation in the QuickTime track matrix;
+            // the RAW sensels themselves remain unrotated.
+            movieConnection.videoRotationAngle = requested.angle
+        }
+        metadataLock.withLock {
+            frameOrientation = requested.orientation
+        }
+        latestFrameMailbox.clear()
     }
 
     private func configure(configuration: CaptureConfiguration) throws -> ActiveCameraInfo {
@@ -359,21 +452,33 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
             configuration: configuration
         )
 
-        let supportedPixelFormats = videoOutput.availableVideoPixelFormatTypes
-        let pixelFormat: OSType = supportedPixelFormats.contains(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
-            ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat]
-        videoOutput.setSampleBufferDelegate(self, queue: outputQueue)
-
+        let rawCapture = configuration.videoCodec.isProResRAW
+        // Advertised output types are meaningful only after attachment to the
+        // selected sensor. Never guess a YUV type the output cannot deliver.
+        videoOutput.videoSettings = [:]
         guard captureSession.canAddOutput(videoOutput) else {
             throw GVError.captureFailure(message: "The native-YUV video output cannot be attached.")
         }
         captureSession.addOutput(videoOutput)
+        videoOutput.automaticallyConfiguresOutputBufferDimensions = false
+        videoOutput.deliversPreviewSizedOutputBuffers = rawCapture
+        let supportedPixelFormats = videoOutput.availableVideoPixelFormatTypes
+        guard let pixelFormat = [kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
+            .first(where: supportedPixelFormats.contains)
+        else {
+            throw GVError.capabilityUnavailable(
+                feature: "Camera preview",
+                reason: "This sensor format cannot deliver a supported YUV preview."
+            )
+        }
+        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat]
+        videoOutput.setSampleBufferDelegate(self, queue: outputQueue)
 
         if let audioDevice = AVCaptureDevice.default(for: .audio),
            let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
-           captureSession.canAddInput(audioInput) {
+           captureSession.canAddInput(audioInput)
+        {
             captureSession.addInput(audioInput)
             audioOutput.setSampleBufferDelegate(self, queue: outputQueue)
             if captureSession.canAddOutput(audioOutput) {
@@ -381,18 +486,45 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
             }
         }
 
-        let availableCodecTypes = videoOutput.availableVideoCodecTypesForAssetWriter(writingTo: .mov)
+        if rawCapture {
+            guard captureSession.canAddOutput(movieOutput) else {
+                throw GVError.capabilityUnavailable(
+                    feature: configuration.videoCodec.rawValue,
+                    reason: "The sensor RAW movie output cannot be attached with the preview proxy."
+                )
+            }
+            captureSession.addOutput(movieOutput)
+            guard let codec = configuration.videoCodec.avVideoCodecType,
+                  movieOutput.availableVideoCodecTypes.contains(codec),
+                  let connection = movieOutput.connection(with: .video)
+            else {
+                throw GVError.capabilityUnavailable(
+                    feature: configuration.videoCodec.rawValue,
+                    reason: "The active full-sensor format does not advertise this RAW codec."
+                )
+            }
+            movieOutput.setOutputSettings([AVVideoCodecKey: codec], for: connection)
+        }
+
+        var availableCodecTypes = videoOutput.availableVideoCodecTypesForAssetWriter(writingTo: .mov)
+        if rawCapture {
+            availableCodecTypes.append(contentsOf: movieOutput.availableVideoCodecTypes)
+        }
+        availableCodecTypes = Array(Set(availableCodecTypes))
         let availableVideoCodecs = CaptureSetupDraft.VideoCodec.supportedChoices(from: availableCodecTypes)
 
         if let connection = videoOutput.connection(with: .video) {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = configuration.position == .front
             if connection.isVideoStabilizationSupported {
-                connection.preferredVideoStabilizationMode = configuration.framesPerSecond >= 120 ? .off : .standard
+                connection.preferredVideoStabilizationMode =
+                    configuration.resolution != .openGate && configuration.framesPerSecond < 120 &&
+                    selectedFormat.isVideoStabilizationModeSupported(.standard) ? .standard : .off
             }
         }
 
         activeDevice = device
+        activeConfiguration = configuration
         metadataLock.withLock {
             telemetryDevice = device
             telemetryFrameCounter = 0
@@ -441,11 +573,22 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
         }
         let resolvedRate = bestRange.map {
             min(max(requestedFPS, $0.minFrameRate), $0.maxFrameRate)
-        } ?? requestedFPS
-        let resolvedFPS = max(1, Int(resolvedRate.rounded()))
-        let duration = CMTime(seconds: 1 / max(resolvedRate, 1), preferredTimescale: 60000)
-        device.activeVideoMinFrameDuration = duration
-        device.activeVideoMaxFrameDuration = duration
+        }
+        let resolvedFPS = max(1, Int((resolvedRate ?? requestedFPS).rounded()))
+        // Only pinned when the active format actually published a range to
+        // clamp against. A duration outside the format's supported ranges is
+        // an NSInvalidArgumentException, which Swift cannot catch — so a
+        // format that reports none is left at its own default cadence rather
+        // than taking the app down with it.
+        if let resolvedRate, let bestRange {
+            // Reciprocal rounding must not step outside the exact CMTime
+            // endpoints published by fractional-rate sensor formats.
+            let requestedDuration = CMTime(seconds: 1 / max(resolvedRate, 1), preferredTimescale: 60000)
+            let duration = CMTimeMaximum(bestRange.minFrameDuration,
+                                         CMTimeMinimum(requestedDuration, bestRange.maxFrameDuration))
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+        }
         device.automaticallyAdjustsVideoHDREnabled = false
 
         device.isVideoHDREnabled = configuration.prefersHDR && format.isVideoHDRSupported
@@ -456,7 +599,7 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
         if device.isExposureModeSupported(.continuousAutoExposure) {
             device.exposureMode = .continuousAutoExposure
         }
-        let shouldLockWhiteBalance = configuration.videoCodec == .proResRAW &&
+        let shouldLockWhiteBalance = configuration.videoCodec.isProResRAW &&
             device.isWhiteBalanceModeSupported(.locked)
         if shouldLockWhiteBalance {
             device.whiteBalanceMode = .locked
@@ -523,6 +666,9 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
     }
 
     private func tearDownSession() {
+        if movieOutput.isRecording {
+            movieOutput.stopRecording()
+        }
         if let activeDevice, activeDevice.hasTorch, activeDevice.torchMode == .on {
             do {
                 try activeDevice.lockForConfiguration()
@@ -542,6 +688,8 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
         captureSession.outputs.forEach(captureSession.removeOutput)
         captureSession.commitConfiguration()
         activeDevice = nil
+        activeConfiguration = nil
+        nativeRecordingDelegate = nil
         metadataLock.withLock { telemetryDevice = nil }
         deviceTelemetryMailbox.clear()
         latestFrameMailbox.clear()
@@ -551,6 +699,79 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
     private func emit(_ event: CameraEvent) {
         let handler = handlerLock.withLock { eventHandler }
         handler?(event)
+    }
+}
+
+enum NativeCaptureResult: Sendable {
+    case success(URL)
+    case failure(String)
+}
+
+private final class NativeMovieRecordingDelegate: NSObject, AVCaptureFileOutputRecordingDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var didReportStart = false
+    private var didFinish = false
+    private let onStarted: @Sendable (Bool) -> Void
+    private let onFinished: @Sendable (NativeCaptureResult) -> Void
+
+    init(
+        onStarted: @escaping @Sendable (Bool) -> Void,
+        onFinished: @escaping @Sendable (NativeCaptureResult) -> Void
+    ) {
+        self.onStarted = onStarted
+        self.onFinished = onFinished
+    }
+
+    func fileOutput(
+        _: AVCaptureFileOutput,
+        didStartRecordingTo _: URL,
+        from _: [AVCaptureConnection]
+    ) {
+        let shouldReport = lock.withLock {
+            guard !didReportStart, !didFinish else { return false }
+            didReportStart = true
+            return true
+        }
+        if shouldReport { onStarted(true) }
+    }
+
+    func fileOutput(
+        _: AVCaptureFileOutput,
+        didFinishRecordingTo outputFileURL: URL,
+        from _: [AVCaptureConnection],
+        error: Error?
+    ) {
+        let state = lock.withLock { () -> (reportFailedStart: Bool, reportFinish: Bool) in
+            guard !didFinish else { return (false, false) }
+            didFinish = true
+            let reportFailedStart = !didReportStart
+            didReportStart = true
+            return (reportFailedStart, true)
+        }
+        guard state.reportFinish else { return }
+        if state.reportFailedStart { onStarted(false) }
+
+        let nsError = error as NSError?
+        let completed = nsError?.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool ?? (error == nil)
+        if completed {
+            onFinished(.success(outputFileURL))
+        } else {
+            onFinished(.failure(error?.localizedDescription ?? "RAW MOVIE WRITER FAILED"))
+        }
+    }
+}
+
+private extension CameraController {
+    /// Validates the active-format duration bounds before a custom-exposure
+    /// write. AVFoundation reports these as `CMTime`s, and malformed or
+    /// transient bounds must never reach an exception-throwing setter.
+    static func exposureDurationRange(for format: AVCaptureDevice.Format) -> ClosedRange<Double>? {
+        let minimum = CMTimeGetSeconds(format.minExposureDuration)
+        let maximum = CMTimeGetSeconds(format.maxExposureDuration)
+        guard minimum.isFinite, maximum.isFinite,
+              minimum > 0, maximum >= minimum
+        else { return nil }
+        return minimum ... maximum
     }
 }
 

@@ -5,9 +5,12 @@ struct SocialLinksOverlay: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.26)
+            Color.black.opacity(0.5)
                 .ignoresSafeArea()
                 .onTapGesture { isPresented = false }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Dismiss creator panel")
+                .accessibilityAddTraits(.isButton)
 
             GVPanel("CREATOR // GREY") {
                 // Layout is driven by the links, exactly as before, and the
@@ -29,7 +32,7 @@ struct SocialLinksOverlay: View {
                     )
                     GVInstrumentButton(label: "CLOSE", symbol: "xmark", action: { isPresented = false })
                 }
-                .padding(14)
+                .padding(GVMetrics.stepRelated)
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: 300, alignment: .bottom)
                 .background {
@@ -48,18 +51,19 @@ struct SocialLinksOverlay: View {
                                 endPoint: .bottom
                             )
                         }
-                        .accessibilityLabel("grey creator mark")
+                        .accessibilityHidden(true)
                 }
                 .clipped()
             }
             .frame(maxWidth: 360)
-            .padding(24)
+            .padding(GVMetrics.stepSection)
+            .accessibilityIdentifier("creator.overlay")
         }
     }
 
     private func socialLink(symbol: String, label: String, handle: String, destination: URL) -> some View {
         Link(destination: destination) {
-            HStack(spacing: 10) {
+            HStack(spacing: GVMetrics.stepInternal) {
                 Image(systemName: symbol)
                     .frame(width: 22)
                     .foregroundStyle(GVTheme.violet)
@@ -76,9 +80,11 @@ struct SocialLinksOverlay: View {
                     .font(.system(size: 10, weight: .bold))
             }
             .foregroundStyle(GVTheme.bone)
-            .padding(11)
-            .background(.black.opacity(0.55))
+            .padding(GVMetrics.stepRelated)
+            .background(GVTheme.surfacePrimary)
             .overlay(Rectangle().strokeBorder(GVTheme.separator, lineWidth: GVMetrics.hairline))
         }
+        .buttonStyle(GVPressStyle(scale: 0.98))
+        .accessibilityIdentifier("creator.link.\(label.lowercased())")
     }
 }

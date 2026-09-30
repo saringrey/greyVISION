@@ -7,6 +7,9 @@ import SwiftUI
 /// follows immediately behind it before the frame locks.
 struct GVSyncSweep: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Gates the ambient clock: a decoration that is not on screen should
+    /// not be scheduling frames.
+    @Environment(\.scenePhase) private var scenePhase
 
     let isActive: Bool
     let start: Date
@@ -16,7 +19,7 @@ struct GVSyncSweep: View {
             Color.clear
         } else {
             GeometryReader { geometry in
-                TimelineView(.animation(minimumInterval: 1 / 60, paused: false)) { timeline in
+                TimelineView(GVAmbientClock.ambient(hertz: 60, scenePhase: scenePhase, isActive: isActive)) { timeline in
                     let progress = GVSyncSweep.progress(from: start, now: timeline.date)
                     let height = geometry.size.height
                     let beamY = height * progress
@@ -76,6 +79,9 @@ struct GVSyncSweep: View {
 /// Applies the single-frame RGB separation produced by `GVSyncSweep`.
 struct GVChromaticLock: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Gates the ambient clock: a decoration that is not on screen should
+    /// not be scheduling frames.
+    @Environment(\.scenePhase) private var scenePhase
 
     let isActive: Bool
     let start: Date
@@ -84,7 +90,7 @@ struct GVChromaticLock: ViewModifier {
         if reduceMotion || !isActive {
             content
         } else {
-            TimelineView(.animation(minimumInterval: 1 / 60, paused: false)) { timeline in
+            TimelineView(GVAmbientClock.ambient(hertz: 60, scenePhase: scenePhase, isActive: isActive)) { timeline in
                 let amount = GVSyncSweep.chromaticAmount(
                     from: start,
                     now: timeline.date,
