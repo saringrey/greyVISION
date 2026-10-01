@@ -531,6 +531,106 @@ final class FlagshipRenderTests: XCTestCase {
         XCTAssertTrue(budget.fund(requested: 2), "the freed hardware is available to the next Slot")
     }
 
+    /// A hold must not stall the mosh. With the camera frame frozen, the only
+    /// thing that keeps a codec corrupting is feeding it its own reconstruction,
+    /// so `held` has to force the self-feed on every instrument — including the
+    /// two that have no RECYCLE control at all.
+    func testHeldConfigurationFeedsTheCodecItsOwnReconstruction() {
+        let live = GVDatamoshEngine.configuration(variant: .datamosh,
+                                                  primary: 0.5, secondary: 0.5, tertiary: 0.5,
+                                                  held: false)
+        let held = GVDatamoshEngine.configuration(variant: .datamosh,
+                                                  primary: 0.5, secondary: 0.5, tertiary: 0.5,
+                                                  held: true)
+        XCTAssertEqual(live.recycle, 0, "DATAMOSH has no recycle control while the camera runs")
+        XCTAssertEqual(held.recycle, 1, "a held DATAMOSH must encode its own previous output")
+        // The reference must keep being withheld, or there is no divergence and
+        // therefore no drag: a held frame with an intact chain is a clean still.
+        XCTAssertGreaterThan(held.referenceDropEvery, 1)
+    }
+
+    /// The hold is not a per-instrument option. DATAMOSH and LIQUID MOSH have no
+    /// RECYCLE control at all — their encoder input is always the camera — and
+    /// HEAVY MOSH's blend is a slider the operator can leave at its bottom, where
+    /// it is again all camera. A held mapping that only obeyed the sliders would
+    /// therefore keep re-encoding a picture with nothing moving in it: no motion
+    /// to predict, no reference to diverge from, and a slightly soft still where
+    /// the operator is waiting for the melt. Held, every instrument eats itself.
+    func testHeldForcesTheSelfFeedOnEveryInstrumentRegardlessOfSliders() {
+        for variant in [GVDatamoshEngine.Variant.datamosh, .liquidMosh, .heavyMosh] {
+            for control in [0.0, 0.5, 1.0] {
+                let held = GVDatamoshEngine.configuration(variant: variant,
+                                                          primary: control, secondary: control,
+                                                          tertiary: control,
+                                                          held: true)
+                XCTAssertEqual(held.recycle, 1, "\(variant) left the encoder reading a frozen camera")
+                XCTAssertGreaterThan(held.referenceDropEvery, 1,
+                                     "\(variant) at rest kept every reference while held, so the chain converged")
+            }
+        }
+        // Live behaviour is untouched by all of this: `held` defaults to false,
+        // and while the camera runs the sliders still own the codec.
+        let liveDatamosh = GVDatamoshEngine.configuration(variant: .datamosh, primary: 0.5, secondary: 0.5, tertiary: 0.5)
+        XCTAssertEqual(liveDatamosh.recycle, 0)
+        let liveCascadeAtRest = GVDatamoshEngine.configuration(variant: .heavyMosh, primary: 0, secondary: 0.5, tertiary: 0.5)
+        XCTAssertEqual(liveCascadeAtRest.recycle, 0, accuracy: 0.0001)
+        let liveLiquidWithNoDrop = GVDatamoshEngine.configuration(variant: .liquidMosh, primary: 0.5, secondary: 0, tertiary: 0.5)
+        XCTAssertEqual(liveLiquidWithNoDrop.referenceDropEvery, 0)
+    }
+
+    /// The self-feed a hold depends on is not a second source texture: it is the
+    /// staging kernel's own `mix(live, reconstruction, recycle)`, which the hold
+    /// drives to one. Pinned because everything at full recycle rests on it — if
+    /// any camera survived into the encoder input, a held frame would keep being
+    /// re-encoded from a frozen clean still, the codec would find nothing moving,
+    /// and the mosh would converge instead of compounding.
+    ///
+    /// The comparison is deliberately transfer-function agnostic: the same
+    /// reconstruction staged against two different live frames has to come back
+    /// identical, which says "no camera in the output" without having to know how
+    /// the kernel encodes it on the way out.
+    func testStagingKernelAtFullRecycleContainsNoCameraAtAll() throws {
+        let gpu = try GPUFixture()
+        let pipeline = try XCTUnwrap(gpu.device.makeComputePipelineState(
+            function: XCTUnwrap(gpu.library.makeFunction(name: "gvCameraDatamoshStage"))
+        ))
+        let reconstruction = try gpu.decodePattern()
+        func stage(live: MTLTexture, recycle: Float, decodeReady: UInt32) throws -> [Float] {
+            let output = try gpu.texture()
+            var uniforms = DatamoshStageTestUniforms(recycle: recycle, decodeReady: decodeReady)
+            try gpu.compute(pipeline) { encoder in
+                encoder.setTexture(live, index: 0)
+                encoder.setTexture(reconstruction, index: 1)
+                encoder.setTexture(output, index: 2)
+                encoder.setBytes(&uniforms, length: MemoryLayout<DatamoshStageTestUniforms>.stride, index: 0)
+            }
+            return gpu.read(output)
+        }
+        let heldFirst = try stage(live: gpu.pattern(), recycle: 1, decodeReady: 1)
+        let heldSecond = try stage(live: gpu.pattern(shift: 29), recycle: 1, decodeReady: 1)
+        XCTAssertLessThan(Self.difference(heldFirst, heldSecond), 0.0001,
+                          "at full recycle the encoder input still contains camera")
+        // Not a vacuous pass: the same kernel at recycle zero is all camera, so
+        // the two runs above differ only in the mapping the hold drives.
+        let live = try stage(live: gpu.pattern(), recycle: 0, decodeReady: 1)
+        XCTAssertGreaterThan(Self.difference(live, heldFirst), 0.001)
+        // And with no reconstruction yet, recycle must not reach for one. This is
+        // the gate that keeps a first frame from encoding an empty buffer.
+        let gated = try stage(live: gpu.pattern(), recycle: 1, decodeReady: 0)
+        XCTAssertLessThan(Self.difference(gated, live), 0.0001)
+    }
+
+    /// Half of the hold bug sits upstream of the codec: the three instruments are
+    /// absent from `freezesHistoryOnHold`, so `freezeForEffect` never becomes true
+    /// for them and nothing in the renderer treats a held codec Slot as held at
+    /// all. The contextual hold gesture arms on this same predicate, so a codec
+    /// mode missing here would be a headline feature that never switches on.
+    func testCodecMoshEffectsFreezeTheirHistoryOnHold() {
+        for effect in [WorkspaceAdjustableEffect.datamosh, .liquidMosh, .heavyMosh] {
+            XCTAssertTrue(effect.freezesHistoryOnHold, "\(effect.rawValue) must freeze history while held")
+        }
+    }
+
     /// Paints and submits moving content into the engine's own encoder input,
     /// sliding the pattern every frame. Sliding is not decoration: an encoder
     /// with nothing moving between frames codes every frame independently, and
@@ -658,4 +758,14 @@ private struct GPUFixture {
             encoder.endEncoding()
         }
     }
+}
+
+/// Mirrors `GVDatamoshStageUniforms` in CameraShaders.metal. The renderer's copy
+/// of this layout is private to its own file, so a test that drives the staging
+/// kernel directly — which is the only way to test the self-feed without a
+/// camera — has to declare the bytes again. The Metal struct is two fields and
+/// their order is the contract.
+private struct DatamoshStageTestUniforms {
+    var recycle: Float
+    var decodeReady: UInt32
 }

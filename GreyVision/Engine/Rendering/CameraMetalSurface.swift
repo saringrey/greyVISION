@@ -865,6 +865,11 @@ private final class CameraRenderGraphNode: RenderEffect {
     /// already refused, which would be a per-frame `GVDatamoshEngine(device: nil)`
     /// in the hot path.
     var codecUnavailableForSession = false
+    /// Whether this Slot's last codec frame was fed to a held camera. Only the
+    /// held→live edge needs remembering: the chain built while held predicts
+    /// from the Slot's own reconstruction, and a live frame arriving against it
+    /// is a smear rather than an effect until something resyncs.
+    var codecWasHeldLastFrame = false
 
     /// Codec sessions this Slot asks the budget for. A plain read of the Slot's
     /// own stage, so the funding decision never depends on renderer state being
@@ -967,6 +972,7 @@ private final class CameraRenderGraphNode: RenderEffect {
         codecBudgetRefused = false
         codecUnavailableForSession = false
         datamoshStalledSince = nil
+        codecWasHeldLastFrame = false
     }
 }
 
@@ -2072,6 +2078,11 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                                    parameters: node.cameraParameters,
                                    source: request.input,
                                    commandBuffer: request.frame.commandBuffer,
+                                   // The camera-frozen flag and not `freezeForEffect`:
+                                   // a codec Slot has to eat itself whenever the
+                                   // frame has stopped arriving, whether or not this
+                                   // effect also freezes the shared history.
+                                   held: state.settings.temporalHoldActive,
                                    decoded: &decodedFrame)
             }
             encodeTemporalEffect(
@@ -3137,6 +3148,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                                     parameters: CameraEffectParameters,
                                     source: MTLTexture,
                                     commandBuffer: MTLCommandBuffer,
+                                    held: Bool,
                                     decoded: inout GVDatamoshEngine.DecodedFrame?) {
         // The engine is the Slot's, funded by the graph configuration pass that
         // ran before this one; a nil here means the budget refused it.
@@ -3150,11 +3162,18 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         // ceiling is the difference between a governor that shrinks the whole
         // pipeline when a device gets warm and one that leaves a second hardware
         // engine running at full size.
+        //
+        // `held` is the renderer's share of the mapping: the camera frame is
+        // frozen, and a codec re-encoding the same clean still every frame finds
+        // no motion, diverges from no reference, and converges into a slightly
+        // soft picture. While held the encoder's input is its own reconstruction
+        // instead, which is the whole point of the hold.
         let configuration = GVDatamoshEngine.configuration(variant: variant,
                                                            primary: values.primary,
                                                            secondary: values.secondary,
                                                            tertiary: values.tertiary,
-                                                           maximumEncodeEdge: effectQuality.codecEdge)
+                                                           maximumEncodeEdge: effectQuality.codecEdge,
+                                                           held: held)
         decoded = engine.latestDecodedFrame
         let renderClock = ProcessInfo.processInfo.systemUptime
         defer { node.datamoshStalledSince = renderClock }
@@ -3167,9 +3186,25 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         // Gap detection belongs to the Slot. A renderer-wide timer made an idle
         // DATAMOSH Slot force a sync sample on the Slot that was still running,
         // which repaired the picture the operator was watching.
-        if let lastPump = node.datamoshStalledSince, renderClock - lastPump > 0.4 {
-            engine.requestKeyframe()
+        //
+        // None of this applies while held, and holding is not a gap: the pass
+        // runs every frame and the chain is doing exactly what it was built to
+        // do. Firing the watchdog here would repair the image the hold exists to
+        // consume.
+        if !held {
+            if let lastPump = node.datamoshStalledSince, renderClock - lastPump > 0.4 {
+                engine.requestKeyframe()
+            }
+            // Releasing a hold hands the codec a live camera again; without a
+            // forced sync sample the first frames after release predict from the
+            // held reconstruction and the operator sees a smear that is not an
+            // effect. Exactly one, on the edge — not every frame after it, which
+            // would make releasing a hold a repair rather than a mosh.
+            if node.codecWasHeldLastFrame {
+                engine.requestKeyframe()
+            }
         }
+        node.codecWasHeldLastFrame = held
         // The Metal texture is a view onto the decoder's image buffer, valid
         // only while the CoreVideo import behind it lives. The command buffer
         // reads it after this function returns, and the engine publishes a newer

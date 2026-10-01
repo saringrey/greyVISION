@@ -381,14 +381,6 @@ float3 gvCameraToEncoded(float3 value) {
     );
 }
 
-/// Reads the decoder's reconstruction back into the working linear space. The
-/// texture is whatever VideoToolbox actually wrote: 8-bit, 4:2:0 chroma taken
-/// from a shared macroblock, block boundaries where the quantiser gave up.
-float3 gvCameraSampleDecode(texture2d<half, access::sample> decodeTexture, const float2 uv) {
-    constexpr sampler decodeSampler(coord::normalized, address::clamp_to_edge, filter::linear);
-    return gvCameraToLinear(float3(decodeTexture.sample(decodeSampler, uv).rgb), 1u);
-}
-
 /// Reads the decoder's reconstruction without filtering.
 ///
 /// The reconstruction is the encode's size, which is almost never the frame's,
@@ -4203,10 +4195,16 @@ kernel void gvCameraDatamoshStage(
         gvCameraSample(inputTexture, uv + texel * float2( 0.25,  0.25))
     ) * 0.25;
     const float recycle = saturate(stage.recycle);
-    // The reconstruction is one frame of the encode's own size, so this read is
-    // pixel for pixel and needs no filtering beyond the sampler's.
+    // Unfiltered on purpose. The ring and the encode are the same size, so in
+    // steady state this read is pixel for pixel and the two samplers agree — but
+    // the ring rebuilds whenever the quality governor or the SCALE control moves
+    // the encode, and for the frames after that the reconstruction is another
+    // size entirely. Linear filtering smooths exactly the macroblock boundary the
+    // quantiser left standing, and this is the one read whose output is fed back as
+    // the next generation's input: a soft reconstruction here becomes a blur that
+    // compounds while a hold is engaged.
     const float3 recycled = stage.decodeReady == 1u
-        ? mix(live, gvCameraSampleDecode(decodeTexture, uv), recycle)
+        ? mix(live, gvCameraSampleDecodeBlocky(decodeTexture, uv), recycle)
         : live;
     outputTexture.write(half4(half3(gvCameraToEncoded(recycled)), 1.0h), position);
 }

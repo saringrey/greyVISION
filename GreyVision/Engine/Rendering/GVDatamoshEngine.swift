@@ -107,11 +107,16 @@ final class GVDatamoshEngine: @unchecked Sendable {
     ///
     /// Lives on the engine rather than on the renderer so that what the sliders
     /// mean is testable without a camera, a Metal device or a view hierarchy.
+    ///
+    /// `held` is the frame hold: the camera has stopped arriving, so the
+    /// sliders' usual relationship to the picture no longer describes anything
+    /// the codec can act on. See the rule at the foot of the function.
     static func configuration(variant: Variant,
                               primary: Double,
                               secondary: Double,
                               tertiary: Double,
-                              maximumEncodeEdge: Int = 0) -> Configuration {
+                              maximumEncodeEdge: Int = 0,
+                              held: Bool = false) -> Configuration {
         func unit(_ value: Double) -> Double { min(max(value, 0), 1) }
         func ramp(_ value: Double, _ low: Double, _ high: Double) -> Double {
             low + (high - low) * unit(value)
@@ -175,6 +180,27 @@ final class GVDatamoshEngine: @unchecked Sendable {
             // and HEVC's loop filter smears recycled chroma between blocks in a
             // way H.264 simply does not.
             configuration.codec = .hevc
+        }
+        // A hold stops the camera but must not stop the mosh. Feeding the
+        // encoder its own previous output is the only thing that keeps
+        // corrupting a picture with no new motion in it, and it is the reason
+        // the artefact still drags, still bleeds chroma, and still melts while
+        // the frame underneath it is frozen. Every instrument gets it; the
+        // RECYCLE slider only chooses how much on a live frame.
+        //
+        // Applied after the per-variant switch rather than inside it, so a
+        // variant added later cannot forget the hold by accident, and the
+        // rule sits in one place where it can be read as one rule.
+        //
+        // The reference has to keep being withheld as well. Self-feed alone on
+        // an intact chain converges: the encoder predicts its own last output
+        // perfectly, codes nothing, and the held frame settles into a clean
+        // still — which is precisely the failure this hold exists to fix.
+        if held {
+            configuration.recycle = 1
+            if configuration.referenceDropEvery < 2 {
+                configuration.referenceDropEvery = 2
+            }
         }
         return configuration
     }

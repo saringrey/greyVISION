@@ -1802,7 +1802,13 @@ extension WorkspaceAdjustableEffect {
 
     var freezesHistoryOnHold: Bool {
         switch self {
-        case .moshBrush, .predictionDrift,
+        // The three compression instruments belong here for the same reason the
+        // shader moshes do, and their absence was half of the hold bug: with no
+        // entry in this set a held frame never reached the codec as a hold, so
+        // it kept being handed the same clean still. The codec then found no
+        // motion to predict, diverged from no reference, and converged.
+        case .datamosh, .liquidMosh, .heavyMosh,
+             .moshBrush, .predictionDrift,
              .vectorCodebook, .motionTransplant, .bitplaneLatch, .reactionGarden,
              .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort,
              .pointCloudSmear, .depthFeedback, .freezeBrush, .sortBrush, .feedbackTunnel,
