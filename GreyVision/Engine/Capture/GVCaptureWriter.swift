@@ -84,8 +84,17 @@ final class GVStillRequestMailbox: @unchecked Sendable {
 ///
 /// Frames arrive already encoded to display-referred BGRA in a pixel buffer
 /// drawn from the adaptor's own pool, so nothing is copied through the CPU.
-/// Video only — the microphone is owned by the audio-reactive analyser and
-/// sharing it with a recording session is not wired up.
+///
+/// Legacy, and video-only in fact as well as in code: the live recorder is
+/// `GVRealtimeRecordingSession` (`Engine/AR/ARRecordingSession.swift`), which owns
+/// the microphone handoff — `CameraRuntime` routes audio sample buffers into
+/// `recordingMailbox.appendAudio` and the session writes them through its own
+/// `AVAssetWriterInput`. This class is not on that path any more:
+/// `GVProcessedFramesAdapter` still holds one, and `GVRecordingTransaction` still
+/// selects that adapter for the camera's recording path, but the transaction stops
+/// the camera through the mailbox before the adapter's recorder is ever asked to
+/// start, and this writer's `configureWriter` / `nextTexture` / `appendFrame` have
+/// no callers. Deleting it is a separate decision from correcting what it claims.
 final class GVVideoRecorder: @unchecked Sendable {
     let stateMailbox = GVRecordingStateMailbox()
 

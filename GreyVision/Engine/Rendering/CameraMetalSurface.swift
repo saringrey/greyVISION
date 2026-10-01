@@ -58,13 +58,19 @@ struct CameraRenderStats: Sendable, Equatable {
     /// operator's stack is not fully on screen, which they are otherwise left
     /// to infer from the picture.
     var shedEffects: Int = 0
-    /// Codec Slots running a real round trip this frame. Below the number of
-    /// codec modes in the stack means the budget refused one. All three codec
+    /// Codec Slots running a real round trip this frame. Below
+    /// `codecSlotsRequested` means the budget refused one. All three codec
     /// instruments compose the reconstruction and nothing else, so a refused Slot
     /// shows the frame whole rather than moshed — the operator reads that here,
     /// because a frame that looks merely unmoshed is not a visible failure.
     var codecSlots: Int = 0
+    /// Codec Slots in the stack, funded or not. Without this, `codecSlots` of 1
+    /// is indistinguishable from a stack that only ever held one.
+    var codecSlotsRequested: Int = 0
     var reducedDetail = false
+
+    /// Whether a codec Slot in the stack went without a round trip this frame.
+    var hasRefusedCodecSlot: Bool { codecSlots < codecSlotsRequested }
 
     static let idle = CameraRenderStats()
 }
@@ -1092,6 +1098,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// Live codec round trips this frame, for the same reason as the shed count:
     /// a Slot the budget refused still moves, it is just no longer the codec.
     private var codecSlotSnapshot = 0
+    /// Codec Slots the stack asked for, published beside the live count so a
+    /// refusal reads as `1/2` instead of as a one-Slot stack.
+    private var codecSlotsRequestedSnapshot = 0
     private var bandLumaFrame = 0
     /// Frames left before the chain may drop back to preview resolution.
     ///
@@ -1910,7 +1919,14 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         for node in codecNodes {
             _ = codecEngine(for: node)
         }
-        statsLock.withLock { codecSlotSnapshot = codecBudget.liveSessions }
+        // Counted in Slots, not sessions. A two-pass instrument is one Slot that
+        // spends two sessions, so the budget's session total would report a
+        // refusal on a stack that has none.
+        let fundedCodecSlots = codecNodes.reduce(0) { $0 + ($1.codecBudgetRefused ? 0 : 1) }
+        statsLock.withLock {
+            codecSlotSnapshot = fundedCodecSlots
+            codecSlotsRequestedSnapshot = codecNodes.count
+        }
         renderGraph.replaceEffects(effects)
     }
 
@@ -2468,6 +2484,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 bottomChromeLoad: bottomChromeLoadAverage,
                 shedEffects: shedEffectSnapshot,
                 codecSlots: codecSlotSnapshot,
+                codecSlotsRequested: codecSlotsRequestedSnapshot,
                 reducedDetail: reducedDetail
             )
         }

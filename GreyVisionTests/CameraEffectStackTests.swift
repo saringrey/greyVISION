@@ -176,6 +176,32 @@ final class CameraEffectStackTests: XCTestCase {
         mailbox.reportTakeSaved(url)
         XCTAssertEqual(seen.urls, [url], "one take is one report")
     }
+
+    // MARK: - A refused codec round trip is visible
+
+    /// A codec Slot the budget refused still renders — it shows the frame whole.
+    /// That is indistinguishable in the picture from an effect that stopped
+    /// working, so the count of live round trips is part of the contract instead.
+    func testRenderStatsExposeLiveCodecSlotCount() {
+        var stats = CameraRenderStats.idle
+        XCTAssertEqual(stats.codecSlots, 0)
+        XCTAssertEqual(stats.codecSlotsRequested, 0)
+        stats.codecSlotsRequested = 2
+        stats.codecSlots = 2
+        XCTAssertEqual(stats.codecSlots, 2)
+    }
+
+    /// The reading the operator needs is the shortfall. One live trip is a
+    /// healthy stack of one and a starved stack of two, and the strip can only
+    /// tell those apart if the stats carry how many were asked for.
+    func testRenderStatsDistinguishAFundedSlotFromARefusedOne() {
+        var stats = CameraRenderStats.idle
+        stats.codecSlotsRequested = 1
+        stats.codecSlots = 1
+        XCTAssertFalse(stats.hasRefusedCodecSlot, "a stack that got everything it asked for is quiet")
+        stats.codecSlotsRequested = 2
+        XCTAssertTrue(stats.hasRefusedCodecSlot, "the same one trip is a refusal at two Slots")
+    }
 }
 
 /// A `Sendable` sink for the URLs a mailbox reports, so a test can count firings

@@ -54,6 +54,9 @@ struct GVTelemetryStrip: View {
                 if shed > 0 {
                     shedNotice(shed)
                 }
+                if renderStats.codecSlotsRequested > 0 {
+                    codecNotice(renderStats)
+                }
             }
             .frame(maxWidth: .infinity)
         }
@@ -97,6 +100,26 @@ struct GVTelemetryStrip: View {
             .accessibilityIdentifier("workspace.status.shed")
             .accessibilityLabel("Effects shed for frame rate")
             .accessibilityValue("\(count)")
+    }
+
+    /// Live codec round trips, present whenever the stack holds a codec mode at
+    /// all. `2` is the quiet reading: every Slot has its round trip. `1/2` is
+    /// `warn`, and it is the only way an operator can see that the second mosh
+    /// fell back — a refused Slot shows the frame whole, which looks like an
+    /// effect that stopped working rather than one that never got the hardware.
+    private func codecNotice(_ stats: CameraRenderStats) -> some View {
+        let refused = stats.hasRefusedCodecSlot
+        return Text(refused ? "Codec \(stats.codecSlots)/\(stats.codecSlotsRequested)" : "Codec \(stats.codecSlots)")
+            .font(.system(size: 11, weight: .medium))
+            .monospacedDigit()
+            .foregroundStyle(refused ? GVTheme.warn : GVTheme.bone.opacity(0.62))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.vertical, GVMetrics.stepRelated)
+            .transition(.opacity)
+            .accessibilityIdentifier("workspace.status.codec")
+            .accessibilityLabel(refused ? "Codec mosh without a round trip" : "Codec mosh round trips")
+            .accessibilityValue("\(stats.codecSlots) of \(stats.codecSlotsRequested)")
     }
 
     private func restoreAutoExposure() {
