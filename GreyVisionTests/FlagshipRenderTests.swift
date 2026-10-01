@@ -494,6 +494,43 @@ final class FlagshipRenderTests: XCTestCase {
         XCTAssertGreaterThan(engine.statistics.framesSubmitted, 60)
     }
 
+    /// Which Slots get real hardware is a decision, so it is tested as a decision.
+    /// The bug this prevents is the silent one: a second codec Slot sharing the
+    /// first Slot's session, which means one reference chain and a renderer-wide
+    /// stall timer that made an idle Slot force the running Slot to resync every
+    /// frame.
+    func testCodecBudgetFundsTwoSlotsAndRefusesTheThird() {
+        var budget = GVDatamoshEngine.Budget(limit: 2)
+        XCTAssertTrue(budget.fund(requested: 1))
+        XCTAssertTrue(budget.fund(requested: 1), "two single-session Slots fit")
+        XCTAssertFalse(budget.fund(requested: 1), "a third Slot must fall back, not oversubscribe")
+
+        // A cascade spends two units, so one cascade alone fills the budget.
+        var cascaded = GVDatamoshEngine.Budget(limit: 2)
+        XCTAssertTrue(cascaded.fund(requested: 2))
+        XCTAssertFalse(cascaded.fund(requested: 1))
+    }
+
+    func testCodecBudgetIsTheRendererWideLimit() {
+        XCTAssertEqual(GVDatamoshEngine.Budget.defaultLimit, 2,
+                       "stated in one place so the renderer and the tests cannot drift")
+    }
+
+    /// Sessions are only metered while they are live: a Slot that leaves the
+    /// stack has to give the hardware back, or the budget would report every
+    /// Slot that ever ran and refuse Slots that could still be funded.
+    func testCodecBudgetReturnsSessionsWhenASlotReleasesThem() {
+        var budget = GVDatamoshEngine.Budget(limit: 2)
+        XCTAssertTrue(budget.fund(requested: 1))
+        XCTAssertTrue(budget.fund(requested: 1))
+        XCTAssertEqual(budget.liveSessions, 2)
+        budget.release(1)
+        XCTAssertEqual(budget.liveSessions, 1, "a cascade gives back two, a single round trip one")
+        budget.release(2)
+        XCTAssertEqual(budget.liveSessions, 0, "releasing more than was spent must not go negative")
+        XCTAssertTrue(budget.fund(requested: 2), "the freed hardware is available to the next Slot")
+    }
+
     /// Paints and submits moving content into the engine's own encoder input,
     /// sliding the pattern every frame. Sliding is not decoration: an encoder
     /// with nothing moving between frames codes every frame independently, and

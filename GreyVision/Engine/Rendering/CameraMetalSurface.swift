@@ -58,6 +58,12 @@ struct CameraRenderStats: Sendable, Equatable {
     /// operator's stack is not fully on screen, which they are otherwise left
     /// to infer from the picture.
     var shedEffects: Int = 0
+    /// Codec Slots running a real round trip this frame. Below the number of
+    /// codec modes in the stack means the budget refused one. All three codec
+    /// instruments compose the reconstruction and nothing else, so a refused Slot
+    /// shows the frame whole rather than moshed — the operator reads that here,
+    /// because a frame that looks merely unmoshed is not a visible failure.
+    var codecSlots: Int = 0
     var reducedDetail = false
 
     static let idle = CameraRenderStats()
@@ -785,6 +791,20 @@ private enum CameraRenderGraphStage: Equatable {
     case temporal(WorkspaceAdjustableEffect)
 }
 
+/// Modes driven by the live codec round trip rather than by shader state.
+///
+/// File scope rather than a renderer method because the Slot decides its own
+/// budget cost from it: the answer is a property of the mode, not of the
+/// renderer, and a Slot that cannot ask it would have to be told by someone else.
+private func isCodecMoshMode(_ mode: UInt32) -> Bool {
+    switch mode {
+    case 4, 39, 40:
+        true
+    default:
+        false
+    }
+}
+
 private struct CameraRenderGraphFrameState {
     let settings: CameraRenderSettings
     let time: Float
@@ -828,6 +848,33 @@ private final class CameraRenderGraphNode: RenderEffect {
     /// another; differential transport needs its own prediction surface.
     var moshHistory: MTLTexture?
     var moshHistoryNeedsSeed = true
+    /// The live round trip this Slot's codec mode runs on. Owned by the Slot,
+    /// not the renderer: one shared session made the second codec mode ride the
+    /// first one's reference chain, and a renderer-wide stall timer made slot A's
+    /// gap force slot B to resync. Nil until the budget funds this Slot.
+    var codecEngine: GVDatamoshEngine?
+    /// Sessions this Slot holds, so release is exact: a cascade gives back two.
+    var codecSessionsSpent = 0
+    /// Per-slot stall watchdog, in Slot clock rather than renderer clock.
+    var datamoshStalledSince: TimeInterval?
+    /// Set when the budget refused this Slot: it keeps its place in the chain but
+    /// has no reconstruction to show, and the refusal is counted in render stats.
+    var codecBudgetRefused = false
+    /// Set when engine construction failed. The Slot stops asking for the rest
+    /// of the session rather than re-attempting an allocation the device has
+    /// already refused, which would be a per-frame `GVDatamoshEngine(device: nil)`
+    /// in the hot path.
+    var codecUnavailableForSession = false
+
+    /// Codec sessions this Slot asks the budget for. A plain read of the Slot's
+    /// own stage, so the funding decision never depends on renderer state being
+    /// in the right shape first.
+    var codecModeCost: Int {
+        guard case let .temporal(effect) = stage, isCodecMoshMode(effect.temporalMode ?? 0) else {
+            return 0
+        }
+        return 1
+    }
 
     var displayName: String {
         switch stage {
@@ -885,6 +932,7 @@ private final class CameraRenderGraphNode: RenderEffect {
         moshStateReadsA = true
         moshHistory = nil
         moshHistoryNeedsSeed = true
+        releaseCodecEngine()
     }
 
     func releaseResources() {
@@ -898,6 +946,27 @@ private final class CameraRenderGraphNode: RenderEffect {
         moshStateReadsA = true
         moshHistory = nil
         moshHistoryNeedsSeed = true
+        releaseCodecEngine()
+    }
+
+    /// Where the mosh textures are dropped is where the codec has to hand its
+    /// hardware back too, or a Slot that left the stack keeps an encoder alive.
+    ///
+    /// Deactivating rather than calling `stop()` directly is deliberate:
+    /// invalidating a session synchronously from this thread races a codec queue
+    /// that may be inside `EncodeFrame`, and a command buffer still in flight
+    /// will call `endFrame` on this engine after the Slot is gone. Deactivated,
+    /// it refuses that work instead of rebuilding hardware nobody displays, and
+    /// the teardown it schedules runs where it belongs.
+    private func releaseCodecEngine() {
+        codecEngine?.setCodecActive(false)
+        codecEngine = nil
+        if codecSessionsSpent > 0 {
+            owner?.releaseCodecBudget(for: self)
+        }
+        codecBudgetRefused = false
+        codecUnavailableForSession = false
+        datamoshStalledSince = nil
     }
 }
 
@@ -950,12 +1019,17 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// same reason as the luma probe: a device without it loses the codec pass,
     /// not the camera.
     private let datamoshStagePipeline: MTLComputePipelineState?
-    /// The live H.264 encode/decode round trip the datamosh modes display. It
-    /// owns the VideoToolbox sessions and the encoder-input ring.
-    private let datamoshEngine: GVDatamoshEngine?
-    /// Frame number at which the codec last saw input, used to spot a gap long
-    /// enough that the reference chain no longer describes anything on screen.
-    private var datamoshStalledSince: TimeInterval?
+    /// Live H.264 round trips belong to the Slots that run them, and the
+    /// VideoToolbox sessions and encoder-input rings come with the engine. One
+    /// renderer-wide engine made the second codec mode ride the first one's
+    /// reference chain, and one renderer-wide stall timer let an idle Slot force
+    /// the running Slot to resync every frame.
+    ///
+    /// Funded from the graph configuration pass, once per frame, before any Slot
+    /// processes: funding is decided for the whole stack at once so two Slots
+    /// cannot both pass a `spent < limit` check against the same session, and
+    /// precedence is stack order rather than whoever allocated first.
+    var codecBudget = GVDatamoshEngine.Budget()
     /// Shared optical flow. One estimator feeds every motion-aware effect.
     private let flowField: CameraFlowField
     /// Device attitude, for world-anchored accumulation.
@@ -986,6 +1060,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// on the render thread, read by the completion handler, so it lives under
     /// `statsLock` with the rest of the published figures.
     private var shedEffectSnapshot = 0
+    /// Live codec round trips this frame, for the same reason as the shed count:
+    /// a Slot the budget refused still moves, it is just no longer the codec.
+    private var codecSlotSnapshot = 0
     private var bandLumaFrame = 0
     /// Frames left before the chain may drop back to preview resolution.
     ///
@@ -1139,7 +1216,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             .flatMap { try? device.makeComputePipelineState(function: $0) }
         datamoshStagePipeline = library.makeFunction(name: CameraMetalShaderNames.datamoshStage)
             .flatMap { try? device.makeComputePipelineState(function: $0) }
-        datamoshEngine = GVDatamoshEngine(device: device)
         // Three bands of four uints: sum, count, bright count, pad.
         bandLumaBuffers = (0 ..< 3).compactMap { _ in
             device.makeBuffer(length: MemoryLayout<UInt32>.stride * 12, options: .storageModeShared)
@@ -1436,14 +1512,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             guard slot.0.freezesHistoryOnHold, slot.0.temporalMode != nil else { return }
             acc |= holdStyle(for: slot.0, freezeActive: settings.temporalHoldActive)
         }
-        // Codec hardware is only held while a codec mode is actually on screen.
-        // An encoder and a decoder are hardware shared with recording, so a mode
-        // that has left the stack has no business keeping them warm — and the
-        // frame the operator sees when it comes back is a fresh reconstruction
-        // rather than a stale chain applied to a scene that is long gone.
-        datamoshEngine?.setCodecActive(temporalEffects.contains {
-            $0.0.temporalMode.map(isCodecMoshMode) ?? false
-        })
+        // Codec hardware is held only while a Slot holds it: an encoder and a
+        // decoder are hardware shared with recording, so the engines live on the
+        // Slots that run them and are handed back by `releaseResources()` rather
+        // than warmed indefinitely by a renderer-wide switch.
         if flowReady {
             encodeFlow(
                 source: linearTexture,
@@ -1747,6 +1819,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     ) {
         var effects: [any RenderEffect] = []
         var activeSlotIDs = Set<UUID>()
+        /// In stack order, which is the order the codec budget is spent in.
+        var codecNodes: [CameraRenderGraphNode] = []
 
         if settings.rgbSplit.isEnabled {
             rgbGraphNode.configure(
@@ -1789,6 +1863,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 rgbSplit: nil,
                 mix: Float(parameters.blend)
             )
+            if case .temporal = stage, node.codecModeCost > 0 {
+                codecNodes.append(node)
+            }
             effects.append(node)
         }
 
@@ -1796,7 +1873,70 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         for id in staleSlotIDs {
             graphNodes.removeValue(forKey: id)?.releaseResources()
         }
+        // Decided after the stale Slots have handed their sessions back, and in
+        // stack order: the two codec Slots nearest the front keep the hardware
+        // and anything behind them goes without a round trip. Deterministic beats
+        // "whichever Slot happened to allocate first".
+        codecBudget = GVDatamoshEngine.Budget()
+        for node in codecNodes {
+            _ = codecEngine(for: node)
+        }
+        statsLock.withLock { codecSlotSnapshot = codecBudget.liveSessions }
         renderGraph.replaceEffects(effects)
+    }
+
+    /// Ensure this Slot owns a codec round trip and that the budget has been
+    /// charged for it, handing back nil when it may not have one. What the
+    /// refusal costs the picture is recorded per instrument, and all three of
+    /// today's take their whole image from the reconstruction, so the count is
+    /// published in `CameraRenderStats.codecSlots` rather than left to be
+    /// inferred from a frame that looks merely unmoshed.
+    ///
+    /// Charged here rather than at first use inside the render pass: a Slot that
+    /// already holds an engine still spends its sessions this frame, and a
+    /// decision made per-Slot mid-pass is a decision made against whatever the
+    /// budget happened to look like when that Slot's kernel was reached.
+    func codecEngine(for node: CameraRenderGraphNode) -> GVDatamoshEngine? {
+        if let existing = node.codecEngine {
+            // Re-charged, not re-decided. The budget was rebuilt for this frame,
+            // and a Slot that already holds a round trip keeps it however the
+            // Slots behind it are arranged: withdrawing funding mid-mosh would
+            // tear the chain out from under a picture already corrupting, which
+            // is the visible glitch this whole design exists to avoid. Only a
+            // Slot with no engine can be refused.
+            _ = codecBudget.fund(requested: node.codecSessionsSpent)
+            return existing
+        }
+        let cost = node.codecModeCost
+        // No staging kernel means no way to write encoder input, so the round
+        // trip would run on whatever the codec last saw: refuse the Slot rather
+        // than hold an encoder nobody can feed.
+        guard cost > 0, datamoshStagePipeline != nil, !node.codecUnavailableForSession else { return nil }
+        guard codecBudget.fund(requested: cost) else {
+            node.codecBudgetRefused = true
+            return nil
+        }
+        guard let engine = GVDatamoshEngine(device: device) else {
+            // A refused allocation still gives its reservation back: this frame's
+            // count is what the telemetry reads, and hardware nobody holds must
+            // not be shown as held.
+            codecBudget.release(cost)
+            node.codecUnavailableForSession = true
+            node.codecBudgetRefused = true
+            node.codecSessionsSpent = 0
+            return nil
+        }
+        node.codecBudgetRefused = false
+        node.codecSessionsSpent = cost
+        node.codecEngine = engine
+        return engine
+    }
+
+    /// Called from the node's teardown path, which already has an `owner` weak
+    /// reference for exactly this kind of handback.
+    func releaseCodecBudget(for node: CameraRenderGraphNode) {
+        codecBudget.release(node.codecSessionsSpent)
+        node.codecSessionsSpent = 0
     }
 
     fileprivate func processGraphNode(
@@ -1927,7 +2067,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             // needs and no amount of shader work shortens it.
             var decodedFrame: GVDatamoshEngine.DecodedFrame?
             if isCodecMoshMode(modeValue) {
-                encodeDatamoshPass(effect: effect,
+                encodeDatamoshPass(node: node,
+                                   effect: effect,
                                    parameters: node.cameraParameters,
                                    source: request.input,
                                    commandBuffer: request.frame.commandBuffer,
@@ -2291,6 +2432,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 deckChromeLoad: deckChromeLoadAverage,
                 bottomChromeLoad: bottomChromeLoadAverage,
                 shedEffects: shedEffectSnapshot,
+                codecSlots: codecSlotSnapshot,
                 reducedDetail: reducedDetail
             )
         }
@@ -2978,41 +3120,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         }
     }
 
-    /// Modes driven by the live codec round trip rather than by shader state.
-    private func isCodecMoshMode(_ mode: UInt32) -> Bool {
-        switch mode {
-        case 4, 39, 40:
-            true
-        default:
-            false
-        }
-    }
-
-    /// Maps an effect's three sliders onto codec intent.
-    ///
-    /// The mapping itself lives on `GVDatamoshEngine` so it can be tested
-    /// without a camera or a Metal device; what happens here is the one thing
-    /// that cannot be decided without the renderer: how much encode the quality
-    /// governor is currently willing to pay for. That ceiling is the difference
-    /// between a governor that shrinks the whole pipeline when a device gets warm
-    /// and one that leaves a second hardware engine running at full size.
-    private func datamoshConfiguration(for effect: WorkspaceAdjustableEffect,
-                                       parameters: CameraEffectParameters) -> GVDatamoshEngine.Configuration {
-        let values = parameters.sanitized
-        let variant: GVDatamoshEngine.Variant
-        switch effect {
-        case .datamosh: variant = .datamosh
-        case .liquidMosh: variant = .liquidMosh
-        case .heavyMosh: variant = .heavyMosh
-        default: variant = .datamosh
-        }
-        return GVDatamoshEngine.configuration(variant: variant,
-                                              primary: values.primary,
-                                              secondary: values.secondary,
-                                              tertiary: values.tertiary,
-                                              maximumEncodeEdge: effectQuality.codecEdge)
-    }
-
     /// Advances one frame of the codec round trip: publishes the newest
     /// reconstruction for this frame's shader to composite, writes this frame's
     /// encoder input, and arranges for VideoToolbox to receive it only once the
@@ -3021,23 +3128,46 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// Every way out of here is survivable by design. With no staging slot the
     /// reference chain simply does not advance for a frame, which deepens the
     /// mosh rather than breaking it; with no decode yet, the modes hold the live
-    /// frame instead of showing an empty reconstruction.
-    private func encodeDatamoshPass(effect: WorkspaceAdjustableEffect,
+    /// frame instead of showing an empty reconstruction; and with no funded
+    /// engine, because the budget refused this Slot, the Slot shows the frame
+    /// whole — a refusal the operator reads in `codecSlots`, not a mode that
+    /// quietly changed character.
+    private func encodeDatamoshPass(node: CameraRenderGraphNode,
+                                    effect: WorkspaceAdjustableEffect,
                                     parameters: CameraEffectParameters,
                                     source: MTLTexture,
                                     commandBuffer: MTLCommandBuffer,
                                     decoded: inout GVDatamoshEngine.DecodedFrame?) {
-        guard let engine = datamoshEngine, let pipeline = datamoshStagePipeline else { return }
-        let configuration = datamoshConfiguration(for: effect, parameters: parameters)
+        // The engine is the Slot's, funded by the graph configuration pass that
+        // ran before this one; a nil here means the budget refused it.
+        guard let engine = node.codecEngine, let pipeline = datamoshStagePipeline,
+              let variant = GVDatamoshEngine.Variant(effect)
+        else { return }
+        let values = parameters.sanitized
+        // The slider→codec mapping lives on the engine, where it is testable with
+        // no camera in the way. What cannot be decided without the renderer is how
+        // much encode the quality governor is currently willing to pay for: that
+        // ceiling is the difference between a governor that shrinks the whole
+        // pipeline when a device gets warm and one that leaves a second hardware
+        // engine running at full size.
+        let configuration = GVDatamoshEngine.configuration(variant: variant,
+                                                           primary: values.primary,
+                                                           secondary: values.secondary,
+                                                           tertiary: values.tertiary,
+                                                           maximumEncodeEdge: effectQuality.codecEdge)
         decoded = engine.latestDecodedFrame
+        let renderClock = ProcessInfo.processInfo.systemUptime
+        defer { node.datamoshStalledSince = renderClock }
         // The reference chain only ever describes a scene the codec has been fed
         // every frame. After a stall — a background, a resolution change, the
         // effect leaving the stack and returning — that chain describes a moment
         // long gone, so the next encode is forced to a sync sample rather than
         // compounding against a reference nothing on screen still resembles.
-        defer { datamoshStalledSince = ProcessInfo.processInfo.systemUptime }
-        if let lastPump = datamoshStalledSince,
-           ProcessInfo.processInfo.systemUptime - lastPump > 0.4 {
+        //
+        // Gap detection belongs to the Slot. A renderer-wide timer made an idle
+        // DATAMOSH Slot force a sync sample on the Slot that was still running,
+        // which repaired the picture the operator was watching.
+        if let lastPump = node.datamoshStalledSince, renderClock - lastPump > 0.4 {
             engine.requestKeyframe()
         }
         // The Metal texture is a view onto the decoder's image buffer, valid

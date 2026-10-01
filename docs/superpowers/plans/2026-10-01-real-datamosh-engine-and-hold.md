@@ -22,7 +22,7 @@
 - Format and lint before committing: `swiftformat --lint .` and `swiftlint lint` (deliberately **not** `--strict`; `function_body_length`, `file_length`, `type_body_length`, `cyclomatic_complexity`, `line_length` and `large_tuple` are disabled in `.swiftlint.yml`, so long functions will not fail the gate but must still be justified).
 - Full gate: `./scripts/verify.sh` (runs xcodegen, swiftformat, swiftlint, simulator tests, then a device build). Destination is computed, never hardcoded; override with `GV_SIMULATOR_DESTINATION`.
 - **Codec truth cannot be judged in the Simulator.** Tasks 1-5 are verifiable by tests; Tasks 6-10 additionally need a physical iPhone to confirm the artefact reads as a real codec. That judgement is the operator's, not a test assertion.
-- Working tree is **already dirty** (18 modified files, ~1,127 insertions, including `CameraMetalSurface.swift`, `GVDatamoshEngine.swift`, `CameraShaders.metal`, `WorkspaceEffectParameters.swift`, `FlagshipRenderTests.swift`) when this plan is written. Confirm with the human that this work is intended before Task 1, and commit it or work in an isolated copy — do not overwrite it.
+- Baseline for this plan is commit `38204e4` ("Preserve the untracked real-datamosh engine and in-progress render work"), which is where the `GVDatamoshEngine.swift` that had been sitting untracked finally entered history. That commit builds clean on the simulator. `./scripts/verify.sh` currently exits non-zero at the `swiftformat --lint .` step for reasons that predate it (depth files, generated asset symbols, and pre-existing violations in `GVDatamoshEngine.swift`'s simulator-only block) — do not "fix" unrelated formatting to make the gate green; report it instead.
 
 ---
 
@@ -81,8 +81,10 @@ In `GVDatamoshEngine.swift`, outside the class so it is reachable and obvious:
         /// How many live round trips the hardware is allowed to fund at once. Each
         /// one is an encoder, a decoder and its own staging ring; two is what fits
         /// inside the frame budget with the rest of the effect stack still running.
-        /// A refused Slot is not dropped — it runs its shader transport, and the
-        /// refusal is counted in render stats so the operator can see it.
+        /// A refused Slot is not dropped — it keeps its place in the stack, and the
+        /// three instruments running today compose the reconstruction and nothing
+        /// else, so a refused Slot shows the frame uncorrupted. That is why the
+        /// refusal is counted in render stats rather than inferred from the picture.
         struct Budget {
             static let defaultLimit = 2
 
@@ -255,8 +257,9 @@ Add to `CameraRenderStats` (`:33-55`) beside `shedEffects`:
 
 ```swift
     /// Codec Slots running a real round trip this frame. Below the number of
-    /// codec modes in the stack means the budget refused one and that Slot fell
-    /// back to its shader transport — which the operator must be able to see.
+    /// codec modes in the stack means the budget refused one — and since every
+    /// codec instrument composes the reconstruction and nothing else, a refused
+    /// Slot shows the frame whole. The operator must be able to see that.
     var codecSlots: Int = 0
 ```
 
@@ -902,7 +905,7 @@ Task 1's `codecEngine(for:)` already asks the budget for `node.codecModeCost`. M
 `2` for this mode and allocate both engines inside that one funding call, so there is exactly
 one place that decides whether a Slot may hold hardware. Replace `codecEngine(for:)` with the
 pair-returning version below — a cascade either gets both sessions or neither, and "neither"
-falls back to the shader transport rather than shipping a half-cascade that looks like a soft
+leaves the Slot rendering whole rather than shipping a half-cascade that looks like a soft
 single-stage mosh:
 
 ```swift
@@ -923,7 +926,7 @@ single-stage mosh:
         }
         // A cascade that cannot afford stage two is not allowed to become a
         // single-stage mosh behind the operator's back: it releases its funding
-        // and falls back to the shader transport, which is at least honest.
+        // and leaves the Slot rendering whole, which is at least honest.
         if cost == 2, let secondary = GVDatamoshEngine(device: device) {
             node.codecEngineSecondary = secondary
         } else if cost == 2 {

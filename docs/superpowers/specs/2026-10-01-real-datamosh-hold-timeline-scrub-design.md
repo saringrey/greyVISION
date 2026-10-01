@@ -63,8 +63,17 @@ timer forces slot B to emit a keyframe — stacking two codec modes today corrup
   "two slots want a codec, one of them cannot have it".
 - Move the stall watchdog (`datamoshStalledSince`, :958) onto the slot with it.
 - Cap live codec instances at two per renderer. Precedence is stack order: the two codec
-  slots nearest the front of the effect stack keep the codec, anything behind them runs the
-  shader transport. Deterministic beats "whichever slot allocated first this frame".
+  slots nearest the front of the effect stack keep the hardware. Deterministic beats
+  "whichever slot allocated first this frame".
+- **Correction made while implementing Task 1.** This section said a refused slot "falls back
+  to the shader transport". That is not true of the three instruments that exist: all of them
+  compose the decoder's reconstruction and nothing else (`CameraShaders.metal:3192`, `:3843`,
+  `:3901`, each gated on `uniforms.mode.w == 1u`), and their block-state textures were
+  deliberately removed from `isMoshMode` when they moved onto the codec. A refused slot
+  renders the frame **whole**. Accepted rather than papered over: the refusal is counted in
+  render stats so the operator can see that a stacked mosh mode is not running. Giving refused
+  codec slots a genuine shader-mosh fallback is a separate, open decision — it means
+  re-introducing block state for modes that no longer have it.
 - Surface the fallback as a new `CameraRenderStats.codecMoshSlots` counter (live codec
   slots) beside the existing `shedEffects` field (:51), and show it in `GVTelemetryStrip`.
   An effect that quietly stops being codec-driven is exactly the kind of thing the operator
@@ -205,8 +214,7 @@ says plainly that `GVVideoRecorder` is the legacy video-only path and the live r
   a slot out of the graph. `pFrameSplice` in particular treats a splice the decoder
   rejects as "deliver the original access unit".
 - Engine construction failure (`init?` already returns nil) disables that slot's codec
-  mode for the session and falls back to the shader transport, once, without per-frame
-  retries.
+  mode for the session — the slot renders whole, once, without per-frame retries.
 - Instance-cap fallback is reported through render stats, not silently absorbed.
 
 ## Testing

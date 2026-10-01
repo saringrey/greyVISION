@@ -1068,3 +1068,53 @@ final class GVDatamoshEngine: @unchecked Sendable {
     }
 }
 
+extension GVDatamoshEngine.Variant {
+    /// Which instrument this effect plays. Failable so a codec mode added
+    /// without a variant lands here as a compile-time question rather than a
+    /// runtime shrug: `nil` would silently fall back to DATAMOSH's settings and
+    /// the new effect would look like a slightly wrong old one.
+    init?(_ effect: WorkspaceAdjustableEffect) {
+        switch effect {
+        case .datamosh: self = .datamosh
+        case .liquidMosh: self = .liquidMosh
+        case .heavyMosh: self = .heavyMosh
+        default: return nil
+        }
+    }
+}
+
+extension GVDatamoshEngine {
+    /// How many live round trips the hardware is allowed to fund at once. Each
+    /// one is an encoder, a decoder and its own staging ring; two is what fits
+    /// inside the frame budget with the rest of the effect stack still running.
+    /// A refused Slot is not dropped — it keeps its place in the chain, and the
+    /// three instruments running today take their whole picture from a decoder's
+    /// reconstruction, so a refused Slot shows the frame uncorrupted until the
+    /// hardware frees up. That is why the refusal is counted in render stats
+    /// rather than left for the operator to infer from the image.
+    struct Budget {
+        static let defaultLimit = 2
+
+        let limit: Int
+        private(set) var spent: Int = 0
+
+        init(limit: Int = Budget.defaultLimit) {
+            self.limit = limit
+        }
+
+        /// Funds `requested` sessions, or nothing. All-or-nothing per Slot: a
+        /// cascade that got one of its two sessions would be a mosh that
+        /// silently stopped cascading.
+        mutating func fund(requested: Int) -> Bool {
+            guard requested > 0, spent + requested <= limit else { return false }
+            spent += requested
+            return true
+        }
+
+        mutating func release(_ requested: Int) {
+            spent = max(0, spent - requested)
+        }
+
+        var liveSessions: Int { spent }
+    }
+}
