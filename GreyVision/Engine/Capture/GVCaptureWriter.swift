@@ -94,6 +94,8 @@ final class GVVideoRecorder: @unchecked Sendable {
     private var input: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var textureCache: CVMetalTextureCache?
+    /// The movie being written. It stays readable after `finish` so the caller can
+    /// still address the take; see the note in `finish`.
     private(set) var outputURL: URL?
     private var startTime: CMTime?
     private var frameIndex: Int64 = 0
@@ -290,18 +292,22 @@ final class GVVideoRecorder: @unchecked Sendable {
         self.input = nil
         adaptor = nil
         textureCache = nil
-        outputURL = nil
+        // `outputURL` deliberately survives the stop. The caller that saves to
+        // Photos and the timeline scrub preview both have to address the file after
+        // the writer is finished, and clearing it here made the coordinator's
+        // success branch read nil and throw the path away.
         let wroteFrames = frameIndex > 0
         lock.unlock()
 
         stateMailbox.publish(.finishing)
         input.markAsFinished()
         let boxed = GVWriterBox(writer)
-        boxed.writer.finishWriting { [stateMailbox] in
+        boxed.writer.finishWriting { [stateMailbox, self] in
             guard wroteFrames, boxed.writer.status == .completed else {
                 let message = boxed.writer.error?.localizedDescription.uppercased() ?? "NO FRAMES WRITTEN"
                 stateMailbox.publish(.failed(message))
                 try? FileManager.default.removeItem(at: url)
+                discardOutputURL()
                 completion(false)
                 return
             }
@@ -309,10 +315,18 @@ final class GVVideoRecorder: @unchecked Sendable {
                 stateMailbox.publish(.idle)
                 if !saved {
                     try? FileManager.default.removeItem(at: url)
+                    self.discardOutputURL()
                 }
                 completion(saved)
             }
         }
+    }
+
+    /// Retires the take's path together with the file. A URL for a movie that was
+    /// just deleted is worse than no URL: whatever opens it gets nothing, which
+    /// reads as a broken effect rather than as a take that never landed.
+    private func discardOutputURL() {
+        lock.withLock { outputURL = nil }
     }
 
     /// Hard stop used on teardown and interruption; discards the file.

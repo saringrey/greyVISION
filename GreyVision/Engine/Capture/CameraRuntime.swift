@@ -32,6 +32,12 @@ final class CameraRuntime: ObservableObject {
     @Published private(set) var screenshotMessage: String?
     @Published private(set) var isFrameFrozen = false
 
+    /// The most recent take this session wrote and saved. The timeline scrub
+    /// preview reads a frame out of this file. It is a session-lifetime value, not
+    /// a permanent library reference: a relaunch legitimately starts with none, and
+    /// the UI has to say so rather than show an empty well.
+    @Published private(set) var lastCompletedTake: URL?
+
     let recordingMailbox = CameraRecordingMailbox()
     let screenshotMailbox = CameraScreenshotMailbox()
 
@@ -44,6 +50,11 @@ final class CameraRuntime: ObservableObject {
     @available(*, deprecated, message: "Use GVRecordingTransaction.toggleRecording instead")
     func toggleRecording() {
         // No-op: recording is owned by GVRecordingTransaction
+    }
+
+    /// Records the take that just finished, for anything that has to read it back.
+    func noteCompletedTake(_ url: URL) {
+        lastCompletedTake = url
     }
 
     /// Called by the renderer when the writer actually comes online / finishes.
@@ -112,6 +123,11 @@ final class CameraRuntime: ObservableObject {
                 GVPhotoLibrary.saveVideo(at: url) { didSave in
                     continuation.resume(returning: didSave)
                 }
+            }
+            // The sensor owns this file, so this is where the take becomes
+            // addressable for the session. A save Photos refused is not a take.
+            if saved {
+                noteCompletedTake(url)
             }
             recordingMessage = saved ? "RECORD // RAW SAVED TO PHOTOS" : "RECORD // RAW SAVE FAILED"
         case let .failure(reason):
@@ -191,6 +207,16 @@ final class CameraRuntime: ObservableObject {
         }
         controller.setAudioHandler { [weak self] sampleBuffer in
             self?.recordingMailbox.appendAudio(sampleBuffer)
+        }
+        // The live camera's take is written inside the render loop, so its file
+        // URL has no path back to the runtime except through this mailbox, which
+        // the runtime already owns. Without it `lastCompletedTake` only ever
+        // fills in on the RAW and objects paths, and the timeline scrub preview
+        // has nothing to open after a normal recording.
+        recordingMailbox.setTakeSavedHandler { [weak self] url in
+            Task { @MainActor [weak self] in
+                self?.noteCompletedTake(url)
+            }
         }
     }
 

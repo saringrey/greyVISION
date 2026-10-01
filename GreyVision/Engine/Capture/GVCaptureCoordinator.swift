@@ -60,7 +60,8 @@ struct GVRecordingConfiguration: Sendable {
     let watermark: String?
 }
 
-/// Result of a finished recording.
+/// Result of a finished recording. `success` carries the movie file, which is the
+/// only handle anything downstream has on the take it just watched being written.
 enum GVRecordingResult: Sendable {
     case success(URL)
     case failure(Error)
@@ -260,11 +261,16 @@ final class GVRecordingTransaction: ObservableObject {
                 guard let self else { return }
                 let saved = await cameraRuntime.stopNativeRAWRecording()
                 if saved {
-                    await self.handleResult(.success(URL(fileURLWithPath: "/dev/null")), path: path)
+                    // The sensor writes and saves its own movie, and the runtime
+                    // records that take's URL as it lands, so the transaction has an
+                    // outcome here and no path of its own. The `/dev/null` this used to
+                    // invent travelled to the UI looking like a take that opens.
+                    self.markSaved(path: path)
                 } else {
                     await self.handleResult(
                         .failure(GVRecordingTransactionError.finalizeFailed(path, "RAW SAVE FAILED")),
-                        path: path
+                        path: path,
+                        cameraRuntime: cameraRuntime
                     )
                 }
             }
@@ -300,7 +306,7 @@ final class GVRecordingTransaction: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await adapter.stop()
-            await self.handleResult(result, path: path)
+            await self.handleResult(result, path: path, cameraRuntime: cameraRuntime)
         }
     }
 
@@ -357,22 +363,37 @@ final class GVRecordingTransaction: ObservableObject {
     }
 
     /// Handle the result of a finished recording.
-    private func handleResult(_ result: GVRecordingResult, path: GVRecordingPath) async {
+    private func handleResult(
+        _ result: GVRecordingResult,
+        path: GVRecordingPath,
+        cameraRuntime: CameraRuntime
+    ) async {
         switch result {
-        case .success:
-            state = .saved(path: path)
-            statusMessage = "REC // SAVED TO CAMERA ROLL"
-            // Auto-clear saved state after a beat
-            try? await Task.sleep(for: .seconds(2))
-            if case .saved = state {
-                cleanup()
-            }
+        case let .success(take):
+            // Handing the file on is the point of the result. It used to be dropped
+            // here, which left the session holding no address for a movie it had
+            // just written — and nothing downstream could open one to look at.
+            cameraRuntime.noteCompletedTake(take)
+            markSaved(path: path)
         case let .failure(error):
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             state = .failed(path: path, message: message)
             statusMessage = message
         case .cancelled:
             cleanup()
+        }
+    }
+
+    /// The one saved-state transition. A take that landed in Photos gets the same
+    /// notice and retires on the same beat whichever path produced it, because the
+    /// sensor path, the adapters, and the renderer's own message all end up here.
+    private func markSaved(path: GVRecordingPath) {
+        state = .saved(path: path)
+        statusMessage = "REC // SAVED TO CAMERA ROLL"
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, case .saved = self.state else { return }
+            self.cleanup()
         }
     }
 
@@ -470,13 +491,7 @@ final class GVRecordingTransaction: ObservableObject {
     /// Called by the renderer when the writer could not start or the export failed.
     func handleRecordingMessage(_ message: String) {
         if message.contains("SAVED") {
-            state = .saved(path: activePath ?? .processedFrames)
-            statusMessage = "REC // SAVED TO CAMERA ROLL"
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(2))
-                guard let self, case .saved = self.state else { return }
-                self.cleanup()
-            }
+            markSaved(path: activePath ?? .processedFrames)
             return
         }
         if message.contains("FAILED") || message.contains("ERROR") || message.contains("UNAVAILABLE") {
@@ -526,6 +541,9 @@ final class GVProcessedFramesAdapter: GVRecordingAdapter {
 
     func stop() async -> GVRecordingResult {
         await withCheckedContinuation { continuation in
+            // `saved` means the movie reached Photos, and `outputURL` still names the
+            // file it was written from — the recorder holds the path across the stop
+            // for exactly this read.
             recorder.finish { saved in
                 if saved, let url = self.recorder.outputURL {
                     continuation.resume(returning: .success(url))

@@ -1,4 +1,5 @@
 @testable import GreyVision
+import Metal
 import XCTest
 
 /// The render stack as a data structure.
@@ -103,5 +104,89 @@ final class CameraEffectStackTests: XCTestCase {
         for effect in [WorkspaceAdjustableEffect.vectorscope, .waveformMonitor, .rgbParade] {
             XCTAssertFalse(effect.requiresAudioAnalysis, effect.label)
         }
+    }
+
+    // MARK: - A finished take stays addressable
+
+    /// A finished take has to stay addressable. The recorder nilled its own
+    /// `outputURL` before the completion handler ran, which made the coordinator's
+    /// success branch read nil and drop the path — so nothing downstream, scrub
+    /// preview included, could open the file it had just written.
+    @MainActor
+    func testCompletedTakeKeepsItsURLAvailableToTheRuntime() {
+        let runtime = CameraRuntime()
+        XCTAssertNil(runtime.lastCompletedTake, "a session that has recorded nothing has no take")
+        let url = URL(fileURLWithPath: "/private/tmp/greyvision-scrub-test.mov")
+        runtime.noteCompletedTake(url)
+        XCTAssertEqual(runtime.lastCompletedTake, url)
+    }
+
+    /// The recorder's `outputURL` is the only handle its caller has on the movie it
+    /// just wrote, and it has to still be there while the stop is in flight — the
+    /// coordinator reads it from the finish callback. A URL for a movie the recorder
+    /// then deletes goes with it, so nothing downstream is handed a dead path.
+    func testRecorderNamesItsFileThroughTheStop() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal is unavailable in this test environment.")
+        }
+        let recorder = GVVideoRecorder()
+        XCTAssertNil(recorder.outputURL, "an idle recorder must not advertise a file")
+        guard recorder.start(
+            device: device,
+            width: 128,
+            height: 128,
+            framesPerSecond: 30,
+            codec: .h264
+        ) else {
+            throw XCTSkip("H.264 writer is unavailable on this destination.")
+        }
+        let written = try XCTUnwrap(recorder.outputURL, "a live writer must name its file")
+
+        var urlDuringStop: URL?
+        var stateDuringStop: GVRecordingState?
+        // Nothing was appended, so this take is discarded when the writer closes.
+        let saved = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            recorder.finish { finished in
+                continuation.resume(returning: finished)
+            }
+            urlDuringStop = recorder.outputURL
+            stateDuringStop = recorder.stateMailbox.latest
+        }
+
+        XCTAssertEqual(stateDuringStop, .finishing, "the read above has to land inside the stop")
+        XCTAssertEqual(urlDuringStop, written, "the URL must outlive the stop, not precede it")
+        XCTAssertFalse(saved, "a take with no frames never reached Photos")
+        XCTAssertNil(recorder.outputURL, "a discarded movie must not stay addressable")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: written.path))
+    }
+
+    /// The camera path reaches the runtime through the recording mailbox, which
+    /// already outlives the renderer that finishes the take. One installed handler
+    /// fires once: it is cleared on the way out, so a repeated report cannot make
+    /// the timeline note the same movie twice.
+    func testRecordingMailboxReportsASavedTakeOnce() {
+        let mailbox = CameraRecordingMailbox()
+        let seen = GVSavedTakeCollector()
+        mailbox.setTakeSavedHandler { seen.append($0) }
+        let url = URL(fileURLWithPath: "/private/tmp/greyvision-camera-take.mov")
+
+        mailbox.reportTakeSaved(url)
+        XCTAssertEqual(seen.urls, [url], "the runtime has to hear about the take it just saved")
+
+        mailbox.reportTakeSaved(url)
+        XCTAssertEqual(seen.urls, [url], "one take is one report")
+    }
+}
+
+/// A `Sendable` sink for the URLs a mailbox reports, so a test can count firings
+/// without capturing mutable state in a `@Sendable` closure.
+private final class GVSavedTakeCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [URL] = []
+
+    var urls: [URL] { lock.withLock { stored } }
+
+    func append(_ url: URL) {
+        lock.withLock { stored.append(url) }
     }
 }

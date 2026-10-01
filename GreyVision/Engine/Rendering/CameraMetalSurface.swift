@@ -94,6 +94,14 @@ final class CameraRecordingMailbox: @unchecked Sendable {
     private var startRequested = false
     private var active = false
     private var activeSession: GVRealtimeRecordingSession?
+    /// Called with the finished movie's file URL once Photos has accepted it.
+    ///
+    /// A handler on the mailbox rather than a closure threaded through the
+    /// representable, the coordinator and the renderer, because the runtime
+    /// already owns this object and is the only party with somewhere to put the
+    /// answer. The renderer's `stopRecording` completes on a writer queue, so the
+    /// handler is expected to hop to the main actor itself.
+    private var takeSavedHandler: (@Sendable (URL) -> Void)?
 
     private var requestedCodecRawValue: String = AVVideoCodecType.h264.rawValue
     private var requestedFPS: Int = 30
@@ -146,6 +154,21 @@ final class CameraRecordingMailbox: @unchecked Sendable {
             guard active, let session = activeSession else { return }
             session.appendAudio(sampleBuffer: sampleBuffer)
         }
+    }
+
+    func setTakeSavedHandler(_ handler: @escaping @Sendable (URL) -> Void) {
+        lock.withLock { takeSavedHandler = handler }
+    }
+
+    /// Reports the finished movie to whoever installed a handler, and always
+    /// after clearing the stored one: a handler captures the runtime weakly, and
+    /// firing it twice for one take would note the same file twice.
+    func reportTakeSaved(_ url: URL) {
+        let handler: (@Sendable (URL) -> Void)? = lock.withLock {
+            defer { takeSavedHandler = nil }
+            return takeSavedHandler
+        }
+        handler?(url)
     }
 }
 
@@ -2380,9 +2403,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         onRecordingStateChange(false)
         session.finish { [weak self] result in
             switch result {
-            case .success:
+            case let .success(url):
                 GVLog.recording.notice("Camera recording saved to Photos")
                 self?.onRecordingMessage("RECORD // SAVED TO PHOTOS")
+                self?.recordingMailbox.reportTakeSaved(url)
             case let .failure(error):
                 GVLog.recording.error("Camera recording finalize failed: \(error.localizedDescription)")
                 self?.onRecordingMessage(error.localizedDescription.uppercased())
