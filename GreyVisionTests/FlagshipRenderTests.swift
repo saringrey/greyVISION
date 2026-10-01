@@ -578,6 +578,98 @@ final class FlagshipRenderTests: XCTestCase {
         XCTAssertEqual(liveLiquidWithNoDrop.referenceDropEvery, 0)
     }
 
+    // MARK: - Codec techniques not yet on a rail
+
+    /// The claim CHROMA MOSH makes is specific: colour from the decoder, detail from
+    /// the camera. Nothing but the intent can be asserted without a shader arm, so
+    /// this pins the two things the arm will depend on — that only chroma is asked
+    /// for, and that it is asked of the codec whose 4:2:0 macroblock grid produces the
+    /// bleeding in the first place.
+    func testChromaMoshMappingAsksTheCodecForChromaOnly() {
+        let configuration = GVDatamoshEngine.configuration(variant: .chromaMosh,
+                                                           primary: 0.5, secondary: 0.5, tertiary: 0.5)
+        XCTAssertTrue(configuration.chromaOnly, "the whole technique is that only chroma comes from the codec")
+        XCTAssertGreaterThan(configuration.referenceDropEvery, 1, "colour has to be dragged, not merely blurred")
+        XCTAssertEqual(configuration.codec, .h264, "4:2:0 macroblock chroma is the H.264 artefact")
+        // SCALE runs coarse with travel, and coarse is what drags colour across
+        // bigger blocks. The governor's ceiling is deliberately not applied: a
+        // request for 96px of encode has to stay 96px on a hot device, because the
+        // look *is* the encode size.
+        let coarse = GVDatamoshEngine.configuration(variant: .chromaMosh,
+                                                    primary: 0.9, secondary: 0.5, tertiary: 0.5,
+                                                    maximumEncodeEdge: 512)
+        XCTAssertLessThan(coarse.encodeLongEdge, configuration.encodeLongEdge)
+        let smallest = GVDatamoshEngine.configuration(variant: .chromaMosh,
+                                                      primary: 1, secondary: 0.5, tertiary: 0.5,
+                                                      maximumEncodeEdge: 512)
+        XCTAssertEqual(smallest.encodeLongEdge, 96, "the ceiling must not resize an encode already coarse on purpose")
+        // BITS is the starvation, and starvation is the smear.
+        let starved = GVDatamoshEngine.configuration(variant: .chromaMosh,
+                                                     primary: 0.5, secondary: 0.5, tertiary: 0)
+        XCTAssertLessThan(starved.bitrateBitsPerSecond, 20_000)
+    }
+
+    /// Two chained round trips, not one engine told to recycle harder: stage two must
+    /// encode what stage one's decoder reconstructed, so every frame crosses the
+    /// quantiser twice. Asking for two is only meaningful if the budget can be told,
+    /// which is what `stages` is for.
+    func testGenerationMoshAsksForTwoStagesAndTwoProcessors() {
+        let configuration = GVDatamoshEngine.configuration(variant: .generationMosh,
+                                                           primary: 0.5, secondary: 0.5, tertiary: 0.5)
+        XCTAssertEqual(configuration.stages, 2, "a frame must cross two quantisers")
+        XCTAssertEqual(configuration.recycle, 1, "stage one has to be self-feeding for stage two to work on")
+        XCTAssertLessThan(configuration.bitrateBitsPerSecond, 400_000,
+                          "a second encode of an already-clean frame is just H.264")
+    }
+
+    /// Prediction against a moment rather than a frame: the encoder is pointed at an
+    /// older picture, so its own motion compensation carries the past onto the
+    /// present. Zero has to mean zero, or the control's resting position is a hidden
+    /// second effect.
+    func testTimeLoopMappingAsksForAnAgedReference() {
+        func age(_ primary: Double) -> Int {
+            GVDatamoshEngine.configuration(variant: .timeLoopMosh,
+                                           primary: primary, secondary: 0.5, tertiary: 0.5).referenceAgeFrames
+        }
+        XCTAssertEqual(age(0), 0, "no travel means the previous frame, which is ordinary prediction")
+        XCTAssertEqual(age(0.5), 30, "half travel reaches half the ring")
+        XCTAssertEqual(age(1), 60)
+        XCTAssertGreaterThan(age(1), age(0.5), "the control has to move something")
+    }
+
+    /// A transient-forced sync sample is a real encoder action, so the interesting
+    /// failure is arming it constantly: at rest this must be an ordinary long-GOP
+    /// mosh, and when armed the interval between forced repairs has to be long enough
+    /// for drift to accumulate in the first place.
+    func testBeatMappingForcesSyncSamplesOnlyWhenArmed() {
+        let armed = GVDatamoshEngine.configuration(variant: .beatGOP,
+                                                   primary: 0.7, secondary: 0.5, tertiary: 0.5)
+        XCTAssertTrue(armed.syncOnTransient)
+        XCTAssertGreaterThan(armed.keyframeIntervalFrames, 60,
+                             "the fallback interval must let drift build between beats")
+        XCTAssertGreaterThan(armed.referenceDropEvery, 1, "a chain that is never withheld is not corrupting")
+
+        let off = GVDatamoshEngine.configuration(variant: .beatGOP,
+                                                 primary: 0, secondary: 0.5, tertiary: 0.5)
+        XCTAssertFalse(off.syncOnTransient, "at rest this is just DATAMOSH, and should look like it")
+        XCTAssertEqual(off.stages, 1)
+        XCTAssertFalse(off.chromaOnly)
+    }
+
+    /// The three shipped instruments must not change behaviour because four more
+    /// arrived: every new intent has a neutral default, and the old arms never set
+    /// one. If this fails, a slider mapping someone already relies on has moved.
+    func testNewCodecIntentsDoNotDisturbTheShippedInstruments() {
+        for variant in [GVDatamoshEngine.Variant.datamosh, .liquidMosh, .heavyMosh] {
+            let configuration = GVDatamoshEngine.configuration(variant: variant,
+                                                               primary: 0.5, secondary: 0.5, tertiary: 0.5)
+            XCTAssertEqual(configuration.stages, 1, "\(variant)")
+            XCTAssertFalse(configuration.chromaOnly, "\(variant)")
+            XCTAssertEqual(configuration.referenceAgeFrames, 0, "\(variant)")
+            XCTAssertFalse(configuration.syncOnTransient, "\(variant)")
+        }
+    }
+
     /// The self-feed a hold depends on is not a second source texture: it is the
     /// staging kernel's own `mix(live, reconstruction, recycle)`, which the hold
     /// drives to one. Pinned because everything at full recycle rests on it — if

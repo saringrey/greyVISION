@@ -58,6 +58,33 @@ final class GVDatamoshEngine: @unchecked Sendable {
         var referenceDropEvery = 0
         /// How much of the encoder's input is its own previous output.
         var recycle: Float = 0
+        /// How many codec round trips one displayed frame crosses. Two means the
+        /// second encoder receives the first decoder's reconstruction, so corruption
+        /// compounds through a fresh quantiser every frame rather than along one long
+        /// chain — the difference between a mosh and a melt. A Slot asking for two
+        /// needs two funded sessions or it should get none: a half-funded cascade is a
+        /// mosh that quietly stopped cascading.
+        var stages = 1
+        /// Take the decoder's chroma and throw its luma away. The reconstruction is a
+        /// real 4:2:0 decode, so the colour plane carries the codec's own quantisation
+        /// error smeared over whole macroblocks — which is the artefact — while the
+        /// luma the operator sees stays the sharp camera frame. Nothing about the block
+        /// bleeding is computed by a kernel.
+        var chromaOnly = false
+        /// Frames of age on the reference the codec predicts from. Zero is ordinary
+        /// inter prediction. Anything above it and the encoder spends motion vectors
+        /// against a picture from a real moment ago, so the drag carries the past onto
+        /// the present instead of smearing adjacent frames.
+        ///
+        /// This is a request, not a guarantee: the history ring is sized by a runtime
+        /// memory budget, so the renderer clamps it to the depth actually stored. A
+        /// slider whose top end reached past the ring would otherwise be a dead control.
+        var referenceAgeFrames = 0
+        /// Force a sync sample on an audio transient instead of on a frame count. The
+        /// encoder action is identical; what changes is that the release of accumulated
+        /// corruption lands on a beat, which is a thing an operator can hear as well as
+        /// see.
+        var syncOnTransient = false
         /// Which codec produces the artefacts.
         ///
         /// H.264 in Baseline is the instrument datamoshing was invented on:
@@ -94,11 +121,17 @@ final class GVDatamoshEngine: @unchecked Sendable {
         }
     }
 
-    /// The three codec-driven instruments, named for the effects that play them.
+    /// The codec-driven instruments, named for the effects that play them. Each is a
+    /// different demand on the same hardware: what to encode, how often to repair it,
+    /// which references to withhold, and what the encoder is allowed to predict from.
     enum Variant: Sendable {
         case datamosh
         case liquidMosh
         case heavyMosh
+        case chromaMosh
+        case generationMosh
+        case timeLoopMosh
+        case beatGOP
     }
 
     /// Maps an effect's three sliders onto codec intent. Every value here is
@@ -180,6 +213,53 @@ final class GVDatamoshEngine: @unchecked Sendable {
             // and HEVC's loop filter smears recycled chroma between blocks in a
             // way H.264 simply does not.
             configuration.codec = .hevc
+        case .chromaMosh:
+            // Colour smear scale is the encode size: a coarser grid drags chroma
+            // over larger blocks. Bleed is the bitrate, starved hardest. Deliberately
+            // not `edge(...)`: the governor shrinking a 96px encode would change what
+            // the slider means, which is the same reason LIQUID MOSH asks for its size
+            // directly.
+            configuration.chromaOnly = true
+            configuration.encodeLongEdge = Int(ramp(primary, 480, 96).rounded())
+            configuration.bitrateBitsPerSecond = Int(ramp(tertiary, 8_000, 180_000).rounded())
+            configuration.referenceDropEvery = drop(secondary)
+            configuration.keyframeIntervalFrames = 240
+            // 4:2:0 macroblock chroma is the H.264 artefact. HEVC carries quarter
+            // resolution too, but behind a loop filter that smooths the very block
+            // edges this instrument exists to show.
+            configuration.codec = .h264
+        case .generationMosh:
+            // DEPTH is fixed at two stages by the budget; BITS is what each stage
+            // gets. Stage two is only meaningful if stage one is starved — a second
+            // encode of an already-clean frame is just H.264. RECYCLE is forced on:
+            // stage one has to be eating itself for stage two to have anything to
+            // work on.
+            configuration.stages = 2
+            configuration.encodeLongEdge = edge(960)
+            configuration.bitrateBitsPerSecond = Int(ramp(tertiary, 15_000, 300_000).rounded())
+            configuration.referenceDropEvery = drop(secondary)
+            configuration.keyframeIntervalFrames = 480
+            configuration.recycle = 1
+        case .timeLoopMosh:
+            // AGE spans the history ring, REACH is how hard the codec is allowed to
+            // commit to it (bitrate), DROP keeps the chain diverging. Sixty frames is
+            // the slider's top end, not a promise: the renderer clamps it to the depth
+            // the ring actually stores.
+            configuration.referenceAgeFrames = Int(ramp(primary, 0, 60).rounded())
+            configuration.encodeLongEdge = edge(960)
+            configuration.bitrateBitsPerSecond = Int(ramp(secondary, 30_000, 900_000).rounded())
+            configuration.referenceDropEvery = drop(tertiary)
+            configuration.keyframeIntervalFrames = 240
+        case .beatGOP:
+            // PULSE is the budget between beats: how long drift accumulates before
+            // something releases it. Under a hair of travel nothing forces a sync
+            // sample on an audio cue, and this is a long-GOP DATAMOSH — the honest
+            // resting state for the control.
+            configuration.syncOnTransient = unit(primary) > 0.04
+            configuration.encodeLongEdge = edge(960)
+            configuration.keyframeIntervalFrames = Int(ramp(primary, 90, 900).rounded())
+            configuration.referenceDropEvery = drop(secondary)
+            configuration.bitrateBitsPerSecond = Int(ramp(tertiary, 40_000, 1_500_000).rounded())
         }
         // A hold stops the camera but must not stop the mosh. Feeding the
         // encoder its own previous output is the only thing that keeps
