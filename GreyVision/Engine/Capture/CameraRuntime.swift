@@ -40,6 +40,18 @@ final class CameraRuntime: ObservableObject {
 
     let recordingMailbox = CameraRecordingMailbox()
     let screenshotMailbox = CameraScreenshotMailbox()
+    /// One pending scrub-preview frame. A mailbox rather than a published value
+    /// because the render thread and the main actor must not share observable state,
+    /// for the same reason `recordingMailbox` exists.
+    let previewMailbox = CameraPreviewMailbox()
+    /// The viewfinder is showing a frame out of the recorded take instead of the
+    /// camera. Published because the badge is SwiftUI; it follows the same window the
+    /// renderer uses, so the label and the picture always describe one state.
+    @Published private(set) var isShowingTakePreview = false
+
+    private var previewReader: GVTakeFrameReader?
+    private var previewReaderTake: URL?
+    private var previewExpiryTask: Task<Void, Never>?
 
     var latestFrameMailbox: LatestCapturedFrameMailbox {
         controller.latestFrameMailbox
@@ -55,6 +67,38 @@ final class CameraRuntime: ObservableObject {
     /// Records the take that just finished, for anything that has to read it back.
     func noteCompletedTake(_ url: URL) {
         lastCompletedTake = url
+    }
+
+    /// Asks for the graded frame at a playhead position.
+    ///
+    /// Fire-and-forget: the frame lands in `previewMailbox` and the render loop
+    /// substitutes it for a camera sample. Each request opens a reader walk from a
+    /// sync sample, so the caller quantises how often this is called; the reader
+    /// coalesces whatever arrives anyway.
+    func requestPreviewFrame(at seconds: TimeInterval) {
+        guard let take = lastCompletedTake else { return }
+        // One reader per take. It holds nothing but the URL and its coalescing
+        // state, so replacing it when a new take lands is enough — and building one
+        // per request would throw away the coalescing that keeps a drag from
+        // queueing decodes behind each other.
+        if previewReaderTake != take {
+            previewReader = GVTakeFrameReader(url: take)
+            previewReaderTake = take
+        }
+        guard let reader = previewReader else { return }
+
+        isShowingTakePreview = true
+        previewExpiryTask?.cancel()
+        previewExpiryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(CameraPreviewMailbox.visibleFor))
+            guard let self, !Task.isCancelled else { return }
+            self.isShowingTakePreview = false
+        }
+
+        Task { [weak self] in
+            guard let buffer = await reader.frame(at: seconds) else { return }
+            self?.previewMailbox.publish(buffer)
+        }
     }
 
     /// Called by the renderer when the writer actually comes online / finishes.

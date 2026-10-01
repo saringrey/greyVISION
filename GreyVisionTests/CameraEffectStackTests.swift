@@ -1,5 +1,6 @@
 @testable import GreyVision
 import Metal
+import QuartzCore
 import XCTest
 
 /// The render stack as a data structure.
@@ -253,6 +254,56 @@ final class CameraEffectStackTests: XCTestCase {
 
         player.scrub(to: 99)
         XCTAssertEqual(player.currentTime, 6, accuracy: 0.001, "a scrub past the end clamps to it")
+    }
+
+    // MARK: - A scrub preview holds the viewfinder, then lets go
+
+    /// A preview consumed on one draw is a frame the operator cannot look at: the
+    /// camera is back on screen the next tick. So the mailbox keeps the newest frame
+    /// for a window and expires on the window rather than on the read — while still
+    /// refusing to hold the viewfinder after the scrub has moved on, because a
+    /// viewfinder stuck on a take is indistinguishable from this app's real freeze
+    /// control.
+    @MainActor
+    func testPreviewMailboxHoldsNewestFrameForAWindow() throws {
+        let mailbox = CameraPreviewMailbox()
+        let first = try makePreviewBuffer()
+        let second = try makePreviewBuffer()
+
+        mailbox.publish(first)
+        mailbox.publish(second)
+        // The mailbox stamps publishes on the media clock, so the test reads it back
+        // on the same clock: a made-up `now` would be either in the past or so far in
+        // the future that the window assertion proves nothing.
+        let now = CACurrentMediaTime()
+        let held = try XCTUnwrap(mailbox.frame(now: now))
+        XCTAssertTrue(held.buffer === second, "newest wins")
+        XCTAssertEqual(mailbox.frame(now: now)?.generation, held.generation, "reading does not consume")
+
+        // Measured from the moment of the check, not from before the publishes: a
+        // deadline that lands a microsecond short of the window is still inside it.
+        let expired = now + CameraPreviewMailbox.visibleFor + 0.01
+        XCTAssertNil(
+            mailbox.frame(now: expired),
+            "a preview nobody refreshed has been let go of"
+        )
+        mailbox.publish(first)
+        XCTAssertEqual(
+            mailbox.frame(now: CACurrentMediaTime())?.generation,
+            held.generation + 1,
+            "the renderer compares generations to tell a new frame from the one it already drew"
+        )
+    }
+
+    private func makePreviewBuffer() throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        guard CVPixelBufferCreate(
+            kCFAllocatorDefault, 128, 128, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            nil, &buffer
+        ) == kCVReturnSuccess, let buffer else {
+            throw XCTSkip("could not allocate a test pixel buffer")
+        }
+        return buffer
     }
 }
 

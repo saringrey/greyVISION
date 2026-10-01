@@ -77,20 +77,48 @@ enum GVFixtureError: Error {
 }
 
 enum GVPixelSampler {
-    /// Mean luma over every 17th pixel: a stride, not a full walk, so a test does
+    /// Mean luma over every 17th sample: a stride, not a full walk, so a test does
     /// not hold a buffer locked across 16k pixels.
+    ///
+    /// A decoded take frame is biplanar YUV, so luma is the whole first plane. The
+    /// flat BGRA branch is here because the writer's own input is BGRA, and the same
+    /// sampler has to be able to prove a fixture really is what it says.
     static func meanLuma(_ buffer: CVPixelBuffer) -> Double {
-        guard CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess,
-              let base = CVPixelBufferGetBaseAddress(buffer)
-        else { return -1 }
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+        guard CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return -1 }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        return CVPixelBufferGetPlaneCount(buffer) >= 2 ? meanYPlane(buffer) : meanBGRA(buffer)
+    }
+
+    private static func meanYPlane(_ buffer: CVPixelBuffer) -> Double {
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return -1 }
+        let width = CVPixelBufferGetWidthOfPlane(buffer, 0)
+        let height = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        let pitch = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        var total = 0.0
+        var count = 0.0
+        base.withMemoryRebound(to: UInt8.self, capacity: pitch * height) { bytes in
+            for index in stride(from: 0, to: width * height, by: 17) {
+                let row = index / width
+                let column = index % width
+                total += Double(bytes[row * pitch + column]) / 255
+                count += 1
+            }
+        }
+        return count > 0 ? total / count : -1
+    }
+
+    private static func meanBGRA(_ buffer: CVPixelBuffer) -> Double {
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return -1 }
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
         let pitch = CVPixelBufferGetBytesPerRow(buffer)
         var total = 0.0
         var count = 0.0
         base.withMemoryRebound(to: UInt8.self, capacity: pitch * height) { bytes in
             for index in stride(from: 0, to: width * height, by: 17) {
-                let offset = index * 4
+                let row = index / width
+                let column = index % width
+                let offset = row * pitch + column * 4
                 let blue = Double(bytes[offset])
                 let green = Double(bytes[offset + 1])
                 let red = Double(bytes[offset + 2])

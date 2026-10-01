@@ -8,6 +8,9 @@ import SwiftUI
 /// captured by a take.
 struct GVTimelineBar: View {
     @ObservedObject var player: GVTimelinePlayer
+    /// The preview comes from the capture session, not the player: it is the
+    /// runtime that holds the finished take and the mailbox the render loop reads.
+    @EnvironmentObject private var cameraRuntime: CameraRuntime
     let onPickTimeline: () -> Void
     let onSaveTimeline: () -> Void
 
@@ -33,6 +36,16 @@ struct GVTimelineBar: View {
                         Text("/ \(formatDuration(timeline.duration))")
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.4))
+                    }
+                    // The viewfinder is showing recorded content while scrubbing, and
+                    // it has to say so: this instrument also has a real freeze
+                    // control, and the two must not be confusable.
+                    if cameraRuntime.isShowingTakePreview {
+                        Text("SCRUB")
+                            .font(.system(size: 9, weight: .black, design: .monospaced))
+                            .tracking(0.6)
+                            .foregroundStyle(.white.opacity(0.75))
+                            .accessibilityLabel("Showing a frame from the recorded take")
                     }
                 }
 
@@ -166,7 +179,7 @@ struct GVTimelineBar: View {
                     .onChanged { value in
                         guard duration > 0 else { return }
                         let travelled = min(max(value.location.x / max(proxy.size.width, 1), 0), 1)
-                        player.scrub(to: travelled * duration)
+                        seek(to: travelled * duration)
                     }
             )
         }
@@ -180,13 +193,23 @@ struct GVTimelineBar: View {
         .accessibilityIdentifier("workspace.timeline.scrub")
     }
 
-    /// VoiceOver and the finger drive one path: the slider's setter is the same
-    /// `scrub(to:)` the drag calls.
+    /// VoiceOver and the finger drive one path, and one path drives the preview: the
+    /// cue is interpolated and the frame it looks like is asked for together, so a
+    /// moved playhead can never be showing a time it is not.
     @MainActor private var scrubBinding: Binding<Double> {
         Binding(
             get: { player.currentTime },
-            set: { player.scrub(to: $0) }
+            set: { seek(to: $0) }
         )
+    }
+
+    /// Seeking the parameters and requesting the preview frame are one gesture, not
+    /// two. The reader coalesces on its own — a drag issues more requests than a
+    /// decoder can service, and the superseded ones answer without decoding — so
+    /// there is nothing to throttle here beyond what that already costs.
+    @MainActor private func seek(to time: TimeInterval) {
+        player.scrub(to: time)
+        cameraRuntime.requestPreviewFrame(at: time)
     }
 
     private var timecode: String {

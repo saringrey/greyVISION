@@ -349,6 +349,7 @@ struct CameraMetalSurface: UIViewRepresentable {
                 }
             },
             screenshotMailbox: runtime.screenshotMailbox,
+            previewMailbox: runtime.previewMailbox,
             onScreenshotMessage: { [weak recordingTransaction] message in
                 Task { @MainActor [weak recordingTransaction] in
                     recordingTransaction?.handleScreenshotMessage(message)
@@ -431,6 +432,7 @@ struct CameraMetalSurface: UIViewRepresentable {
         let onRecordingStateChange: @Sendable (Bool) -> Void
         let onRecordingMessage: @Sendable (String) -> Void
         let screenshotMailbox: CameraScreenshotMailbox
+        let previewMailbox: CameraPreviewMailbox
         let onScreenshotMessage: @Sendable (String) -> Void
         let onPreviewTap: @MainActor @Sendable () -> Void
         let onFocus: @MainActor (CGPoint) -> Void
@@ -448,6 +450,7 @@ struct CameraMetalSurface: UIViewRepresentable {
             onRecordingStateChange: @escaping @Sendable (Bool) -> Void,
             onRecordingMessage: @escaping @Sendable (String) -> Void,
             screenshotMailbox: CameraScreenshotMailbox,
+            previewMailbox: CameraPreviewMailbox,
             onScreenshotMessage: @escaping @Sendable (String) -> Void,
             onPreviewTap: @escaping @MainActor @Sendable () -> Void,
             onFocus: @escaping @MainActor (CGPoint) -> Void,
@@ -464,6 +467,7 @@ struct CameraMetalSurface: UIViewRepresentable {
             self.onRecordingStateChange = onRecordingStateChange
             self.onRecordingMessage = onRecordingMessage
             self.screenshotMailbox = screenshotMailbox
+            self.previewMailbox = previewMailbox
             self.onScreenshotMessage = onScreenshotMessage
             self.onPreviewTap = onPreviewTap
             self.onFocus = onFocus
@@ -486,6 +490,7 @@ struct CameraMetalSurface: UIViewRepresentable {
                       onRecordingStateChange: onRecordingStateChange,
                       onRecordingMessage: onRecordingMessage,
                       screenshotMailbox: screenshotMailbox,
+                      previewMailbox: previewMailbox,
                       onScreenshotMessage: onScreenshotMessage
                   )
             else {
@@ -1014,6 +1019,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private let onRecordingStateChange: @Sendable (Bool) -> Void
     private let onRecordingMessage: @Sendable (String) -> Void
     private let screenshotMailbox: CameraScreenshotMailbox
+    /// The newest scrub-preview frame, published by the runtime on the main actor
+    /// and read here once per draw.
+    private let previewMailbox: CameraPreviewMailbox
     private let onScreenshotMessage: @Sendable (String) -> Void
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -1146,6 +1154,11 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private var effectTextureB: MTLTexture?
     private var historyTexture: MTLTexture?
     private var hasLinearFrame = false
+    /// Which preview frame `linearTexture` currently holds. A scrub preview is read
+    /// off the decoder a handful of times a second, so the same frame is drawn many
+    /// times over; importing it on every one of those draws would move megabytes to
+    /// show a picture that has not changed.
+    private var previewDrawnGeneration: UInt64 = 0
     private var hasHistoryFrame = false
     private var graphNodes: [UUID: CameraRenderGraphNode] = [:]
     private lazy var rgbGraphNode = CameraRenderGraphNode(
@@ -1169,6 +1182,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         onRecordingStateChange: @escaping @Sendable (Bool) -> Void,
         onRecordingMessage: @escaping @Sendable (String) -> Void,
         screenshotMailbox: CameraScreenshotMailbox,
+        previewMailbox: CameraPreviewMailbox,
         onScreenshotMessage: @escaping @Sendable (String) -> Void
     ) {
         guard let commandQueue = device.makeCommandQueue(),
@@ -1229,6 +1243,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         self.onRecordingStateChange = onRecordingStateChange
         self.onRecordingMessage = onRecordingMessage
         self.screenshotMailbox = screenshotMailbox
+        self.previewMailbox = previewMailbox
         self.onScreenshotMessage = onScreenshotMessage
         self.device = device
         shaderLibrary = library
@@ -1397,8 +1412,51 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             touchImpactVector = SIMD4<Float>(0.5, 0.5, 100, 0)
         }
         var frameLease: CameraFrameTextureLease?
+        var previewLeases: [CVMetalTexture] = []
 
-        if settings.isSynthetic {
+        if let preview = previewMailbox.frame(now: CACurrentMediaTime()) {
+            // A scrub preview is one frame out of the recorded take, run through the
+            // same single graph pass as the camera. It is deliberately not a second
+            // pass: every temporal Slot advances its own state once per draw
+            // (`moshStateReadsA`, the moshHistory copy-back), so passing twice would
+            // corrupt the live effect at double rate while the operator was only
+            // trying to look at one still.
+            //
+            // The capture mailbox is drained alongside it. A preview is not a new
+            // capture sample, and letting samples pile up behind one makes the camera
+            // jump forward the moment the preview window closes.
+            _ = mailbox.consumeLatest()
+            if preview.generation != previewDrawnGeneration || !hasLinearFrame {
+                let width = CVPixelBufferGetWidth(preview.buffer)
+                let height = CVPixelBufferGetHeight(preview.buffer)
+                guard ensureWorkingTextures(width: width, height: height),
+                      let linearTexture,
+                      encodePreviewFrame(
+                          preview.buffer,
+                          into: linearTexture,
+                          commandBuffer: commandBuffer,
+                          leases: &previewLeases
+                      )
+                else {
+                    // Nothing drawn this tick: the previous frame stays on screen,
+                    // which is the right answer for a preview and never a black one.
+                    return
+                }
+                previewDrawnGeneration = preview.generation
+                geometryLock.withLock {
+                    sourceGeometry = CameraSourceGeometry(
+                        width: width,
+                        height: height,
+                        // The take was composited by this same renderer, so its frames
+                        // are already upright: the aspect says which way is up, and
+                        // nothing needs mirroring back.
+                        orientation: height >= width ? .portrait : .landscapeRight,
+                        isMirrored: false
+                    )
+                }
+                hasLinearFrame = true
+            }
+        } else if settings.isSynthetic {
             if !settings.temporalHoldActive || !hasLinearFrame {
                 let size = syntheticTextureSize(for: view.drawableSize)
                 guard ensureWorkingTextures(width: size.width, height: size.height),
@@ -1824,6 +1882,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let bandSlot = encodeBandLuma(source: presentedTexture, commandBuffer: commandBuffer)
 
         let retainedLease = frameLease
+        let retainedPreviewLeases = previewLeases
         let retainedRecordLease = recordLease
         let retainedBroadcastLease = broadcastLease
         let retainedScreenshotLease = screenshotLease
@@ -1831,6 +1890,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let reducedDetail = effectQuality.reducedDetail
         commandBuffer.addCompletedHandler { [weak self] buffer in
             _ = retainedLease
+            _ = retainedPreviewLeases
             if let bandSlot {
                 self?.readBandLuma(slot: bandSlot)
             }
@@ -3295,6 +3355,66 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         )
         dispatch(encoder, pipeline: yuvPipeline, texture: destination)
         encoder.endEncoding()
+    }
+
+    /// Converts a decoded take frame into the working texture with the same
+    /// YUV-to-linear kernel the camera uses, so a preview is graded from the same
+    /// numbers a live frame is rather than looking like a different picture.
+    ///
+    /// The range, matrix and transfer are stated rather than read: this is a video
+    /// range BT.709 frame, which is what this app records, and those are the values
+    /// the camera path arrives at for a frame tagged that way. Probing the buffer's
+    /// attachments would answer a question the writer already decided.
+    private func encodePreviewFrame(
+        _ pixelBuffer: CVPixelBuffer,
+        into destination: MTLTexture,
+        commandBuffer: MTLCommandBuffer,
+        leases: inout [CVMetalTexture]
+    ) -> Bool {
+        guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 2,
+              let lumaLease = makeTexture(
+                  pixelBuffer: pixelBuffer,
+                  pixelFormat: .r8Unorm,
+                  plane: 0,
+                  width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 0),
+                  height: CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+              ),
+              let chromaLease = makeTexture(
+                  pixelBuffer: pixelBuffer,
+                  pixelFormat: .rg8Unorm,
+                  plane: 1,
+                  width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 1),
+                  height: CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
+              ),
+              let encoder = commandBuffer.makeComputeCommandEncoder()
+        else {
+            return false
+        }
+        var uniforms = CameraConversionUniforms(
+            source: SIMD4<UInt32>(
+                UInt32(max(CVPixelBufferGetWidth(pixelBuffer), 1)),
+                UInt32(max(CVPixelBufferGetHeight(pixelBuffer), 1)),
+                0,
+                1
+            ),
+            tuning: SIMD4<Float>(0, 0, 0, 0)
+        )
+        encoder.label = "greyVISION Take Preview to Linear"
+        encoder.setComputePipelineState(yuvPipeline)
+        encoder.setTexture(lumaLease.1, index: 0)
+        encoder.setTexture(chromaLease.1, index: 1)
+        encoder.setTexture(destination, index: 2)
+        encoder.setBytes(
+            &uniforms,
+            length: MemoryLayout<CameraConversionUniforms>.stride,
+            index: 0
+        )
+        dispatch(encoder, pipeline: yuvPipeline, texture: destination)
+        encoder.endEncoding()
+        // The cache views are the only things standing between this encoder and the
+        // buffers behind them, and the GPU has not run it yet.
+        leases = [lumaLease.0, chromaLease.0]
+        return true
     }
 
     private func encodeSyntheticFrame(
