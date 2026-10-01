@@ -77,24 +77,34 @@ struct GVTimelinePickerSheet: View {
     }
 
     private func timelineRow(_ timeline: GVTimeline) -> some View {
-        let isActive = player.activeTimeline?.id == timeline.id
+        // Selection, not just playback, is the state the row reports: stopping the
+        // transport leaves the timeline armed for scrubbing, and a row that went
+        // quiet at that moment would look like the choice had been taken away.
+        let isActive = (player.activeTimeline?.id ?? player.selectedTimeline?.id) == timeline.id
         return HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(timeline.name)
-                    .font(.system(size: 13, weight: .black))
-                    .tracking(0.8)
-                    .foregroundStyle(.white)
-                HStack(spacing: 6) {
-                    Text("\(Int(timeline.duration))s")
-                    Text("·")
-                    Text("\(timeline.keyframes.count) KF")
-                    if timeline.isFactory {
-                        Text("· FACTORY")
+            Button {
+                player.selectForScrub(timeline)
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(timeline.name)
+                        .font(.system(size: 13, weight: .black))
+                        .tracking(0.8)
+                        .foregroundStyle(.white)
+                    HStack(spacing: 6) {
+                        Text("\(Int(timeline.duration))s")
+                        Text("·")
+                        Text("\(timeline.keyframes.count) KF")
+                        if timeline.isFactory {
+                            Text("· FACTORY")
+                        }
                     }
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.55))
                 }
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Scrub \(timeline.name)")
 
             Spacer()
 
@@ -131,9 +141,7 @@ struct GVTimelinePickerSheet: View {
 
             Button {
                 store.delete(timeline.id)
-                if player.activeTimeline?.id == timeline.id {
-                    player.stop()
-                }
+                player.deselect(timeline)
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 12, weight: .black))

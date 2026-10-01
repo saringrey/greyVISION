@@ -21,6 +21,10 @@ final class GVTimelinePlayer: ObservableObject {
     @Published private(set) var isPlaying: Bool = false
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var activeTimeline: GVTimeline?
+    /// The timeline the operator has chosen, whether or not it has ever played.
+    /// Scrubbing needs keyframes to read, and the first drag always precedes the
+    /// transport — so the thing being scrubbed cannot be only "whatever is playing".
+    @Published private(set) var selectedTimeline: GVTimeline?
     @Published var mode: Mode = .loop
 
     private weak var editor: EffectEditingSession?
@@ -32,12 +36,26 @@ final class GVTimelinePlayer: ObservableObject {
         self.editor = editor
     }
 
+    /// Arms a timeline for scrubbing without touching the transport.
+    ///
+    /// Selecting is not seeking: the playhead keeps its time, clamped into the
+    /// newly chosen timeline so a short cue picked after a long one does not report
+    /// a time that does not exist in it.
+    func selectForScrub(_ timeline: GVTimeline) {
+        selectedTimeline = timeline
+        activeTimeline = timeline
+        currentTime = min(currentTime, timeline.duration)
+    }
+
     /// Begins playback from the timeline's base composition. Calling play with
     /// a different timeline swaps the active one mid-flight, which the operator
     /// uses for chained cues.
     func play(_ timeline: GVTimeline) {
         guard let editor else { return }
         activeTimeline = timeline
+        // Playing a timeline is also selecting it, so stopping does not leave the
+        // operator with a named timeline that can no longer be scrubbed.
+        selectedTimeline = timeline
         // Apply the base composition so a replay begins from a known place.
         editor.rgbSplitParameters = timeline.baseRGB
         editor.effectStack = timeline.baseStack
@@ -54,6 +72,15 @@ final class GVTimelinePlayer: ObservableObject {
         stopDisplayLink()
     }
 
+    /// Unarms a timeline the operator has removed. A playhead that kept scrubbing a
+    /// deleted cue would be interpolating keyframes out of a timeline that no longer
+    /// exists in the store, which reads as a control still working on a dead file.
+    func deselect(_ timeline: GVTimeline) {
+        guard selectedTimeline?.id == timeline.id else { return }
+        selectedTimeline = nil
+        if activeTimeline?.id == timeline.id { stop() }
+    }
+
     func toggle() {
         if isPlaying { stop() } else if let timeline = activeTimeline { play(timeline) }
     }
@@ -61,14 +88,19 @@ final class GVTimelinePlayer: ObservableObject {
     /// Jumps to a specific time and applies the interpolated state without
     /// playing. Used by the timeline scrubber and the "jump to next cue" UI.
     func scrub(to time: TimeInterval) {
-        guard let timeline = activeTimeline ?? editor.flatMap({ _ in storedTimelineForScrub() }) else { return }
+        guard let timeline = activeTimeline ?? storedTimelineForScrub() else { return }
         if activeTimeline == nil { activeTimeline = timeline }
         currentTime = min(max(time, 0), timeline.duration)
         if let editor { apply(timeline: timeline, at: currentTime, into: editor) }
     }
 
+    /// What a drag reads when nothing is active: the timeline that was selected
+    /// before the transport stopped, then the most recently saved one. The store
+    /// fallback is deliberate — the picker writes the store, and its newest entry is
+    /// a defensible answer for a drag that arrives with nothing selected. Factory
+    /// timelines are included because they are what a first run meets.
     private func storedTimelineForScrub() -> GVTimeline? {
-        nil
+        selectedTimeline ?? GVTimelineStore.shared.timelines.first
     }
 
     // MARK: - Display link

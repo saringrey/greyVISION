@@ -19,7 +19,7 @@ struct GVTimelineBar: View {
             playButton
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(player.activeTimeline?.name ?? "NO TIMELINE")
+                Text(player.activeTimeline?.name ?? player.selectedTimeline?.name ?? "NO TIMELINE")
                     .font(.system(size: 11, weight: .black))
                     .tracking(0.8)
                     .foregroundStyle(.white)
@@ -29,12 +29,14 @@ struct GVTimelineBar: View {
                     Text(timecode)
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
                         .foregroundStyle(player.isPlaying ? Color.white : .white.opacity(0.55))
-                    if let timeline = player.activeTimeline {
+                    if let timeline = player.activeTimeline ?? player.selectedTimeline {
                         Text("/ \(formatDuration(timeline.duration))")
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.4))
                     }
                 }
+
+                scrubTrack
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -130,6 +132,61 @@ struct GVTimelineBar: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Save current composition as timeline")
         .accessibilityIdentifier("workspace.timeline.save")
+    }
+
+    /// The playhead. Nothing drove `scrub(to:)` before this existed — the bar
+    /// printed a timecode and no track — so the operator could not get to a cue
+    /// without starting the transport and hoping. A tap seeks as well as a drag
+    /// because `minimumDistance` is zero, which is what lets one gesture cover both.
+    @MainActor private var scrubTrack: some View {
+        let duration = player.activeTimeline?.duration ?? player.selectedTimeline?.duration ?? 0
+        let fraction = duration > 0 ? min(max(player.currentTime / duration, 0), 1) : 0
+
+        return GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.14))
+                    .frame(height: 8)
+                Capsule()
+                    .fill(.white.opacity(duration > 0 ? 0.5 : 0.14))
+                    .frame(width: max(0, proxy.size.width * fraction), height: 8)
+                // A rule with no handle reads as progress that has stalled, not as
+                // something to grab.
+                if duration > 0 {
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 8, height: 8)
+                        .offset(x: max(0, proxy.size.width * fraction - 4))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard duration > 0 else { return }
+                        let travelled = min(max(value.location.x / max(proxy.size.width, 1), 0), 1)
+                        player.scrub(to: travelled * duration)
+                    }
+            )
+        }
+        // The rule is 8pt; the hit area is 22. Nothing here was meant to be hit at
+        // its drawn size.
+        .frame(maxWidth: .infinity, minHeight: 22)
+        .accessibilityRepresentation {
+            Slider(value: scrubBinding, in: 0 ... max(duration, 0.01), step: 0.05)
+        }
+        .accessibilityLabel("Timeline playhead")
+        .accessibilityIdentifier("workspace.timeline.scrub")
+    }
+
+    /// VoiceOver and the finger drive one path: the slider's setter is the same
+    /// `scrub(to:)` the drag calls.
+    @MainActor private var scrubBinding: Binding<Double> {
+        Binding(
+            get: { player.currentTime },
+            set: { player.scrub(to: $0) }
+        )
     }
 
     private var timecode: String {

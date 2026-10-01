@@ -202,6 +202,58 @@ final class CameraEffectStackTests: XCTestCase {
         stats.codecSlotsRequested = 2
         XCTAssertTrue(stats.hasRefusedCodecSlot, "the same one trip is a refusal at two Slots")
     }
+
+    // MARK: - Scrubbing a timeline that has never played
+
+    /// Scrub has to work before anything has played: an operator drags the
+    /// playhead to see what a cue does, and the first drag always precedes the
+    /// transport. `storedTimelineForScrub()` returned nil unconditionally, so a
+    /// drag on a selected-but-unplayed timeline moved nothing at all.
+    @MainActor
+    func testScrubResolvesTheSelectedTimelineWithoutPlaying() {
+        let editor = EffectEditingSession()
+        let player = GVTimelinePlayer()
+        player.attach(editor: editor)
+
+        var timeline = GVTimeline.empty
+        timeline.name = "SCRUB TEST"
+        timeline.duration = 4
+        timeline.keyframes = [
+            GVTimelineKeyframe(time: 0, field: .primary, value: 0),
+            GVTimelineKeyframe(time: 4, field: .primary, value: 1)
+        ]
+        player.selectForScrub(timeline)
+
+        XCTAssertFalse(player.isPlaying, "scrub must not start the transport")
+        player.scrub(to: 2)
+        XCTAssertEqual(player.currentTime, 2, accuracy: 0.001)
+        XCTAssertEqual(player.activeTimeline?.name, "SCRUB TEST")
+    }
+
+    /// Selecting a timeline is not seeking it. A cue armed for later must not jump
+    /// the playhead to wherever the previous timeline had left it.
+    @MainActor
+    func testSelectingATimelineDoesNotMoveThePlayheadByItself() {
+        let player = GVTimelinePlayer()
+        var short = GVTimeline.empty
+        short.duration = 1
+        player.selectForScrub(short)
+        player.scrub(to: 0.75)
+        XCTAssertEqual(player.currentTime, 0.75, accuracy: 0.001)
+
+        var long = GVTimeline.empty
+        long.name = "LONGER"
+        long.duration = 6
+        player.selectForScrub(long)
+        XCTAssertEqual(player.currentTime, 0.75, accuracy: 0.001, "selection alone does not seek")
+
+        player.scrub(to: 5)
+        XCTAssertEqual(player.currentTime, 5, accuracy: 0.001)
+        XCTAssertEqual(player.activeTimeline?.name, "LONGER")
+
+        player.scrub(to: 99)
+        XCTAssertEqual(player.currentTime, 6, accuracy: 0.001, "a scrub past the end clamps to it")
+    }
 }
 
 /// A `Sendable` sink for the URLs a mailbox reports, so a test can count firings
