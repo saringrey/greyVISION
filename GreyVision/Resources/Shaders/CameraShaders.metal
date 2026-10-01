@@ -249,101 +249,6 @@ static inline float3 gvMoshStaleColor(float3 color, float staleness, float2 seed
     return saturate(rgb + staleness * 0.02);
 }
 
-struct GVMoshControls {
-    float blockSize;
-    float gain;           // flow → displacement scaling
-    float momentum;       // per-frame vector persistence at 60 fps
-    float refreshChance;  // probability a block obeys a refresh decision
-    float stalenessRate;  // staleness accrued per second while unrefreshed
-    float drift;          // vector mutation strength
-    float fresh;          // how strongly a refreshed block snaps to the source
-};
-
-/// The core transport: one macroblock grid over the whole frame, per-block
-/// vectors with momentum, partial frame replacement through a coherent
-/// refresh map, and staleness that deepens the longer a block goes
-/// unrefreshed. State is written back for the next frame.
-static inline float3 gvMoshTransport(
-    GVMoshControls mosh,
-    float3 current,
-    texture2d<half, access::sample> history,
-    texture2d<half, access::sample> stateIn,
-    texture2d<half, access::write> stateOut,
-    float2 liveFlow,
-    bool flowReady,
-    float4 touch,
-    float4 touchImpact,
-    float4 touchDrag,
-    bool holdActive,
-    uint holdStyle,
-    float holdSeconds,
-    float time,
-    float dt,
-    float2 uv,
-    float2 size,
-    uint2 position
-) {
-    const float2 blockPos = floor(float2(position) / mosh.blockSize);
-    const float2 blockId = blockPos + 0.5;
-    const float2 centreUV = (blockPos * mosh.blockSize + mosh.blockSize * 0.5) / size;
-    const GVMoshState previous = gvMoshReadState(stateIn, centreUV);
-
-    // Block fates are decided on ~90ms ticks, so a decision survives several
-    // frames the way a decoder's refresh map does, and neighbours inherit it
-    // through the filtered state field — repair fronts sweep instead of
-    // sprinkling.
-    const float tick = floor(time * 11.0);
-    const float decisionHash = gvCameraHash(blockId * 7.13 + float2(tick * 0.311, tick * 0.127));
-
-    float refreshChance = mosh.refreshChance;
-    if (holdActive) {
-        if ((holdStyle & 8u) != 0u) {
-            // FRAME STARVATION: the frozen frame only trickles through, and
-            // the trickle dries up the longer the hold lasts.
-            refreshChance *= exp(-holdSeconds * 0.9);
-        }
-        if ((holdStyle & 4u) != 0u) {
-            // FEEDBACK RUNAWAY: the image slowly consumes itself.
-            refreshChance *= exp(-holdSeconds * 0.45);
-        }
-    }
-    // A block surrounded by stale prediction is far less likely to refresh:
-    // corruption is a region, not a coin flip.
-    const float neighbourStale = max(
-        gvMoshReadState(stateIn, centreUV + float2(mosh.blockSize / size.x, 0.0)).staleness,
-        gvMoshReadState(stateIn, centreUV - float2(mosh.blockSize / size.x, 0.0)).staleness
-    );
-    refreshChance = saturate(refreshChance * (1.0 - neighbourStale * 0.65));
-    const bool refreshed = decisionHash < refreshChance;
-
-    const float2 vector = gvMoshUpdateVector(
-        previous.vector, liveFlow, flowReady, mosh.gain, mosh.momentum, mosh.drift,
-        touch, touchImpact, touchDrag, holdActive, holdStyle, holdSeconds,
-        blockId, centreUV, time, dt
-    );
-
-    float staleness = refreshed
-        ? 0.0
-        : min(previous.staleness + mosh.stalenessRate * dt, 1.0);
-
-    const float3 sampledHistory = gvCameraSample(history, clamp(uv - vector, 0.001, 0.999));
-    const float3 carried = gvMoshStaleColor(sampledHistory, staleness, blockId, time);
-
-    float fresh = mosh.fresh;
-    if (holdActive && (holdStyle & 4u) != 0u) {
-        fresh *= exp(-holdSeconds * 0.35);
-    }
-    // A refreshed block still inherits a trace of what it carried, so repairs
-    // read as compression settling rather than a cut to the live frame.
-    float3 result = mix(carried, current, refreshed ? saturate(fresh) : 0.0);
-    result = mix(result, current, refreshed ? 0.12 : 0.0);
-
-    if (all((position & uint2(7)) == uint2(0))) {
-        stateOut.write(half4(half2(vector), half(staleness), half(tick)), position >> 3);
-    }
-    return result;
-}
-
 // MARK: - Temporal engine
 //
 // History addressed in seconds, not in frame strides. Effects ask for "1.4
@@ -454,6 +359,55 @@ float3 gvCameraToLinear(float3 value, uint transferKind) {
         gvCameraToLinear(value.g, transferKind),
         gvCameraToLinear(value.b, transferKind)
     );
+}
+
+/// The inverse of the sRGB branch above. Everything in this app works in
+/// linear, but a video codec does not: its input is 8-bit image data and its
+/// output is 8-bit image data, so both directions of a VideoToolbox round trip
+/// have to cross a transfer function. Skipping this is what makes a naive codec
+/// pass look washed out — the encoder quantises a curve it was never given.
+float gvCameraToEncoded(float value) {
+    const float channel = saturate(value);
+    return channel <= 0.0031308
+        ? channel * 12.92
+        : fast::pow(channel, 1.0 / 2.4) * 1.055 - 0.055;
+}
+
+float3 gvCameraToEncoded(float3 value) {
+    return float3(
+        gvCameraToEncoded(value.r),
+        gvCameraToEncoded(value.g),
+        gvCameraToEncoded(value.b)
+    );
+}
+
+/// Reads the decoder's reconstruction back into the working linear space. The
+/// texture is whatever VideoToolbox actually wrote: 8-bit, 4:2:0 chroma taken
+/// from a shared macroblock, block boundaries where the quantiser gave up.
+float3 gvCameraSampleDecode(texture2d<half, access::sample> decodeTexture, const float2 uv) {
+    constexpr sampler decodeSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+    return gvCameraToLinear(float3(decodeTexture.sample(decodeSampler, uv).rgb), 1u);
+}
+
+/// Reads the decoder's reconstruction without filtering.
+///
+/// The reconstruction is the encode's size, which is almost never the frame's,
+/// so the sampler has a real decision to make — and linear filtering makes the
+/// wrong one. Averaging across a macroblock boundary hands back exactly the
+/// gradient the deblocking filter was supposed to have removed, which means the
+/// smoothest-looking version of this effect is the one that hides the artefact
+/// it exists to show. Nearest keeps each boundary where the quantiser put it.
+float3 gvCameraSampleDecodeBlocky(texture2d<half, access::sample> decodeTexture, const float2 uv) {
+    constexpr sampler decodeSampler(coord::normalized, address::clamp_to_edge, filter::nearest);
+    return gvCameraToLinear(float3(decodeTexture.sample(decodeSampler, uv).rgb), 1u);
+}
+
+/// Mean absolute reconstruction error between the live frame and the codec's
+/// reconstruction of it, summed over channels. This is the residual the
+/// encoder chose not to spend bits on — real data, not an estimate, and the
+/// most useful thing a broken reference chain leaks.
+float gvCameraDecodeResidual(const float3 live, const float3 reconstructed) {
+    return abs(live.r - reconstructed.r) + abs(live.g - reconstructed.g) + abs(live.b - reconstructed.b);
 }
 
 float3 gvCameraYUVToRGB(float y, float2 chroma, uint matrixKind) {
@@ -3121,6 +3075,11 @@ kernel void gvCameraStyleEffect(
     // ping-pongs both pairs; non-mosh modes never touch them.
     texture2d<half, access::sample> moshStateIn [[texture(9)]],
     texture2d<half, access::write> moshStateOut [[texture(10)]],
+    // The codec's own reconstruction: an 8-bit frame produced by decoding an
+    // H.264 stream this app encoded one frame earlier, with its reference chain
+    // broken on purpose. Gated by `uniforms.mode.w`; until the decoder has
+    // delivered something this binding aliases the input texture.
+    texture2d<half, access::sample> moshDecode [[texture(11)]],
     constant float *ringTimestamps [[buffer(1)]],
     constant GVTemporalRing &ringInfo [[buffer(2)]],
     constant GVCameraEffectUniforms &uniforms [[buffer(0)]],
@@ -3230,30 +3189,25 @@ kernel void gvCameraStyleEffect(
         result = mix(current, saturate(frozen + noise), controls.x);
         break;
     }
-case 4: { // Datamosh - stateful macroblock transport
-        // The previous OUTPUT is the reference: each block carries a
-        // transport vector with momentum, and either obeys a refresh
-        // decision (fresh source pixels) or keeps carrying displaced,
-        // progressively staler history. Corruption compounds frame over
-        // frame because the history this mode reads is its own output —
-        // held or not. DECAY deepens staleness and thins refresh; BLOCK
-        // sets the macroblock size; FLOW scales motion into displacement.
-const GVMoshControls mosh = GVMoshControls{
-            mix(8.0, 64.0, controls.z),
-            mix(0.4, 6.0, controls.x),
-            mix(0.55, 0.93, controls.y),
-            mix(0.50, 0.045, controls.y),
-            mix(0.25, 1.5, controls.y),
-            0.35,
-            0.9
-        };
-	        result = gvMoshTransport(
-	            mosh, current, historyTexture, moshStateIn, moshStateOut,
-	            flow, flowReady, uniforms.touch, uniforms.touchImpact, uniforms.touchDrag,
-	            holdActive, holdStyle, holdSeconds, time, dt, uv, size, position
-	        );
-	        break;
-	    }
+case 4: { // Datamosh - what the decoder actually reconstructed
+        // Nothing in this arm is synthesised. `moshDecode` is the output of a
+        // real H.264 decode of a stream this app encoded one frame earlier with
+        // its sync samples withheld, so every block edge, every smear of 4:2:0
+        // chroma across a macroblock, and every patch of motion compensation
+        // applied to the wrong reference is a decision the hardware made about
+        // pixels it could not afford. GOP, DROP and BITS steer that codec; this
+        // arm only decides how much of its answer is allowed to replace the
+        // camera — which is the only honest control over a real artefact.
+        if (uniforms.mode.w == 1u) {
+            const float3 reconstructed = gvCameraSampleDecodeBlocky(moshDecode, uv);
+            // Where the encoder gave up entirely it emits a flat block, and a
+            // flat block is duller than the error it represents: light the
+            // residual, since the residual is the thing actually happening.
+            const float residual = gvCameraDecodeResidual(current, reconstructed);
+            result = reconstructed + reconstructed * min(residual, 1.0) * 0.35;
+        }
+        break;
+    }
 	    case 5: { // Sort
 	        const float row = floor(uv.y * mix(18.0, 160.0, controls.y));
 	        const float rank = fract(row * 0.6180339 + time * 0.09);
@@ -3886,82 +3840,86 @@ const GVMoshControls mosh = GVMoshControls{
 	        result = max(current * 0.80, canvas);
 	        break;
 	    }
-	    case 39: { // Liquid mosh - iterated advection through the block vector field
-	        // Every step walks further back along the transport vectors AND
-	        // samples the previous OUTPUT, so a pixel is rebuilt from the path
-	        // its content travelled through its own corruption. That integration
-	        // reads as liquid instead of as a block smear. INJECT decides how
-	        // much live frame re-enters the flow; VISCOSITY weights the walk.
-	        const float gain = mix(0.25, 2.2, controls.x);
-	        const float viscosity = mix(0.35, 0.97, controls.y);
-	        const float blockSize = mix(10.0, 30.0, controls.y);
-	        const float2 blockPos = floor(float2(position) / blockSize);
-	        const float2 blockId = blockPos + 0.5;
-	        const float2 centreUV = (blockPos * blockSize + blockSize * 0.5) / size;
-	        const GVMoshState previous = gvMoshReadState(moshStateIn, centreUV);
-
-	        const float2 vector = gvMoshUpdateVector(
-	            previous.vector, flow, flowReady, gain, mix(0.60, 0.94, controls.y), 0.2,
-	            uniforms.touch, uniforms.touchImpact, uniforms.touchDrag,
-	            holdActive, holdStyle, holdSeconds, blockId, centreUV, time, dt
-	        );
-
-	        float2 trace = uv;
-	        float3 accumulated = float3(0.0);
-	        float weightSum = 0.0;
-	        for (int index = 0; index < 5; index++) {
-	            const float2 cellVector = gvCameraSampleVector(moshStateIn, clamp(trace, 0.0, 1.0));
-	            trace = clamp(trace - cellVector, 0.001, 0.999);
-	            const float weight = pow(viscosity, float(index));
-	            accumulated += gvCameraSample(historyTexture, trace) * weight;
-	            weightSum += weight;
-	        }
-	        float3 liquid = accumulated / max(weightSum, 1e-4);
-	        // Staleness deepens the longer the field has been running, so held
-	        // frames darken and quantise instead of smearing forever.
-	        const float staleness = min(previous.staleness + dt * mix(0.18, 0.72, controls.y), 1.0);
-	        liquid = gvMoshStaleColor(liquid, staleness, blockId, time);
-
-	        float injection = mix(0.01, 0.58, controls.z);
-	        if (holdActive && (holdStyle & 4u) != 0u) {
-	            injection *= exp(-holdSeconds * 0.55);   // FEEDBACK RUNAWAY
-	        }
-	        // INJECT is genuinely source injection: zero leaves the recursive
-	        // liquid prediction alone, one continually repairs it with camera.
-	        // Motion increases corruption, never the amount of fresh source.
-	        const float liquidPresence = saturate(0.62 + length(vector) * 16.0);
-	        result = mix(current, mix(liquid, current, injection), liquidPresence);
-
-	        if (all((position & uint2(7)) == uint2(0))) {
-	            moshStateOut.write(
-	                half4(half2(vector), half(staleness), half(floor(time * 11.0))),
-	                position >> 3
-	            );
+	    case 39: { // Liquid mosh - macroblock advection along the codec's own error
+	        // The encode runs at a fraction of the frame, so the codec's fixed
+	        // 16x16 macroblock becomes oversized relative to the image: a whole
+	        // forearm per block, a whole doorway. Each block is then advected
+	        // along the residual the encoder could not afford to code — the
+	        // measured difference between the live frame and the decoder's
+	        // reconstruction, integrated block over block. A broken reference
+	        // chain puts its error exactly there, so following the residual
+	        // traces the corruption's own gradient. It flows because an
+	        // inter-predicted codec is bad at gradients, not because a sine wave
+	        // said so.
+	        if (uniforms.mode.w == 1u) {
+	            // The sampling lattice is the block, not the pixel, so a warp
+	            // carries an entire macroblock instead of sliding pixels out of
+	            // one. SCALE already chose how big that block is on screen.
+	            const float cell = max(2.0, 2.0 + (1.0 - controls.x) * 22.0);
+	            const float2 block = floor(float2(position) / cell);
+	            const float2 blockUV = clamp((block + 0.5) * cell * texel, float2(0.0), float2(1.0));
+	            const float3 blockReconstruction = gvCameraSampleDecodeBlocky(moshDecode, blockUV);
+	            const float3 blockLive = gvCameraSample(inputTexture, blockUV);
+	            // A residual is a colour difference, not a displacement. Read two
+	            // of its channels as a direction and it behaves like the motion
+	            // field the encoder wishes it had; DROP deepens the reach, because
+	            // more withheld frames means more error to travel before the next
+	            // sync sample clears it.
+	            const float reach = mix(0.004, 0.055, controls.y) * touchIntensity;
+	            const float3 blockError = blockReconstruction - blockLive;
+	            const float2 drift = clamp(blockError.rg * reach,
+			                              float2(-0.12), float2(0.12));
+	            float3 accumulated = float3(0.0);
+	            float weightSum = 0.0;
+	            for (int index = 0; index < 4; index++) {
+	                const float t = float(index) / 3.0;
+	                const float2 probeUV = clamp(blockUV - drift * t, float2(0.0), float2(1.0));
+	                const float3 probeReconstruction = gvCameraSampleDecodeBlocky(moshDecode, probeUV);
+	                const float3 probeLive = gvCameraSample(inputTexture, probeUV);
+	                // Blocks the codec failed on hardest carry the most weight:
+	                // they are the ones the eye reads as moving.
+	                const float weight = pow(0.72, float(index)) *
+	                    (0.30 + gvCameraDecodeResidual(probeLive, probeReconstruction));
+	                accumulated += probeReconstruction * weight;
+	                weightSum += weight;
+	            }
+	            float3 liquid = accumulated / max(weightSum, 1e-4);
+	            // Chroma borrowed from the neighbouring block. That is precisely
+	            // the mistake 4:2:0 makes at this scale — the colour of one block
+	            // painting the inside of another — so borrow it deliberately,
+	            // and let coarse blocks (low SCALE) bleed further.
+	            const float2 chromaUV = clamp(blockUV + float2(cell * texel.x * (2.0 + (1.0 - controls.x) * 6.0), 0.0),
+			                                float2(0.0), float2(1.0));
+	            const float3 neighbour = gvCameraSampleDecodeBlocky(moshDecode, chromaUV);
+	            liquid = mix(liquid, liquid * 0.72 + neighbour * 0.28, 1.0 - controls.x);
+	            // BITS is fidelity arriving: a well-fed encoder leaves less to
+	            // warp, and the live frame reasserts itself through the melt.
+	            result = mix(liquid, current, controls.z * 0.30);
 	        }
 	        break;
 	    }
-	    case 40: { // Heavy mosh - the reference frame never refreshes
-	        // The difference from DATAMOSH is not a larger number, it is that
-	        // no fresh pixel is ever injected: refreshChance is zero. A decoder
-	        // that has lost its I-frame keeps applying motion vectors to a
-	        // reference nothing is correcting, so the image is rebuilt entirely
-	        // out of its own stale output and drifts further from the scene the
-	        // longer it runs. GAIN scales the vectors, BLOCK sets the grid, ROT
-	        // mutates the prediction field over time.
-const GVMoshControls mosh = GVMoshControls{
-            mix(8.0, 64.0, controls.y),
-            mix(2.0, 14.0, controls.x),
-            0.97,
-            0.0,
-            mix(0.6, 2.0, controls.z),
-            mix(0.0, 1.4, controls.z),
-            0.0
-        };
-	        result = gvMoshTransport(
-	            mosh, current, historyTexture, moshStateIn, moshStateOut,
-	            flow, flowReady, uniforms.touch, uniforms.touchImpact, uniforms.touchDrag,
-	            holdActive, holdStyle, holdSeconds, time, dt, uv, size, position
-	        );
+	    case 40: { // Heavy mosh - the reconstruction amplified against itself
+	        // DATAMOSH shows the decoder's answer; this shows the decoder's
+	        // MISTAKE, amplified — reconstruction plus a gain times the
+	        // difference between it and the live frame. RECYCLE feeds the encoder
+	        // its own previous output, so that amplified error is encoded,
+	        // decoded and amplified again on the next pass: the same cascade that
+	        // turns a handful of bad frames into soup, except the codec does the
+	        // arithmetic and its quantiser decides what survives. max() pins the
+	        // highlights, so the cascade climbs toward clipping instead of
+	        // collapsing to grey.
+	        if (uniforms.mode.w == 1u) {
+	            const float3 reconstructed = gvCameraSampleDecodeBlocky(moshDecode, uv);
+	            const float energy = gvCameraDecodeResidual(current, reconstructed);
+	            const float gain = mix(0.9, 3.4, controls.x) * touchIntensity;
+	            const float3 blown = reconstructed + (reconstructed - current) * gain;
+	            // BITS decides how much of the frame the encoder can actually
+	            // afford to represent. Starved, the residual is mostly mosquito
+	            // noise and worth amplifying; well fed, almost nothing is left to
+	            // amplify and the mode settles back toward the plain frame.
+	            result = max(reconstructed, blown)
+	                + float3(0.10, 0.02, 0.16) * energy * gain * (1.0 - controls.z * 0.6);
+	        }
 	        break;
 	    }
 	    case 41: { // Mosh brush - motion painted by the finger
@@ -4200,6 +4158,57 @@ kernel void gvCameraHistoryTap(    texture2d<half, access::sample> inputTexture 
     const float2 uv = (float2(position) + 0.5) /
         float2(outputTexture.get_width(), outputTexture.get_height());
     outputTexture.write(inputTexture.sample(gvCameraLinearSampler, uv), position);
+}
+
+/// Writes one frame of encoder input for the real datamosh round trip.
+///
+/// Two jobs, both of which have to happen in the codec's colour space rather
+/// than this app's. The frame is resampled to the encode size — below the
+/// source for the coarse variants, which is what makes a fixed 16x16
+/// macroblock oversized — and it is pushed back through the transfer function,
+/// because VideoToolbox is handed 8-bit image data: a linear value written
+/// straight into it decodes as a different picture than the one that went in.
+///
+/// `stage.recycle` is how much of the encoder's input is the decoder's own
+/// previous output instead of the camera. That one number is the recursive
+/// re-encode. With it at one, the codec predicts against its own corruption,
+/// which is how a mosh gathers.
+struct GVDatamoshStageUniforms {
+    float recycle;
+    uint decodeReady;
+};
+
+kernel void gvCameraDatamoshStage(
+    texture2d<half, access::sample> inputTexture [[texture(0)]],
+    texture2d<half, access::sample> decodeTexture [[texture(1)]],
+    texture2d<half, access::write> outputTexture [[texture(2)]],
+    constant GVDatamoshStageUniforms &stage [[buffer(0)]],
+    uint2 position [[thread_position_in_grid]]
+) {
+    if (position.x >= outputTexture.get_width() || position.y >= outputTexture.get_height()) {
+        return;
+    }
+    const float2 uv = (float2(position) + 0.5)
+        / float2(outputTexture.get_width(), outputTexture.get_height());
+    const float2 texel = float2(1.0 / float(outputTexture.get_width()),
+                                1.0 / float(outputTexture.get_height()));
+    // Four bilinear taps spanning exactly one destination pixel — the honest
+    // minimum for a downscale. One tap would alias, and shimmering moiré would
+    // be this kernel's mistake rather than the codec's, which is the one kind of
+    // artefact an effect built on real artefacts has no business producing.
+    float3 live = (
+        gvCameraSample(inputTexture, uv + texel * float2(-0.25, -0.25)) +
+        gvCameraSample(inputTexture, uv + texel * float2( 0.25, -0.25)) +
+        gvCameraSample(inputTexture, uv + texel * float2(-0.25,  0.25)) +
+        gvCameraSample(inputTexture, uv + texel * float2( 0.25,  0.25))
+    ) * 0.25;
+    const float recycle = saturate(stage.recycle);
+    // The reconstruction is one frame of the encode's own size, so this read is
+    // pixel for pixel and needs no filtering beyond the sampler's.
+    const float3 recycled = stage.decodeReady == 1u
+        ? mix(live, gvCameraSampleDecode(decodeTexture, uv), recycle)
+        : live;
+    outputTexture.write(half4(half3(gvCameraToEncoded(recycled)), 1.0h), position);
 }
 
 /// Zeroes the datamosh block-state field. Dispatched over both ping-pong

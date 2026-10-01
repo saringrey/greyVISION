@@ -9,7 +9,6 @@ struct DepthEffectParameterDeck: View {
     @EnvironmentObject private var toasts: GVToastBox
     let onClose: () -> Void
     let onExitDepth: () -> Void
-    var onSelectEffect: (DepthEffectMode) -> Void = { _ in }
     @State private var parameterPage = 0
 
     private struct Spec: Identifiable {
@@ -43,23 +42,6 @@ struct DepthEffectParameterDeck: View {
                 .lineLimit(1)
 
             Spacer(minLength: 6)
-            if DepthEffectCatalog.variants(for: effect).count > 1 {
-                Menu {
-                    ForEach(DepthEffectCatalog.variants(for: effect)) { variant in
-                        Button {
-                            onSelectEffect(variant)
-                        } label: {
-                            Label(variant.label, systemImage: variant == effect ? "checkmark" : "circle")
-                        }
-                    }
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 12, weight: .bold))
-                }
-                .accessibilityLabel("LiDAR effect variant")
-                .accessibilityIdentifier("depth.variant")
-            }
-
             GVDeckChip(label: "Reset", id: "depth.reset") {
                 parameters = .defaults(for: effect)
                 toasts.show("\(effect.label) reset")

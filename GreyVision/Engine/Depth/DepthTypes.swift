@@ -3,29 +3,29 @@ import CoreVideo
 import Foundation
 import simd
 
+/// LiDAR looks, consolidated. Raw values are stable wire numbers: they travel
+/// inside `DepthMetalUniforms` and inside saved session state, so the numbers
+/// retired by consolidation (2, 4, 5, 8-14, 19) are never reused — otherwise an
+/// old recording would silently resolve to a different look.
+///
+/// Twenty modes collapsed to nine. The removed ones were not separate looks,
+/// they were single parameters of the ones that remain: posterize and mosaic are
+/// `LEVELS`/`BLOCKS` on the heatmap, bands and edge glow are `FILL`/`GLOW` on
+/// contours, foreground cutout and fog are `ISOLATE`/`HAZE` on the depth field,
+/// chromatic split is `CHROMA` on the parallax field, raw normals are
+/// `MATERIAL` on relight, and the sonar pulse is one of the echoes of space
+/// scan. `CONFIDENCE` was a diagnostic, not an effect: confidence already gates
+/// every mode through the acquisition knob.
 enum DepthEffectMode: UInt32, CaseIterable, Identifiable, Sendable {
-    case pointCloud
-    case depthMap
-    case depthEdges
-    case depthWarp
-    case confidence
-    case fog
-    case depthSlice
-    case contours
-    case depthPosterize
-    case surfaceNormals
-    case foregroundCutout
-    case depthChromatic
-    case depthMosaic
-    case depthGlow
-    case depthBands
-    case subjectDecay
-    /// Image-intensifier emulation driven by LiDAR range.
-    case nightVision
-
+    case pointCloud = 0
+    case depthMap = 1
+    case contours = 7
+    case depthSlice = 6
+    case depthWarp = 3
     case surfaceRelight = 17
     case worldGrid = 18
-    case sonarPulse = 19
+    case subjectDecay = 15
+    case nightVision = 16
 
     var id: UInt32 {
         rawValue
@@ -33,24 +33,13 @@ enum DepthEffectMode: UInt32, CaseIterable, Identifiable, Sendable {
 
     var label: String {
         switch self {
-        case .surfaceRelight: "SURFACE RELIGHT"
-        case .worldGrid: "WORLD GRID"
-        case .sonarPulse: "SONAR PULSE"
         case .pointCloud: "POINT CLOUD"
-        case .depthMap: "DEPTH MAP"
-        case .depthEdges: "DEPTH EDGES"
-        case .depthWarp: "DEPTH WARP"
-        case .confidence: "CONFIDENCE"
-        case .fog: "DEPTH FOG"
-        case .depthSlice: "DEPTH SLICE"
+        case .depthMap: "HEATMAP"
         case .contours: "CONTOURS"
-        case .depthPosterize: "DEPTH POSTERIZE"
-        case .surfaceNormals: "SURFACE NORMALS"
-        case .foregroundCutout: "FOREGROUND CUTOUT"
-        case .depthChromatic: "DEPTH CHROMATIC"
-        case .depthMosaic: "DEPTH MOSAIC"
-        case .depthGlow: "DEPTH GLOW"
-        case .depthBands: "DEPTH BANDS"
+        case .depthSlice: "DEPTH FIELD"
+        case .depthWarp: "PARALLAX"
+        case .surfaceRelight: "RELIGHT"
+        case .worldGrid: "SPACE SCAN"
         case .subjectDecay: "SUBJECT DECAY"
         case .nightVision: "NIGHT VISION"
         }
@@ -58,26 +47,15 @@ enum DepthEffectMode: UInt32, CaseIterable, Identifiable, Sendable {
 
     var detail: String {
         switch self {
-        case .surfaceRelight: "CALIBRATED SURFACE LIGHT"
-        case .worldGrid: "WORLD-ANCHORED METRIC GRID"
-        case .sonarPulse: "WORLD-SPACE RANGE WAVE"
-        case .pointCloud: "XYZ RECONSTRUCTION"
-        case .depthMap: "METRIC HEATMAP"
-        case .depthEdges: "DEPTH GRADIENT"
-        case .depthWarp: "PARALLAX FIELD"
-        case .confidence: "LIDAR CERTAINTY"
-        case .fog: "METRIC ATMOSPHERE"
-        case .depthSlice: "RANGE ISOLATION"
-        case .contours: "ISO-DISTANCE LINES"
-        case .depthPosterize: "QUANTIZED METERS"
-        case .surfaceNormals: "DEPTH-DERIVED NORMALS"
-        case .foregroundCutout: "METRIC OCCLUSION MASK"
-        case .depthChromatic: "RANGE CHANNEL SPLIT"
-        case .depthMosaic: "DEPTH-DRIVEN BLOCKS"
-        case .depthGlow: "DISCONTINUITY BLOOM"
-        case .depthBands: "SCANNED RANGE PLANES"
-        case .subjectDecay: "VISION + DEPTH + FLOW"
-        case .nightVision: "IR INTENSIFIER // RANGE GATED"
+        case .pointCloud: "SHADED GEOMETRY // DEPTH TESTED"
+        case .depthMap: "METRIC RANGE // LEVELS + LOD"
+        case .contours: "ISO-RANGE MAP // EDGE LIGHT"
+        case .depthSlice: "METRIC DEPTH OF FIELD"
+        case .depthWarp: "OCCCLUSION-AWARE REPROJECTION"
+        case .surfaceRelight: "WORLD-SPACE SURFACE LIGHT"
+        case .worldGrid: "METRIC GRID + ECHO SWEEP"
+        case .subjectDecay: "MASK + FLOW + OCCLUSION TEAR"
+        case .nightVision: "IR INTENSIFIER // AUTO GAIN"
         }
     }
 }
@@ -106,19 +84,32 @@ struct DepthEffectParameters: Equatable, Sendable {
         return result
     }
 
+    /// The four effect knobs, resolved through their descriptors so the shader
+    /// always receives real physical units. Every consolidated mode declares
+    /// exactly four effect controls, which is why the special-casing the old
+    /// mixed-unit modes needed is gone.
     func packedControls(for mode: DepthEffectMode) -> SIMD4<Float> {
         let value = sanitized
-        if mode == .surfaceRelight || mode == .worldGrid || mode == .sonarPulse {
-            let controls = DepthEffectCatalog.effectControls(for: mode)
-            return SIMD4(Float(controls[0].value(in: value)), Float(controls[1].value(in: value)),
-                         Float(controls[2].value(in: value)), Float(value.bandWidth))
+        let controls = DepthEffectCatalog.effectControls(for: mode)
+        func at(_ index: Int) -> Float {
+            index < controls.count ? Float(controls[index].value(in: value)) : 0
         }
-        return SIMD4(Float(value.falloff), Float(value.detail), Float(value.bandCenter), Float(value.bandWidth))
+        return SIMD4(at(0), at(1), at(2), at(3))
     }
 
+    /// Clamps every field before it reaches a descriptor, a uniform or a saved
+    /// session. The first eight are absolute: metres, pixels, degrees, LiDAR
+    /// confidence. The last four are *normalized* storage for whichever mode
+    /// owns them — the catalog maps them onto that mode's physical range — so
+    /// they are clamped to 0...1 here. Clamping them to a physical bound would
+    /// silently rewrite a stored 0 into a non-zero value, which is exactly how
+    /// BLOCK SIZE at its minimum came back as 0.02 px instead of 0.01 px.
     var sanitized: DepthEffectParameters {
         func finite(_ value: Double, _ fallback: Double) -> Double {
             value.isFinite ? value : fallback
+        }
+        func unit(_ value: Double, _ fallback: Double) -> Double {
+            min(max(finite(value, fallback), 0), 1)
         }
         return DepthEffectParameters(
             nearMeters: min(max(finite(nearMeters, Self.defaults.nearMeters), 0.08), 1.0),
@@ -129,10 +120,10 @@ struct DepthEffectParameters: Equatable, Sendable {
             confidenceThreshold: min(max(finite(confidenceThreshold, Self.defaults.confidenceThreshold), 0), 2),
             yawDegrees: min(max(finite(yawDegrees, Self.defaults.yawDegrees), -35), 35),
             pitchDegrees: min(max(finite(pitchDegrees, Self.defaults.pitchDegrees), -28), 28),
-            falloff: min(max(finite(falloff, Self.defaults.falloff), 0), 1),
-            detail: min(max(finite(detail, Self.defaults.detail), 0), 1),
-            bandCenter: min(max(finite(bandCenter, Self.defaults.bandCenter), 0), 1),
-            bandWidth: min(max(finite(bandWidth, Self.defaults.bandWidth), 0.01), 1)
+            falloff: unit(falloff, Self.defaults.falloff),
+            detail: unit(detail, Self.defaults.detail),
+            bandCenter: unit(bandCenter, Self.defaults.bandCenter),
+            bandWidth: unit(bandWidth, Self.defaults.bandWidth)
         )
     }
 }

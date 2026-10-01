@@ -27,30 +27,33 @@ final class GVAudioArmPolicy: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private weak var audio: AudioReactiveRuntime?
-    private weak var editor: EffectEditingSession?
 
     /// Starts watching the composition. Safe to call once per session.
     func attach(audio: AudioReactiveRuntime, editor: EffectEditingSession) {
         self.audio = audio
-        self.editor = editor
-        recompute()
+        isRequiredByStack = editor.isAudioAnalysisRequired
+        releaseMicrophoneIfUnused()
 
-        // Every path that can change the armed set: a slot's enabled flag, a
-        // parameter write that re-enables one, the effect being swapped under a
-        // focused slot, or rgbSplit itself. One debounced sink covers all of
-        // them, and the scan is over a single-digit slot list.
-        editor.$effectStack
-            .sink { [weak self] _ in self?.reconcile() }
-            .store(in: &cancellables)
-        editor.$rgbSplitParameters
-            .sink { [weak self] _ in self?.reconcile() }
+        // Every path that can change the armed set — a slot's enabled flag, a
+        // parameter write that re-enables one, the effect being swapped under
+        // a focused slot, rgbSplit itself — is already folded into the
+        // editor's single derived flag, so one subscription covers all of them.
+        //
+        // The delivered `Bool` is used directly and the editor is never read
+        // back. This sink runs inside `Published.withMutation`'s exclusive
+        // access to the property being published; reaching into the editor for
+        // the stack would re-enter storage that is mid-write and trap.
+        editor.$isAudioAnalysisRequired
+            .sink { [weak self] required in
+                guard let self else { return }
+                self.isRequiredByStack = required
+                self.releaseMicrophoneIfUnused()
+            }
             .store(in: &cancellables)
     }
 
-    /// Recomputes the requirement from the editor and releases the microphone
-    /// when nothing needs it.
-    func reconcile() {
-        recompute()
+    /// Releases the microphone when nothing needs it.
+    func releaseMicrophoneIfUnused() {
         guard !isMicrophoneNeeded, let audio, audio.isEnabled else { return }
         audio.stop()
     }
@@ -60,12 +63,7 @@ final class GVAudioArmPolicy: ObservableObject {
     /// microphone outright or leave it open for a still-armed effect.
     func setManualArm(_ armed: Bool) {
         isManuallyArmed = armed
-        if !armed { reconcile() }
-    }
-
-    private func recompute() {
-        guard let editor else { return }
-        isRequiredByStack = editor.activeEffects.contains { $0.requiresAudioAnalysis }
+        if !armed { releaseMicrophoneIfUnused() }
     }
 }
 

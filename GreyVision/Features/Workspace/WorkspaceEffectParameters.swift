@@ -923,9 +923,9 @@ extension WorkspaceAdjustableEffect {
     private var computedDetail: String {
         switch self {
         case .rgbSplit: "CHANNEL OFFSET"
-        case .datamosh: "LIVE BLOCK SMEAR"
-        case .liquidMosh: "LIQUID FLOW SMEAR"
-        case .heavyMosh: "HEAVY DATAMOSH"
+        case .datamosh: "H.264 REFERENCE DRAG"
+        case .liquidMosh: "COARSE MACROBLOCK MOSH"
+        case .heavyMosh: "RECURSIVE CODEC CASCADE"
         case .predictionDrift: "DIFFERENTIAL MOTION MEMORY"
         case .sort: "LUMA LINE SORT"
         case .depthSort: "DEPTH-RANK SMEAR"
@@ -1351,9 +1351,9 @@ extension WorkspaceAdjustableEffect {
 
     private var computedParameterLabels: [String] {
         switch self {
-        case .datamosh: ["FLOW", "REF AGE", "BLOCK"]
-        case .liquidMosh: ["FLOW", "VISCOSITY", "INJECT"]
-        case .heavyMosh: ["FLOW", "BLOCK", "ROT"]
+        case .datamosh: ["GOP", "DROP", "BITS"]
+        case .liquidMosh: ["SCALE", "DROP", "BITS"]
+        case .heavyMosh: ["RECYCLE", "GOP", "BITS"]
         case .predictionDrift: ["DRIFT", "DECAY", "TEAR"]
         case .moshBrush: ["PUSH", "REACH", "BLOCK"]
         case .timeMap: ["DEPTH", "BIAS", "CONTRAST"]
@@ -1802,7 +1802,7 @@ extension WorkspaceAdjustableEffect {
 
     var freezesHistoryOnHold: Bool {
         switch self {
-        case .datamosh, .liquidMosh, .heavyMosh, .moshBrush, .predictionDrift,
+        case .moshBrush, .predictionDrift,
              .vectorCodebook, .motionTransplant, .bitplaneLatch, .reactionGarden,
              .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort,
              .pointCloudSmear, .depthFeedback, .freezeBrush, .sortBrush, .feedbackTunnel,

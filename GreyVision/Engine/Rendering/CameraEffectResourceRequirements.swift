@@ -9,6 +9,10 @@ struct CameraEffectResourceRequirements: OptionSet, Sendable {
     static let slotHistory = Self(rawValue: 1 << 3)
     static let moshState = Self(rawValue: 1 << 4)
     static let simulation = Self(rawValue: 1 << 5)
+    /// A VideoToolbox encode/decode round trip runs per frame. Cheap on the GPU
+    /// — the whole camera pipeline barely notices it — but it is real hardware
+    /// work on a second engine, so it must not be reported as free.
+    static let videoCodec = Self(rawValue: 1 << 6)
 }
 
 /// How much renderer time an effect asks for, as a three-step read the rail
@@ -37,6 +41,9 @@ extension WorkspaceAdjustableEffect {
         // a grid, a pressure solve and a composite, and nothing else in the
         // graph does that much per frame.
         if requirements.contains(.simulation) { return .heavy }
+        // A codec round trip is hardware work off the GPU, bounded and fixed
+        // cost per frame: never free, never the thing that drops your frames.
+        if requirements.contains(.videoCodec) { return .moderate }
         // Optical flow and stateful mosh both carry history across frames and
         // run their own passes; stacking two of them is where a device starts
         // dropping frames.
@@ -56,7 +63,7 @@ extension WorkspaceAdjustableEffect {
     var cameraResourceRequirements: CameraEffectResourceRequirements {
         var requirements: CameraEffectResourceRequirements = []
         switch self {
-        case .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .vectorCodebook,
+        case .predictionDrift, .vectorCodebook,
              .motionTransplant, .bitplaneLatch, .opticalFlowLiquid, .causalSmear,
              .realityCavitation, .timeFracture, .antiCamera, .memoryBurnIn,
              .spectralDepth, .vectorNecromancy:
@@ -64,6 +71,11 @@ extension WorkspaceAdjustableEffect {
         default: break
         }
         switch self {
+        // The three compression modes read no shader history at all. Their
+        // state is a VideoToolbox reference queue, and the artefacts are the
+        // decoder's, so they ask the graph for nothing it can allocate.
+        case .datamosh, .liquidMosh, .heavyMosh:
+            requirements.insert(.videoCodec)
         case .timeGraffiti, .timeMap: requirements.insert(.timestampedHistory)
         case .frameTear, .bufferUnderrun, .packetLoss, .chromaFailure,
              .realityCavitation, .timeFracture, .antiCamera, .spectralDepth, .vectorNecromancy:
@@ -71,7 +83,7 @@ extension WorkspaceAdjustableEffect {
         default: break
         }
         switch self {
-        case .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .moshBrush,
+        case .predictionDrift, .moshBrush,
              .vectorCodebook, .motionTransplant, .bitplaneLatch:
             requirements.formUnion([.slotHistory, .moshState])
         case .fluid, .reactionGarden: requirements.insert(.simulation)

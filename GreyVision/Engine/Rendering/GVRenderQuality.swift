@@ -63,6 +63,24 @@ enum GVRenderQuality: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// Ceiling on the longest edge of a datamosh encode.
+    ///
+    /// The codec runs on its own hardware, so the governor's render-scale step
+    /// does not touch it: without a ceiling of its own, stepping the chain down
+    /// to stay inside the frame budget leaves a full-size encode chugging away
+    /// on the second engine, which is the one cost the governor was asked to
+    /// reduce and did not. The number is a ceiling and not a target — a mosh
+    /// that encodes at 48px on a side to make its macroblocks oversized is
+    /// already far below it and stays there.
+    var codecEdge: Int {
+        switch self {
+        case .automatic: 960
+        case .high: 960
+        case .balanced: 704
+        case .efficient: 512
+        }
+    }
+
     /// Jacobi iterations in the pressure solve. Below ~20 the field stays
     /// visibly divergent and the fluid reads as smearing; above ~40 the cost
     /// stops buying anything you can see.

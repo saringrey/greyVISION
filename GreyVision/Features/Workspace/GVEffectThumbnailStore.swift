@@ -38,6 +38,9 @@ final class GVEffectThumbnailStore: ObservableObject {
     /// Effects the operator has no reason to preview, or that cannot be
     /// rendered headlessly. Keeps the store from being asked for work that
     /// would fail every time.
+    /// Thumbnail edge length, in points. Large enough to read a filter's
+    /// character on a card, small enough that 192 of them are not a problem.
+    nonisolated static let side = 256
     private static let ineligible: Set<WorkspaceAdjustableEffect> = [
         .spectrumBars, .radialSpectrum, .lissajous, .vectorscope, .waveformMonitor, .rgbParade
     ]
@@ -63,17 +66,28 @@ final class GVEffectThumbnailStore: ObservableObject {
               cache.object(forKey: effect.rawValue as NSString) == nil,
               !inFlight.contains(effect)
         else { return }
+        // The still is drawn with UIKit, which is main-thread only, so it is
+        // built here and handed to the render queue as an immutable `CGImage`.
+        // Building it inside the queue block is what killed the app: this type
+        // is `@MainActor`, so the call tripped the main-actor check and the
+        // process died the moment the rail mounted.
+        guard let source = referenceStill(width: Self.side, height: Self.side) else { return }
         inFlight.insert(effect)
-        queue.async { [weak self] in
-            guard let self else { return }
-            let image = self.render(effect)
-            Task { @MainActor in
-                self.inFlight.remove(effect)
-                guard let image else { return }
-                self.cache.setObject(image, forKey: effect.rawValue as NSString)
-                self.write(image, for: effect)
+        queue.async {
+            // Off the main actor, so this may touch nothing isolated to it.
+            let image = Self.render(effect, over: source)
+            Task { @MainActor [weak self] in
+                self?.finish(effect, with: image)
             }
         }
+    }
+
+    /// Everything the cache and the disk share, on the main actor.
+    private func finish(_ effect: WorkspaceAdjustableEffect, with image: UIImage?) {
+        inFlight.remove(effect)
+        guard let image else { return }
+        cache.setObject(image, forKey: effect.rawValue as NSString)
+        write(image, for: effect)
     }
 
     /// Whether this effect can be previewed headlessly at all.
@@ -109,6 +123,17 @@ final class GVEffectThumbnailStore: ObservableObject {
     /// it has to carry structure. A flat grey would make every threshold,
     /// edge and sort effect render to a featureless field, and a thumbnail
     /// that cannot show what the effect does is worse than no thumbnail.
+    ///
+    /// It is identical for every effect, so it is drawn once and kept.
+    private func referenceStill(width: Int, height: Int) -> CGImage? {
+        if let referenceStill { return referenceStill }
+        guard let drawn = makeReferenceStill(width: width, height: height) else { return nil }
+        referenceStill = drawn
+        return drawn
+    }
+
+    private var referenceStill: CGImage?
+
     private func makeReferenceStill(width: Int, height: Int) -> CGImage? {
         let size = CGSize(width: width, height: height)
         let renderer = UIGraphicsImageRenderer(size: size)
@@ -160,19 +185,27 @@ final class GVEffectThumbnailStore: ObservableObject {
     /// is exactly the kind of thing that shows up as a dropped frame. The
     /// style kernels that need a GPU are declared ineligible by the caller,
     /// and a card that cannot be thumbnailed simply keeps its text.
-    private func render(_ effect: WorkspaceAdjustableEffect) -> UIImage? {
-        let width = 256
-        let height = 256
-        guard let source = makeReferenceStill(width: width, height: height) else { return nil }
-        guard !Self.gpuOnlyEffects.contains(effect) else { return nil }
-        guard let output = applyCPUKernel(effect, to: source, width: width, height: height) else { return nil }
+    ///
+    /// `nonisolated`, because it runs on the render queue. Core Image is
+    /// thread-safe and touches none of this type's state.
+    private nonisolated static func render(
+        _ effect: WorkspaceAdjustableEffect,
+        over source: CGImage
+    ) -> UIImage? {
+        guard !gpuOnlyEffects.contains(effect) else { return nil }
+        guard let output = applyCPUKernel(
+            effect,
+            to: source,
+            width: source.width,
+            height: source.height
+        ) else { return nil }
         return UIImage(cgImage: output)
     }
 
     /// Effects whose kernels are fragment-shader only. There is no honest CPU
     /// stand-in for these, and a thumbnail that showed something other than
     /// what the effect does would be worse than a blank card.
-    private static let gpuOnlyEffects: Set<WorkspaceAdjustableEffect> = [
+    private nonisolated static let gpuOnlyEffects: Set<WorkspaceAdjustableEffect> = [
         .fluid, .reactionGarden, .kuwahara, .dctBlocks, .blueNoiseDither,
         .hologram, .anamorphicFlare, .bokeh, .voronoi, .worleyCracks
     ]
@@ -181,49 +214,71 @@ final class GVEffectThumbnailStore: ObservableObject {
     /// for the geometric families, smear for the temporal ones, quantisation
     /// for the block ones. It is not the shader — it is a legible stand-in, and
     /// the card's own detail line still says what the effect is.
-    private func applyCPUKernel(
+    private nonisolated static func applyCPUKernel(
         _ effect: WorkspaceAdjustableEffect,
         to source: CGImage,
         width: Int,
         height: Int
     ) -> CGImage? {
         let ci = CIImage(cgImage: source)
+        let centre = CIVector(x: ci.extent.midX, y: ci.extent.midY)
         let output: CIImage?
         switch effect.curatedFamily?.title {
         case "FORM":
-            let rotated = ci.transformed(by: CGAffineTransform(rotationAngle: .pi / 6))
-                .cropped(to: ci.extent)
-            output = rotated.applyingFilter("CIMirror", parameters: ["inputAxis": 0])
+            output = applying("CIMirror", to: ci, ["inputAngle": Double.pi, "inputPoint": centre])
         case "DECAY":
-            output = ci.applyingFilter("CIPosterize", parameters: ["inputLevels": 5.0])
+            output = applying("CIColorPosterize", to: ci, ["inputLevels": 5.0])
         case "TIME", "MOTION":
             // A horizontal smear, which is what most of these families do.
-            output = ci.applyingFilter("CIMotionBlur", parameters: [
-                kCIInputBackgroundImageKey: ci,
-                kCIInputAmountKey: 9.0
-            ])
+            output = applying("CIMotionBlur", to: ci, ["inputRadius": 9.0, "inputAngle": 0.0])
         case "SIGNAL":
-            output = ci.applyingFilter("CIColorControls", parameters: [
+            output = applying("CIColorControls", to: ci, [
                 kCIInputSaturationKey: 0.0,
                 kCIInputContrastKey: 2.2
             ])
         case "OPTICS":
-            output = ci.applyingFilter("CIGaussianBlur", parameters: [
-                kCIInputBackgroundImageKey: ci,
-                kCIInputRadiusKey: 7.0
-            ]).applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.4])
+            output = applying("CIGaussianBlur", to: ci, ["inputRadius": 7.0])
+                .flatMap { applying("CIColorControls", to: $0, [kCIInputSaturationKey: 1.4]) }
         case "COLOR":
-            output = ci.applyingFilter("CIColorControls", parameters: [
+            output = applying("CIColorControls", to: ci, [
                 kCIInputSaturationKey: 1.6,
                 kCIInputBrightnessKey: 0.08
             ])
         case "SCOPE", "AUDIO":
             output = nil
         default:
-            output = ci.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 0.72])
+            output = applying("CIGammaAdjust", to: ci, ["inputPower": 0.72])
         }
         guard let output else { return nil }
         let context = CIContext(options: [.cacheIntermediates: false])
         return context.createCGImage(output, from: CGRect(x: 0, y: 0, width: width, height: height))
+    }
+
+    /// Applies a Core Image filter, or nothing at all.
+    ///
+    /// `CIImage.applyingFilter` raises an Objective-C exception when the system
+    /// has no filter by that name, or when the filter does not declare one of
+    /// the keys — and an Objective-C exception raised on a dispatch queue is an
+    /// immediate `abort()`, so a card decoration was killing the session. The
+    /// old table passed four such keys: `inputAxis` to `CIMirror`,
+    /// `inputBackgroundImage` and `inputAmount` to `CIMotionBlur`, and
+    /// `inputBackgroundImage` to `CIGaussianBlur`; `CIPosterize` does not exist
+    /// at all.
+    ///
+    /// So the filter and its keys are checked against what the system actually
+    /// offers before anything is set. A family whose stand-in filter is missing
+    /// loses its picture and keeps its text, which is the fallback the rest of
+    /// this type already assumes.
+    private nonisolated static func applying(
+        _ name: String,
+        to input: CIImage,
+        _ parameters: [String: Any] = [:]
+    ) -> CIImage? {
+        guard let filter = CIFilter(name: name) else { return nil }
+        filter.setValue(input, forKey: kCIInputImageKey)
+        for (key, value) in parameters where filter.inputKeys.contains(key) {
+            filter.setValue(value, forKey: key)
+        }
+        return filter.outputImage
     }
 }

@@ -7,7 +7,7 @@ import XCTest
 final class DepthEffectContractTests: XCTestCase {
     @MainActor
     func testDepthKnobDeckRendersUsingPhysicalParameterBindings() throws {
-        for mode in [DepthEffectMode.pointCloud, .surfaceRelight, .sonarPulse] {
+        for mode in [DepthEffectMode.pointCloud, .surfaceRelight, .worldGrid, .subjectDecay] {
             var parameters = DepthEffectParameters.defaults(for: mode)
             let deck = DepthEffectParameterDeck(
                 effect: mode,
@@ -32,14 +32,40 @@ final class DepthEffectContractTests: XCTestCase {
         XCTAssertEqual(DepthEffectMode.nightVision.rawValue, 16)
         XCTAssertEqual(DepthEffectMode.surfaceRelight.rawValue, 17)
         XCTAssertEqual(DepthEffectMode.worldGrid.rawValue, 18)
-        XCTAssertEqual(DepthEffectMode.sonarPulse.rawValue, 19)
-        for (mode, expected) in [(DepthEffectMode.surfaceRelight, SIMD3<Float>(-35, 45, 0.35)), (.worldGrid, SIMD3<Float>(0.25, 1, 1)), (.sonarPulse, SIMD3<Float>(0.75, 0.08, 0.45))] {
+        // Consolidation retires wire numbers without ever reusing them, so a
+        // recording saved before it resolves to the same look it always did.
+        let retired: Set<UInt32> = [2, 4, 5, 8, 9, 10, 11, 12, 13, 14, 19]
+        XCTAssertTrue(retired.isDisjoint(with: Set(DepthEffectMode.allCases.map(\.rawValue))))
+        XCTAssertEqual(DepthEffectMode.allCases.count, 9)
+        // Every fullscreen mode packs four real units into the SIMD4 the shader
+        // reads; a fifth would be dropped before it ever reached the GPU.
+        for mode in DepthEffectMode.allCases where mode != .pointCloud {
+            XCTAssertEqual(DepthEffectCatalog.effectControls(for: mode).count, 4, mode.label)
+        }
+        for (mode, expected) in [(DepthEffectMode.surfaceRelight, SIMD3<Float>(-35, 45, 0.3)),
+                                 (.worldGrid, SIMD3<Float>(0.25, 1, 0.75)),
+                                 (.depthSlice, SIMD3<Float>(1.3, 0.6, 0.5)),
+                                 (.depthMap, SIMD3<Float>(1, 0.01, 0.5))] {
             let packed = DepthEffectParameters.defaults(for: mode).packedControls(for: mode)
             XCTAssertEqual(packed.x, expected.x, accuracy: 0.0001)
             XCTAssertEqual(packed.y, expected.y, accuracy: 0.0001)
             XCTAssertEqual(packed.z, expected.z, accuracy: 0.0001)
-            XCTAssertEqual(DepthEffectCatalog.controls(for: mode).prefix(4).map(\.id).first, "INTENSITY")
-            XCTAssertEqual(Array(DepthEffectCatalog.controls(for: mode).dropFirst(4)).map(\.id), ["NEAR", "FAR", "CONFIDENCE"])
+        }
+        // Paging: `controls` is the pages flattened, so page one is INTENSITY plus
+        // the first three effect knobs, and page two opens with the acquisition
+        // gates ahead of any effect knob that did not fit on page one.
+        for mode in DepthEffectMode.allCases {
+            let pages = DepthEffectCatalog.controlPages(for: mode)
+            let ids = pages.flatMap { $0.map(\.id) }
+            let defining = DepthEffectCatalog.effectControls(for: mode).map(\.id)
+            XCTAssertEqual(ids.first, "INTENSITY", mode.label)
+            XCTAssertEqual(Array(ids.dropFirst().prefix(3)), Array(defining.prefix(3)), mode.label)
+            XCTAssertEqual(pages[1].prefix(3).map { $0.id }, ["NEAR", "FAR", "CONFIDENCE"], mode.label)
+            XCTAssertEqual(Set(ids).count, ids.count, mode.label)
+            XCTAssertEqual(pages.map { $0.count }.reduce(0, +), ids.count, mode.label)
+            for id in defining {
+                XCTAssertTrue(ids.contains(id), "\(mode.label) hides \(id)")
+            }
         }
     }
 
@@ -83,8 +109,10 @@ final class DepthEffectContractTests: XCTestCase {
         XCTAssertEqual(Int(safe.confidenceThreshold), 0)
         XCTAssertTrue(safe.intensity.isFinite)
         XCTAssertTrue(safe.bandWidth.isFinite)
-        XCTAssertEqual(DepthEffectCatalog.canonicalMode(for: .depthBands), .contours)
-        XCTAssertEqual(DepthEffectCatalog.variants(for: .depthGlow), [.depthEdges, .depthGlow])
+        // Consolidation left every retired wire number unreachable rather than
+        // aliased, so an old recording falls back to the feed instead of
+        // resolving to a look that now means something else.
+        XCTAssertNil(DepthEffectMode(rawValue: 19))
     }
 
     @MainActor
@@ -92,8 +120,8 @@ final class DepthEffectContractTests: XCTestCase {
         let runtime = DepthRuntime(capability: DepthCapability(isSupported: false, supportsSmoothedDepth: false, reason: "test"))
         runtime.setEffect(.worldGrid)
         runtime.parameters.intensity = 0.31
-        runtime.setEffect(.sonarPulse)
-        XCTAssertEqual(runtime.parameters.packedControls(for: .sonarPulse).x, 0.75, accuracy: 0.0001)
+        runtime.setEffect(.depthSlice)
+        XCTAssertEqual(runtime.parameters.packedControls(for: .depthSlice).x, 1.3, accuracy: 0.0001)
         runtime.setEffect(.worldGrid)
         XCTAssertEqual(runtime.parameters.intensity, 0.31)
     }

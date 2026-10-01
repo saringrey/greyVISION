@@ -270,7 +270,11 @@ final class BootstrapTests: XCTestCase {
         XCTAssertEqual(parameters.falloff, 1)
         XCTAssertEqual(parameters.detail, 0)
         XCTAssertEqual(parameters.bandCenter, 1)
-        XCTAssertEqual(parameters.bandWidth, 0.01)
+        // The last four are normalized storage, so the floor is 0 and not a
+        // physical minimum: a stored 0 is how BLOCK SIZE says "one texel" and
+        // LINE WEIGHT says "its thinnest line". Clamping to a physical 0.01 here
+        // used to make every mode's minimum knob unreachable.
+        XCTAssertEqual(parameters.bandWidth, 0)
     }
 
     func testRGBSplitParametersClampToRendererContract() {
@@ -446,6 +450,7 @@ final class BootstrapTests: XCTestCase {
     /// the framework. What can be checked is the half that is ours: that the
     /// provider registers a phrase set for every verb, and that every verb's
     /// intent actually posts its command instead of quietly doing nothing.
+    @MainActor
     func testShortcutProviderCoversEveryCompositionVerb() async throws {
         if #available(iOS 16.0, *) {
             XCTAssertGreaterThanOrEqual(

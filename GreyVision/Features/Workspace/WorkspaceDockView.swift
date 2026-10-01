@@ -137,11 +137,7 @@ struct WorkspaceDockView: View {
                     effect: selectedDepthEffect,
                     parameters: $depthRuntime.parameters,
                     onClose: { self.selectedDepthEffect = nil },
-                    onExitDepth: appModel.deactivateDepthMode,
-                    onSelectEffect: { variant in
-                        depthRuntime.setEffect(variant)
-                        self.selectedDepthEffect = variant
-                    }
+                    onExitDepth: appModel.deactivateDepthMode
                 )
                 .transition(deckTransition)
             } else if let selectedEffect {

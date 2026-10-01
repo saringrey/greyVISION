@@ -25,12 +25,12 @@ final class ArchitectureModuleTests: XCTestCase {
         let objects = ObjectAdapterFake(events: events)
         let transition = CaptureSourceTransition(camera: camera, depth: depth, objects: objects)
 
-        transition.activateDepth(effect: .fog, fallback: .standard)
+        transition.activateDepth(effect: .depthSlice, fallback: .standard)
         await waitUntil { transition.state.runtimeStatus == .running }
 
         XCTAssertEqual(
             events.values,
-            ["objects.stop", "camera.stop", "depth.start.DEPTH FOG", "camera.start"]
+            ["objects.stop", "camera.stop", "depth.start.DEPTH FIELD", "camera.start"]
         )
         XCTAssertEqual(transition.state.mode, .camera)
         XCTAssertEqual(transition.state.runtimeStatus, .running)

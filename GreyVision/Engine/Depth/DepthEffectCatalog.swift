@@ -35,24 +35,10 @@ struct DepthParameterDescriptor: Identifiable {
 }
 
 enum DepthEffectCatalog {
-    static func canonicalMode(for mode: DepthEffectMode) -> DepthEffectMode {
-        switch mode {
-        case .depthBands: .contours
-        case .depthGlow: .depthEdges
-        default: mode
-        }
-    }
-
-    static func variants(for mode: DepthEffectMode) -> [DepthEffectMode] {
-        switch canonicalMode(for: mode) {
-        case .contours: [.contours, .depthBands]
-        case .depthEdges: [.depthEdges, .depthGlow]
-        default: [mode]
-        }
-    }
-
+    /// Modes that must keep rendering even when nothing the operator touched
+    /// changed.
     static func isAnimated(_ mode: DepthEffectMode) -> Bool {
-        [.sonarPulse, .nightVision, .subjectDecay].contains(mode)
+        [.worldGrid, .nightVision, .subjectDecay].contains(mode)
     }
 
     static func controls(for mode: DepthEffectMode) -> [DepthParameterDescriptor] {
@@ -74,37 +60,99 @@ enum DepthEffectCatalog {
         return pages
     }
 
+    /// Every consolidated mode declares exactly four effect knobs, because the
+    /// four pack into one `SIMD4<Float>`: a fifth would be silently dropped
+    /// before it reached the shader. Point cloud is the one exception — two of
+    /// its six knobs are rasterisation settings the vertex stage reads through
+    /// separate uniform lanes (`tuning.w`, `source.z`).
     static func effectControls(for mode: DepthEffectMode) -> [DepthParameterDescriptor] {
-        func normalized(_ name: String, _ key: WritableKeyPath<DepthEffectParameters, Double>, _ value: Double) -> DepthParameterDescriptor {
-            DepthParameterDescriptor(id: name, keyPath: key, range: 0 ... 1, defaultValue: value)
-        }
         func physical(_ name: String, _ key: WritableKeyPath<DepthEffectParameters, Double>, _ range: ClosedRange<Double>, _ value: Double, _ unit: String) -> DepthParameterDescriptor {
             DepthParameterDescriptor(id: name, keyPath: key, range: range, defaultValue: value, unit: unit, normalizedStorage: true)
         }
+        func percent(_ name: String, _ key: WritableKeyPath<DepthEffectParameters, Double>, _ value: Double) -> DepthParameterDescriptor {
+            physical(name, key, 0 ... 1, value, "%")
+        }
         switch mode {
-        case .surfaceRelight:
-            return [physical("LIGHT ANGLE", \.falloff, -180 ... 180, -35, "°"), physical("ELEVATION", \.detail, 5 ... 85, 45, "°"), physical("ROUGHNESS", \.bandCenter, 0.08 ... 1, 0.35, "%")]
-        case .worldGrid:
-            return [physical("CELL SIZE", \.falloff, 0.05 ... 1, 0.25, "M"), physical("LINE WIDTH", \.detail, 0.5 ... 3, 1, "PX"), physical("AXIS MIX", \.bandCenter, 0 ... 1, 1, "%")]
-        case .sonarPulse:
-            return [physical("SPEED", \.falloff, 0.15 ... 3, 0.75, "M/S"), physical("WIDTH", \.detail, 0.02 ... 0.5, 0.08, "M"), physical("TRAIL", \.bandCenter, 0 ... 1, 0.45, "%")]
         case .pointCloud:
-            return [DepthParameterDescriptor(id: "POINT SIZE", keyPath: \.pointSize, range: 1 ... 7, defaultValue: 3.2, unit: "PX"), normalized("DEPTH SIZE", \.falloff, 0.55), normalized("COLOR MIX", \.detail, 0.5), DepthParameterDescriptor(id: "SAMPLE STEP", keyPath: \.sampleStride, range: 1 ... 6, defaultValue: 1, unit: "PX"), DepthParameterDescriptor(id: "YAW", keyPath: \.yawDegrees, range: -35 ... 35, defaultValue: 0, unit: "°"), DepthParameterDescriptor(id: "PITCH", keyPath: \.pitchDegrees, range: -28 ... 28, defaultValue: 0, unit: "°")]
-        case .depthMap: return [normalized("PALETTE", \.falloff, 0.55), normalized("CONTRAST", \.detail, 0.5)]
-        case .depthEdges: return [normalized("EDGE WIDTH", \.falloff, 0.55), normalized("THRESHOLD", \.detail, 0.5)]
-        case .depthWarp: return [normalized("WARP SCALE", \.falloff, 0.55), normalized("CURVE", \.detail, 0.5)]
-        case .confidence: return [normalized("LOW COLOR", \.falloff, 0.55), normalized("HIGH COLOR", \.detail, 0.5)]
-        case .fog: return [normalized("DENSITY CURVE", \.falloff, 0.55), normalized("FOG COLOR", \.detail, 0.5)]
-        case .depthSlice: return [normalized("CENTER", \.bandCenter, 0.42), normalized("WIDTH", \.bandWidth, 0.18), normalized("FEATHER", \.detail, 0.5)]
-        case .contours, .depthBands: return [normalized("FREQUENCY", \.detail, 0.5), normalized("LINE WIDTH", \.bandWidth, 0.18), normalized("PHASE", \.bandCenter, 0.42)]
-        case .depthPosterize: return [normalized("LEVELS", \.detail, 0.5), normalized("PALETTE", \.falloff, 0.55)]
-        case .surfaceNormals: return [normalized("STRENGTH", \.detail, 0.5), normalized("SMOOTH", \.falloff, 0.55)]
-        case .foregroundCutout: return [normalized("CUT RANGE", \.bandCenter, 0.42), normalized("FEATHER", \.bandWidth, 0.18), normalized("EDGE", \.detail, 0.5)]
-        case .depthChromatic: return [normalized("OFFSET", \.detail, 0.5), normalized("DEPTH CURVE", \.falloff, 0.55)]
-        case .depthMosaic: return [normalized("BLOCK SIZE", \.detail, 0.5), normalized("DEPTH SCALE", \.falloff, 0.55)]
-        case .depthGlow: return [normalized("GLOW", \.detail, 0.5), normalized("WIDTH", \.bandWidth, 0.18), normalized("THRESHOLD", \.falloff, 0.55)]
-        case .nightVision: return [normalized("TUBE GAIN", \.falloff, 0.55), normalized("SCINTILLATION", \.detail, 0.5), normalized("IR FALLOFF", \.bandWidth, 0.18), normalized("RANGE GATE", \.bandCenter, 0.42)]
-        case .subjectDecay: return [normalized("DECAY", \.falloff, 0.55), normalized("FLOW", \.detail, 0.5), normalized("EDGE", \.bandWidth, 0.18), normalized("TRAIL", \.bandCenter, 0.42)]
+            return [
+                DepthParameterDescriptor(id: "POINT SIZE", keyPath: \.pointSize, range: 1 ... 7, defaultValue: 3.2, unit: "PX"),
+                DepthParameterDescriptor(id: "SAMPLE STEP", keyPath: \.sampleStride, range: 1 ... 6, defaultValue: 1, unit: "PX"),
+                percent("DEPTH SIZE", \.falloff, 0.55),
+                percent("COLOUR MIX", \.detail, 0.5),
+                DepthParameterDescriptor(id: "YAW", keyPath: \.yawDegrees, range: -35 ... 35, defaultValue: 0, unit: "°"),
+                DepthParameterDescriptor(id: "PITCH", keyPath: \.pitchDegrees, range: -28 ... 28, defaultValue: 0, unit: "°")
+            ]
+        case .depthMap:
+            // LEVELS absorbs the old posterize mode, BLOCK SIZE the old mosaic:
+            // both were only ever how far apart range buckets sit and how
+            // coarsely the range is sampled.
+            return [
+                physical("LEVELS", \.detail, 1 ... 24, 1, "STEP"),
+                physical("BLOCK SIZE", \.bandWidth, 0.01 ... 1, 0.01, "PX"),
+                percent("RANGE CURVE", \.falloff, 0.5),
+                percent("PALETTE", \.bandCenter, 0.4)
+            ]
+        case .contours:
+            // FILL absorbs the old bands mode; EDGE GLOW absorbs the old depth
+            // edges and depth glow modes, which were the same gradient test.
+            return [
+                physical("SPACING", \.falloff, 0.02 ... 0.6, 0.09, "M"),
+                physical("LINE WEIGHT", \.bandWidth, 0.01 ... 1, 0.09, "PX"),
+                percent("FILL", \.detail, 0.25),
+                percent("EDGE GLOW", \.bandCenter, 0.35)
+            ]
+        case .depthSlice:
+            // ISOLATE absorbs the old foreground cutout, and the atmosphere
+            // term absorbs the old fog: both are what happens beyond focus.
+            return [
+                physical("FOCUS", \.falloff, 0.2 ... 6, 1.3, "M"),
+                physical("DEPTH OF FIELD", \.detail, 0.05 ... 4, 0.6, "M"),
+                percent("BLUR", \.bandCenter, 0.5),
+                percent("ISOLATE", \.bandWidth, 0.12)
+            ]
+
+        case .depthWarp:
+            // CHROMA absorbs the old depth-chromatic mode: a range-weighted
+            // channel split is the same displacement, applied per channel.
+            return [
+                percent("DISPLACE", \.falloff, 0.55),
+                percent("CURVE", \.detail, 0.5),
+                percent("CHROMA", \.bandCenter, 0.25),
+                percent("STIR", \.bandWidth, 0.5)
+            ]
+        case .surfaceRelight:
+            // MATERIAL slides to 1 for the raw normals that used to be their
+            // own mode. They are the same computation, one is just unlit.
+            return [
+                physical("LIGHT ANGLE", \.falloff, -180 ... 180, -35, "°"),
+                physical("ELEVATION", \.detail, 5 ... 85, 45, "°"),
+                physical("ROUGHNESS", \.bandCenter, 0.05 ... 1, 0.3, "%"),
+                percent("MATERIAL", \.bandWidth, 0)
+            ]
+        case .worldGrid:
+            // PULSE SPEED and ECHO WIDTH are the whole of the old sonar-pulse
+            // mode, now layered on the metric grid it used to compete with.
+            return [
+                physical("CELL SIZE", \.falloff, 0.05 ... 1, 0.25, "M"),
+                physical("LINE WIDTH", \.detail, 0.5 ... 3, 1, "PX"),
+                physical("PULSE SPEED", \.bandCenter, 0.15 ... 3, 0.75, "M/S"),
+                physical("ECHO WIDTH", \.bandWidth, 0.02 ... 0.5, 0.08, "M")
+            ]
+        case .subjectDecay:
+            return [
+                percent("DECAY", \.falloff, 0.55),
+                percent("FLOW", \.detail, 0.5),
+                percent("EDGE", \.bandWidth, 0.18),
+                percent("TRAIL", \.bandCenter, 0.42)
+            ]
+        case .nightVision:
+            return [
+                percent("TUBE GAIN", \.falloff, 0.55),
+                percent("SCINTILLATION", \.detail, 0.5),
+                percent("IR FALLOFF", \.bandWidth, 0.18),
+                percent("RANGE GATE", \.bandCenter, 0.42)
+            ]
         }
     }
 }
+

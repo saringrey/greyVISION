@@ -35,7 +35,12 @@ struct CompositionSnapshot: Equatable, Sendable {
         hasher.combine(rgb.amount)
         hasher.combine(rgb.angleDegrees)
         hasher.combine(rgb.mix)
-        self.identity = UInt64(hasher.finalize())
+        // Reinterpreted, not converted. `finalize()` returns a signed Int and the
+        // conversion trap — "not enough bits to represent a signed value" — fires
+        // on any negative hash, which is roughly half of all process launches,
+        // because Hasher is seeded per process. Bit-reinterpretation keeps every
+        // bit of entropy and cannot trap; identity only has to be comparable.
+        self.identity = UInt64(bitPattern: Int64(hasher.finalize()))
     }
 }
 
@@ -45,8 +50,59 @@ struct CompositionSnapshot: Equatable, Sendable {
 /// exclusive selection, ADD mode, SOLO, remove, or undo means.
 @MainActor
 final class EffectEditingSession: ObservableObject {
-    @Published var rgbSplitParameters: RGBSplitEffectParameters
-    @Published var effectStack: CameraEffectStackParameters
+    @Published var rgbSplitParameters: RGBSplitEffectParameters {
+        didSet { scheduleRenderedCompositionPublish() }
+    }
+
+    @Published var effectStack: CameraEffectStackParameters {
+        didSet { scheduleRenderedCompositionPublish() }
+    }
+
+    /// The composition exactly as the renderer should see it, republished only
+    /// when that changes.
+    ///
+    /// This exists so no subscriber ever has to read through a value that
+    /// `@Published` is handing out mid-mutation. A Combine subscriber to
+    /// `$effectStack` receives the stack as a borrow into storage that is
+    /// still inside its `modify` accessor; reading a field through that borrow
+    /// is a simultaneous access to memory already being written, and Swift
+    /// traps it. Deriving the snapshot here — on the writer's side, from
+    /// owned values — means the preview receives a finished value and has
+    /// nothing to inspect.
+    ///
+    /// The derivation is also deferred a turn, and not merely moved onto the
+    /// writer's side. An observer on a stored property runs *inside* that
+    /// property's write access, so deriving from a `didSet` reads back the
+    /// very storage being written and traps in exactly the same way. One
+    /// runloop turn later the write has landed, the storage is idle, and
+    /// everything derived from it is safe to read.
+    ///
+    /// Delivery goes through a subject rather than a second `@Published`, for
+    /// one more reason. `@Published` hands its subscriber whatever the
+    /// compiler decided to pass — a `@guaranteed` borrow into its own storage
+    /// is a legal choice, and reading that borrow is the trap this whole
+    /// arrangement exists to avoid. A subject is handed the value that was
+    /// passed to `send`, so a subscriber can only ever see a finished copy
+    /// that belongs to nobody else.
+    private(set) var renderedComposition: CompositionSnapshot
+
+    private let renderedCompositionSubject = PassthroughSubject<CompositionSnapshot, Never>()
+
+    /// The finished composition, republished only when it changes.
+    var renderedCompositionPublisher: AnyPublisher<CompositionSnapshot, Never> {
+        renderedCompositionSubject.eraseToAnyPublisher()
+    }
+
+    /// True while at least one armed effect reads the live spectrum.
+    ///
+    /// Derived here, on the writing side, for the same reason
+    /// `renderedComposition` is: a subscriber to `@Published` is invoked while
+    /// `Published.withMutation` still holds an exclusive access to the storage
+    /// it is publishing. A consumer that reaches back into `effectStack` from
+    /// inside that delivery to work this out for itself re-enters storage that
+    /// is mid-write, and Swift traps it. Publishing the answer as a `Bool`
+    /// means the consumer has nothing to look up.
+    @Published private(set) var isAudioAnalysisRequired = false
 
     @Published private(set) var selectedEffect: WorkspaceAdjustableEffect?
     @Published var focusedSlot: CameraEffectStackParameters.Slot.ID?
@@ -54,7 +110,10 @@ final class EffectEditingSession: ObservableObject {
     /// Presentation-only clean view. The committed composition and every slot
     /// remain untouched while this is active, so before/after never becomes an
     /// edit and never clears temporal history.
-    @Published private(set) var isGlobalBypassed = false
+    @Published private(set) var isGlobalBypassed = false {
+        didSet { scheduleRenderedCompositionPublish() }
+    }
+
     @Published private(set) var isPreviewing = false
     /// Whether there is anything to step back to. Published because the
     /// affordances that offer undo — the toolbar pair and the swipe gesture —
@@ -73,6 +132,10 @@ final class EffectEditingSession: ObservableObject {
     private var isContinuousEditInFlight = false
     /// The composition as it stood when the current gesture began.
     private var gestureAnchor: CompositionSnapshot?
+    /// True while a deferred publish is queued, so a burst of writes — a
+    /// slider scrub, an undo, a preset apply — costs one derivation, not one
+    /// per write.
+    private var isRepublishPending = false
 
     init(
         rgbSplitParameters: RGBSplitEffectParameters = .init(),
@@ -80,8 +143,31 @@ final class EffectEditingSession: ObservableObject {
     ) {
         self.rgbSplitParameters = rgbSplitParameters
         self.effectStack = effectStack
-        lastCommitted = snapshot
+        // Seeded from the arguments, never from `self`. Reading a property
+        // back through this type during initialisation has trapped twice: once
+        // because the derived getter touched storage that was still being
+        // initialised, and once because it ran against an access the compiler
+        // still considered open. Bypass starts off, so the rendered
+        // composition *is* the committed one, and nothing else is derived here.
+        let initial = CompositionSnapshot(stack: effectStack, rgb: rgbSplitParameters)
+        lastCommitted = initial
+        renderedComposition = initial
+        isAudioAnalysisRequired = Self.requiresAudio(stack: effectStack, rgb: rgbSplitParameters)
         publishHistoryDepth()
+    }
+
+    /// Whether this composition needs the microphone open.
+    ///
+    /// A free function of its arguments so it can be answered from `init`
+    /// without reading anything back out of the session.
+    private static func requiresAudio(
+        stack: CameraEffectStackParameters,
+        rgb: RGBSplitEffectParameters
+    ) -> Bool {
+        if rgb.isEnabled, WorkspaceAdjustableEffect.rgbSplit.requiresAudioAnalysis { return true }
+        return stack.orderedSlots.contains { slot in
+            slot.parameters.isEnabled && slot.effect.requiresAudioAnalysis
+        }
     }
 
     var snapshot: CompositionSnapshot {
@@ -102,6 +188,52 @@ final class EffectEditingSession: ObservableObject {
             clean.setEnabled(false, slot: slot.id)
         }
         return clean
+    }
+
+    /// Queues the derivation for the next runloop turn.
+    ///
+    /// Safe to call from an observer: it touches only its own flag and the
+    /// main queue, neither of which is the storage being written.
+    private func scheduleRenderedCompositionPublish() {
+        guard !isRepublishPending else { return }
+        isRepublishPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isRepublishPending = false
+            self.publishRenderedComposition()
+        }
+    }
+
+    /// Recomputes what the renderer should see and publishes it if it moved.
+    ///
+    /// Never call this from a property observer. Observers run inside the
+    /// write access of the property they observe, so the reads below would
+    /// collide with it. `scheduleRenderedCompositionPublish` is the only path
+    /// that an observer may take.
+    ///
+    /// The identity comparison lives here, on the writing side, rather than in
+    /// a Combine operator: it runs against values this type owns, and it costs
+    /// one UInt64 comparison instead of a walk over every slot and parameter.
+    private func publishRenderedComposition() {
+        publishAudioRequirement()
+        let next = CompositionSnapshot(
+            stack: renderedEffectStack,
+            rgb: renderedRGBSplitParameters
+        )
+        guard next.identity != renderedComposition.identity else { return }
+        renderedComposition = next
+        renderedCompositionSubject.send(next)
+    }
+
+    /// Republishes the microphone requirement only when it actually moves.
+    ///
+    /// Bypassed slots are ignored here: the bypass is a preview-only clean
+    /// view, and it must not open or close the microphone behind the operator's
+    /// back.
+    private func publishAudioRequirement() {
+        let required = Self.requiresAudio(stack: effectStack, rgb: rgbSplitParameters)
+        guard required != isAudioAnalysisRequired else { return }
+        isAudioAnalysisRequired = required
     }
 
     var activeEffects: [WorkspaceAdjustableEffect] {

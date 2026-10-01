@@ -154,7 +154,15 @@ struct DepthMetalUniforms {
     var source: SIMD4<UInt32>
     var options: SIMD4<UInt32>
     var worldFromCamera: simd_float4x4
-    var scanOriginAge: SIMD4<Float>
+    /// Four space-scan echo lanes: xyz is the world-space origin, w its age in
+    /// seconds. A negative age marks an empty lane.
+    var pulses: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>)
+}
+
+/// One space-scan echo — a world-anchored origin and the moment it fired.
+private struct DepthPulse: Sendable {
+    let origin: SIMD3<Float>
+    let birth: TimeInterval
 }
 
 private struct DepthSubmissionKey: Equatable {
@@ -225,10 +233,14 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
     private let inFlight = DispatchSemaphore(value: 2)
     private var lastSubmission: DepthSubmissionKey?
     private var sessionGeneration: UInt64 = 0
-    private var scanOrigin: SIMD3<Float>?
-    private var scanStartedAt: TimeInterval = 0
+    private var pulses: [DepthPulse] = []
     private var lastImpactTime: TimeInterval?
     private let animationEpoch = ProcessInfo.processInfo.systemUptime
+
+    /// Echoes that can be in flight at once, and how often the scan re-pings
+    /// itself when nobody is tapping.
+    private static let pulseSlots = 4
+    private static let autoPingInterval: TimeInterval = 2.6
 
     private var effect = DepthEffectMode.pointCloud
     private var parameters = DepthEffectParameters.defaults
@@ -372,7 +384,7 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
         subjectOutputTexture = nil
         subjectHistoryTexture = nil
         hasSubjectHistory = false
-        scanOrigin = nil
+        pulses.removeAll()
         lastSubmission = nil
         lastImpactTime = nil
         CVMetalTextureCacheFlush(textureCache, 0)
@@ -388,7 +400,7 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
         let generation = mailbox.sessionGeneration
         if generation != sessionGeneration {
             sessionGeneration = generation
-            scanOrigin = nil
+            pulses.removeAll()
             lastImpactTime = nil
             lastSubmission = nil
             textureSet = nil
@@ -430,8 +442,8 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
                 personMaskSequence = 0
             }
         }
-        if settings.effect == .sonarPulse {
-            updateScanOrigin(frame: textureSet.frame, settings: settings, viewport: view.drawableSize)
+        if settings.effect == .worldGrid {
+            updatePulses(frame: textureSet.frame, settings: settings, viewport: view.drawableSize)
         }
 
         guard let drawable = view.currentDrawable,
@@ -614,28 +626,48 @@ private final class DepthMetalRenderer: NSObject, MTKViewDelegate, @unchecked Se
                 hasTemporalHistory ? 1 : 0
             ),
             worldFromCamera: frame.cameraTransform,
-            scanOriginAge: SIMD4(scanOrigin?.x ?? 0, scanOrigin?.y ?? 0, scanOrigin?.z ?? 0,
-                                 scanOrigin == nil ? -1 : Float(max(0, ProcessInfo.processInfo.systemUptime - scanStartedAt)))
+            pulses: (pulseLane(0), pulseLane(1), pulseLane(2), pulseLane(3))
         )
     }
 
-    private func updateScanOrigin(frame: DepthFrame, settings: DepthRenderSettings, viewport: CGSize) {
+    /// One echo lane for the shader. A negative age means the lane is empty.
+    private func pulseLane(_ index: Int) -> SIMD4<Float> {
+        guard index < pulses.count else { return SIMD4(0, 0, 0, -1) }
+        let pulse = pulses[index]
+        return SIMD4(
+            pulse.origin.x, pulse.origin.y, pulse.origin.z,
+            Float(max(0, ProcessInfo.processInfo.systemUptime - pulse.birth))
+        )
+    }
+
+    /// Up to four echoes are alive at once, so consecutive taps stack into a
+    /// sweep instead of each one cancelling the last. When nobody is tapping,
+    /// the scan pings itself from the surface under the centre of the frame,
+    /// which traces the path walked through a room.
+    private func updatePulses(frame: DepthFrame, settings: DepthRenderSettings, viewport: CGSize) {
+        let now = ProcessInfo.processInfo.systemUptime
         let size = SIMD2(Float(viewport.width), Float(viewport.height))
+        var fired: [SIMD3<Float>] = []
         if let impactTime = settings.touch.impactTime, impactTime != lastImpactTime {
             lastImpactTime = impactTime
             if let position = settings.touch.impactPosition,
-               let anchor = DepthGeometry.anchor(viewUV: position, viewport: size, frame: frame, parameters: settings.parameters)
-            {
-                scanOrigin = anchor
-                scanStartedAt = ProcessInfo.processInfo.systemUptime
+               let anchor = DepthGeometry.anchor(viewUV: position, viewport: size, frame: frame, parameters: settings.parameters) {
+                fired.append(anchor)
             }
         }
-        if scanOrigin == nil,
-           let anchor = DepthGeometry.anchor(viewUV: SIMD2(repeating: 0.5), viewport: size, frame: frame, parameters: settings.parameters)
-        {
-            scanOrigin = anchor
-            scanStartedAt = ProcessInfo.processInfo.systemUptime
+        let newestAge = pulses.last.map { now - $0.birth } ?? .greatestFiniteMagnitude
+        if fired.isEmpty, newestAge >= Self.autoPingInterval,
+           let anchor = DepthGeometry.anchor(viewUV: SIMD2(repeating: 0.5), viewport: size, frame: frame, parameters: settings.parameters) {
+            fired.append(anchor)
         }
+        guard !fired.isEmpty else { return }
+        for origin in fired { pulses.append(DepthPulse(origin: origin, birth: now)) }
+        // An echo is only worth keeping while its wavefront can still land
+        // inside the operator's far gate.
+        let pulseSpeed = settings.parameters.packedControls(for: .worldGrid).z
+        let horizon = max(settings.parameters.farMeters, 1) / max(Double(pulseSpeed), 0.15)
+        pulses.removeAll { now - $0.birth > horizon + 0.5 }
+        if pulses.count > Self.pulseSlots { pulses.removeFirst(pulses.count - Self.pulseSlots) }
     }
 
     private func updatePersonMaskTexture() {

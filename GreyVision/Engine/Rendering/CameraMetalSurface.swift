@@ -23,10 +23,19 @@ enum CameraMetalShaderNames {
     static let compositeWatermark = "gvCameraCompositeWatermark"
     static let signalFracture = "gvCameraSignalFracture"
     static let moshClearState = "gvMoshClearState"
+    static let datamoshStage = "gvCameraDatamoshStage"
     static let bandLuma = "gvCameraBandLuma"
     static let previewVertex = "gvCameraPreviewVertex"
     static let previewFragment = "gvCameraPreviewFragment"
     static let styleModeFunctionConstantIndex = 0
+}
+
+/// Matches `GVDatamoshStageUniforms` in CameraShaders.metal: how much of the
+/// encoder's input is the decoder's own output, and whether a reconstruction
+/// exists to feed back into it.
+private struct DatamoshStageUniforms {
+    var recycle: Float
+    var decodeReady: UInt32
 }
 
 /// Live render statistics surfaced to the camera HUD.
@@ -937,6 +946,16 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// GPU is already executing N+1, so a single buffer would be cleared out
     /// from under the read.
     private let bandLumaBuffers: [MTLBuffer]
+    /// Writes encoder input for the real datamosh round trip. Optional for the
+    /// same reason as the luma probe: a device without it loses the codec pass,
+    /// not the camera.
+    private let datamoshStagePipeline: MTLComputePipelineState?
+    /// The live H.264 encode/decode round trip the datamosh modes display. It
+    /// owns the VideoToolbox sessions and the encoder-input ring.
+    private let datamoshEngine: GVDatamoshEngine?
+    /// Frame number at which the codec last saw input, used to spot a gap long
+    /// enough that the reference chain no longer describes anything on screen.
+    private var datamoshStalledSince: TimeInterval?
     /// Shared optical flow. One estimator feeds every motion-aware effect.
     private let flowField: CameraFlowField
     /// Device attitude, for world-anchored accumulation.
@@ -1118,6 +1137,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         self.flowClearPipeline = flowClearPipeline
         bandLumaPipeline = library.makeFunction(name: CameraMetalShaderNames.bandLuma)
             .flatMap { try? device.makeComputePipelineState(function: $0) }
+        datamoshStagePipeline = library.makeFunction(name: CameraMetalShaderNames.datamoshStage)
+            .flatMap { try? device.makeComputePipelineState(function: $0) }
+        datamoshEngine = GVDatamoshEngine(device: device)
         // Three bands of four uints: sum, count, bright count, pad.
         bandLumaBuffers = (0 ..< 3).compactMap { _ in
             device.makeBuffer(length: MemoryLayout<UInt32>.stride * 12, options: .storageModeShared)
@@ -1414,6 +1436,14 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             guard slot.0.freezesHistoryOnHold, slot.0.temporalMode != nil else { return }
             acc |= holdStyle(for: slot.0, freezeActive: settings.temporalHoldActive)
         }
+        // Codec hardware is only held while a codec mode is actually on screen.
+        // An encoder and a decoder are hardware shared with recording, so a mode
+        // that has left the stack has no business keeping them warm — and the
+        // frame the operator sees when it comes back is a fresh reconstruction
+        // rather than a stale chain applied to a scene that is long gone.
+        datamoshEngine?.setCodecActive(temporalEffects.contains {
+            $0.0.temporalMode.map(isCodecMoshMode) ?? false
+        })
         if flowReady {
             encodeFlow(
                 source: linearTexture,
@@ -1889,6 +1919,20 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 )
                 node.moshHistoryNeedsSeed = false
             }
+            // Real compression datamoshing. These three modes are not shader
+            // effects — they are views onto what a hardware decoder actually
+            // reconstructed from a stream this app encoded and then withheld
+            // sync samples from. The round trip advances here; what comes back
+            // is a frame behind the camera, because that is how long a codec
+            // needs and no amount of shader work shortens it.
+            var decodedFrame: GVDatamoshEngine.DecodedFrame?
+            if isCodecMoshMode(modeValue) {
+                encodeDatamoshPass(effect: effect,
+                                   parameters: node.cameraParameters,
+                                   source: request.input,
+                                   commandBuffer: request.frame.commandBuffer,
+                                   decoded: &decodedFrame)
+            }
             encodeTemporalEffect(
                 effect,
                 parameters: node.cameraParameters,
@@ -1912,6 +1956,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 touchImpact: state.touchImpact,
                 touchDrag: state.touchDrag,
                 moshState: moshState,
+                decode: decodedFrame?.texture,
                 blobs: state.settings.blobs
             )
             // Mosh modes write into the output half of the ping-pong pair; swap
@@ -2920,12 +2965,108 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         return history
     }
 
+    /// Modes that still run the shader-side block transport and therefore need
+    /// the persistent state field allocated. The three compression modes are no
+    /// longer here: their state lives in a VideoToolbox reference queue, not in
+    /// a texture.
     private func isMoshMode(_ mode: UInt32) -> Bool {
         switch mode {
-        case 4, 39, 40, 41, 43, 44, 45, 46:
+        case 41, 43, 44, 45, 46:
             true
         default:
             false
+        }
+    }
+
+    /// Modes driven by the live codec round trip rather than by shader state.
+    private func isCodecMoshMode(_ mode: UInt32) -> Bool {
+        switch mode {
+        case 4, 39, 40:
+            true
+        default:
+            false
+        }
+    }
+
+    /// Maps an effect's three sliders onto codec intent.
+    ///
+    /// The mapping itself lives on `GVDatamoshEngine` so it can be tested
+    /// without a camera or a Metal device; what happens here is the one thing
+    /// that cannot be decided without the renderer: how much encode the quality
+    /// governor is currently willing to pay for. That ceiling is the difference
+    /// between a governor that shrinks the whole pipeline when a device gets warm
+    /// and one that leaves a second hardware engine running at full size.
+    private func datamoshConfiguration(for effect: WorkspaceAdjustableEffect,
+                                       parameters: CameraEffectParameters) -> GVDatamoshEngine.Configuration {
+        let values = parameters.sanitized
+        let variant: GVDatamoshEngine.Variant
+        switch effect {
+        case .datamosh: variant = .datamosh
+        case .liquidMosh: variant = .liquidMosh
+        case .heavyMosh: variant = .heavyMosh
+        default: variant = .datamosh
+        }
+        return GVDatamoshEngine.configuration(variant: variant,
+                                              primary: values.primary,
+                                              secondary: values.secondary,
+                                              tertiary: values.tertiary,
+                                              maximumEncodeEdge: effectQuality.codecEdge)
+    }
+
+    /// Advances one frame of the codec round trip: publishes the newest
+    /// reconstruction for this frame's shader to composite, writes this frame's
+    /// encoder input, and arranges for VideoToolbox to receive it only once the
+    /// GPU has finished writing it.
+    ///
+    /// Every way out of here is survivable by design. With no staging slot the
+    /// reference chain simply does not advance for a frame, which deepens the
+    /// mosh rather than breaking it; with no decode yet, the modes hold the live
+    /// frame instead of showing an empty reconstruction.
+    private func encodeDatamoshPass(effect: WorkspaceAdjustableEffect,
+                                    parameters: CameraEffectParameters,
+                                    source: MTLTexture,
+                                    commandBuffer: MTLCommandBuffer,
+                                    decoded: inout GVDatamoshEngine.DecodedFrame?) {
+        guard let engine = datamoshEngine, let pipeline = datamoshStagePipeline else { return }
+        let configuration = datamoshConfiguration(for: effect, parameters: parameters)
+        decoded = engine.latestDecodedFrame
+        // The reference chain only ever describes a scene the codec has been fed
+        // every frame. After a stall — a background, a resolution change, the
+        // effect leaving the stack and returning — that chain describes a moment
+        // long gone, so the next encode is forced to a sync sample rather than
+        // compounding against a reference nothing on screen still resembles.
+        defer { datamoshStalledSince = ProcessInfo.processInfo.systemUptime }
+        if let lastPump = datamoshStalledSince,
+           ProcessInfo.processInfo.systemUptime - lastPump > 0.4 {
+            engine.requestKeyframe()
+        }
+        // The Metal texture is a view onto the decoder's image buffer, valid
+        // only while the CoreVideo import behind it lives. The command buffer
+        // reads it after this function returns, and the engine publishes a newer
+        // frame as soon as the codec delivers one, so the import is pinned to
+        // the buffer's lifetime rather than to this call's.
+        if let pinned = decoded {
+            commandBuffer.addCompletedHandler { _ in withExtendedLifetime(pinned) {} }
+        }
+        guard let staging = engine.beginFrame(
+            configuration: configuration,
+            sourceSize: CGSize(width: source.width, height: source.height)
+        ) else { return }
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        var uniforms = DatamoshStageUniforms(recycle: configuration.recycle,
+                                             decodeReady: decoded == nil ? 0 : 1)
+        encoder.label = "greyVISION Datamosh Encoder Input"
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(source, index: 0)
+        // The live frame stands in for a decode that has not arrived; the
+        // uniform gates the read, and Metal requires every declared binding.
+        encoder.setTexture(decoded?.texture ?? source, index: 1)
+        encoder.setTexture(staging.texture, index: 2)
+        encoder.setBytes(&uniforms, length: MemoryLayout<DatamoshStageUniforms>.stride, index: 0)
+        dispatch(encoder, pipeline: pipeline, texture: staging.texture)
+        encoder.endEncoding()
+        commandBuffer.addCompletedHandler { _ in
+            engine.endFrame(staging, configuration: configuration)
         }
     }
 
@@ -3101,6 +3242,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         touchImpact: SIMD4<Float>,
         touchDrag: SIMD4<Float>,
         moshState: (input: MTLTexture, output: MTLTexture)?,
+        decode: MTLTexture?,
         blobs: [SIMD4<Float>]
     ) {
         guard let mode = effect.temporalMode,
@@ -3111,7 +3253,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let values = parameters.sanitized
         let packedDelta = UInt32(min(max(deltaTime, 1.0 / 240.0) * 65536.0, 4294967295.0))
         var uniforms = CameraStyleEffectUniforms(
-            mode: SIMD4<UInt32>(mode, holdStyle, packedDelta, 0),
+            // mode.w: the codec has delivered a reconstruction, so the
+            // compression modes have something real to composite. Until then
+            // they leave the frame alone rather than showing an empty decode.
+            mode: SIMD4<UInt32>(mode, holdStyle, packedDelta, decode == nil ? 0 : 1),
             parameters: SIMD4<Float>(
                 Float(values.primary),
                 Float(values.secondary),
@@ -3177,6 +3322,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             encoder.setTexture(history, index: 9)
             encoder.setTexture(history, index: 10)
         }
+        // Slot 11 is the codec's reconstruction. The source stands in when the
+        // round trip has not produced one yet; the shader gates on `mode.w`, so
+        // the stand-in is never read, but Metal requires the binding.
+        encoder.setTexture(decode ?? source, index: 11)
         // Slot 8 plus buffers 1 and 2 are the timestamped ring. Bound every
         // frame; `ringInfo.validCount` is what gates use, so a shader can read
         // it safely before any frame has been recorded.

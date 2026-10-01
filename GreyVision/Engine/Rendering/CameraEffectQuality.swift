@@ -85,6 +85,11 @@ struct CameraEffectQuality {
     var simulationEdge: Int { resolvedTier.simulationEdge }
     var pressureIterations: Int { resolvedTier.pressureIterations }
 
+    /// The ceiling the datamosh round trip encodes under. The governor's other
+    /// levers are GPU-side and the codec is not, so it needs its own — see
+    /// `GVRenderQuality.codecEdge`.
+    var codecEdge: Int { resolvedTier.codecEdge }
+
     /// Historical alias. The HUD and the telemetry strip both report this.
     var reducedDetail: Bool { resolvedTier != .high }
 

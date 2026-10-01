@@ -9,30 +9,17 @@ final class EffectRenderProjection: ObservableObject {
     private var subscription: AnyCancellable?
 
     init(editor: EffectEditingSession) {
-        composition = CompositionSnapshot(
-            stack: editor.renderedEffectStack,
-            rgb: editor.renderedRGBSplitParameters
-        )
-        subscription = editor.$effectStack.combineLatest(editor.$rgbSplitParameters, editor.$isGlobalBypassed)
-            .map { stack, rgb, bypassed in
-                var stack = stack
-                var rgb = rgb
-                if bypassed {
-                    rgb.isEnabled = false
-                    for slot in stack.orderedSlots {
-                        stack.setEnabled(false, slot: slot.id)
-                    }
-                }
-                return CompositionSnapshot(stack: stack, rgb: rgb)
-            }
-            // Identity, not value. The synthesized `Equatable` this replaced
-            // walked every slot and every parameter on each edit — dozens of
-            // floating-point comparisons per slider frame to learn that one
-            // number had moved. Identity answers that in constant time, and
-            // because it is derived from the snapshot itself it cannot say two
-            // states are the same when they are not.
-            .removeDuplicates { $0.identity == $1.identity }
-            .sink { [weak self] in self?.composition = $0 }
+        composition = editor.renderedComposition
+        // No `combineLatest`, no `removeDuplicates`, and deliberately nothing
+        // here that reads a field off a delivered value. A subscriber to a
+        // `@Published` property receives a borrow into storage that is still
+        // inside its `modify` accessor; touching a field through that borrow
+        // traps as a simultaneous access. The editor has already resolved
+        // bypass, already discarded no-op edits, and already derived the
+        // snapshot on a turn where nothing is being written, so this is a
+        // straight mirror.
+        subscription = editor.renderedCompositionPublisher
+            .sink { [weak self] value in self?.composition = value }
     }
 }
 
