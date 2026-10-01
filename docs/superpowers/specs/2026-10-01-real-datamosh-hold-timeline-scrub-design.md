@@ -267,3 +267,45 @@ zero-copy.
   scrub fix plus frame preview.
 - New: Engine/Capture/GVTakeFrameReader.swift — `AVAssetReader` single-frame read.
 - GreyVisionTests — engine and timeline tests.
+
+## Appendix: registering one codec-backed effect
+
+Written because the repo has already shipped an effect that existed in one table and not another
+(two effects sharing temporal mode 4, and modes 37/38 that were listed with no shader arm and so
+rendered as passthroughs). Every point below has to move together or the effect becomes a silent
+half-effect, which is invisible from Swift alone.
+
+Symbol names rather than line numbers: the line numbers in the original plan had already drifted by
+the time the first technique was built.
+
+| # | Where | What goes in |
+| --- | --- | --- |
+| 1 | `WorkspaceAdjustableEffect` | the `case` |
+| 2 | `temporalRenderOrder` | position in the temporal chain. Must appear in `temporalRenderOrder` **or** `metalRenderOrder`, never both — `defaultPlacementOrder` adds both lists and an effect in both silently loses rank |
+| 3 | `temporalMode` | next contiguous number from the top of the temporal table. **The style table is separate and already owns 47-59**, so a collision is silent: one kernel would serve two effects |
+| 4 | `datamoshCategoryEffects` | shelf membership; feeds `timeCategoryEffects` |
+| 5 | `curatedFamily`, `curatedCategoryEffectGroups` | family card; `repeatedCuratedCategoryEffects` fails on duplicate membership |
+| 6 | `computedLabel`, `detail` | rail label and the one-line technical truth (e.g. `"H.264 REFERENCE DRAG"`) |
+| 7 | `computedParameterLabels` | exactly three, or the registry test fails |
+| 8 | `defaultCameraParameters` | defaults; `isEnabled` must stay false |
+| 9 | `estimatedCost` | honest budget weight — `liquidMosh` is 2.4, the codec group 1.5, a two-stage cascade more |
+| 10 | `freezesHistoryOnHold` | yes for every codec instrument, or the hold converges instead of compounding |
+| 11 | `requiresAudioAnalysis` | only for a beat-driven instrument; a beat effect that never got audio is the failure mode to avoid |
+| 12 | `curatedRadialSubcategories(for:)` `"TIME"` | shelf/rail membership list |
+| 13 | `isCodecMoshMode` in `CameraMetalSurface.swift` | the new mode number, or the Slot never gets a round trip |
+| 14 | `holdStyle(for:)` | the hold bits for the new mode |
+| 15 | `GVDatamoshEngine.Variant` + `configuration(variant:…)` + `Variant(_ effect:)` | the slider→codec intent, and the effect→variant mapping |
+| 16 | `gvCameraTemporalEffect`'s mode switch in `CameraShaders.metal` | a real arm, using the switch's own locals (`current`, `result`, `controls.x/y/z`, `uv`, gate `uniforms.mode.w == 1u`) |
+| 17 | `CameraEffectResourceRequirements` | `.videoCodec`, plus `.slotHistory, .moshState` where a shader fallback still needs them |
+| 18 | `GVEffectGlyph.kind(for:)` | glyph family |
+| 19 | `EffectCatalog.variantGroups` | only if it is a variant of an existing card |
+
+**Ordering constraint, learned the hard way:** `CameraEffectShaderCoverageTests` is **bidirectional**
+— an arm with no Swift case fails it exactly as a Swift case with no arm does. So the Metal arm and
+points 1-19 must land in one commit; an "engine and shader first, register later" split can only
+carry the intent half (points 15's `Configuration` fields, `Variant` cases and slider mapping, which
+are pure functions and testable with no camera, device or view).
+
+**Nothing needs adding on the Mac:** `GVBroadcastControlCatalog` builds the desktop catalogue from
+`WorkspaceAdjustableEffect.allCases` and `GVBroadcastControlBridge` resolves by `rawValue`, so a new
+effect reaches the desktop automatically.
