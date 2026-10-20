@@ -1,10 +1,12 @@
 import CoreHaptics
 import SwiftUI
+import UIKit
+import os
 
 /// Manages the boot-to-main interface transition with haptic feedback.
 ///
 /// This component handles the final phase of the boot sequence, implementing:
-/// - 400ms fade-in animation to main interface
+/// - Fade-in to the main interface on `GVMotion.cinematic`
 /// - Haptic feedback on completion
 /// - State transition coordination
 ///
@@ -35,21 +37,25 @@ final class BootTransitionManager: ObservableObject {
 
     // MARK: - Public Interface
 
-    /// Begin the boot-to-main transition with 400ms fade-in
+    /// Begin the boot-to-main transition on the shared `cinematic` token.
     /// - Parameter onComplete: Callback when transition completes
     func beginTransition(onComplete: @escaping () -> Void) {
         guard !isTransitioning else { return }
 
         isTransitioning = true
 
-        // 400ms fade-in animation (Requirement 3.5)
-        withAnimation(.easeOut(duration: 0.4)) {
+        // The handoff into the instrument is a once-per-launch moment, so it
+        // takes the shared `cinematic` token rather than a duration of its
+        // own. `AppRootView` drives the real route change; keeping this on the
+        // same vocabulary means the two cannot drift apart.
+        let reduceMotion = UIAccessibility.isReduceMotionEnabled
+        withAnimation(GVMotion.resolved(GVMotion.cinematic, reduceMotion: reduceMotion)) {
             mainInterfaceOpacity = 1.0
         }
 
-        // Trigger haptic feedback on completion
+        // Trigger haptic feedback on completion, waiting out the same travel.
         Task {
-            try? await Task.sleep(for: .milliseconds(400))
+            try? await Task.sleep(for: .seconds(reduceMotion ? 0.12 : 0.45))
             await triggerCompletionHaptic()
             onComplete()
             isTransitioning = false
@@ -72,7 +78,7 @@ final class BootTransitionManager: ObservableObject {
             hapticEngine = try CHHapticEngine()
             try hapticEngine?.start()
         } catch {
-            print("⚠️ Failed to start haptic engine: \(error.localizedDescription)")
+            GVLog.app.error("Failed to start haptic engine: \(error.localizedDescription)")
         }
     }
 
@@ -117,7 +123,7 @@ final class BootTransitionManager: ObservableObject {
             try player.start(atTime: CHHapticTimeImmediate)
 
         } catch {
-            print("⚠️ Failed to play haptic pattern: \(error.localizedDescription)")
+            GVLog.app.error("Failed to play haptic pattern: \(error.localizedDescription)")
             // Fallback
             UIImpactFeedbackGenerator(style: .medium).preparedImpact()
         }
@@ -134,10 +140,14 @@ final class BootTransitionManager: ObservableObject {
 struct BootFadeTransition: ViewModifier {
     let opacity: CGFloat
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func body(content: Content) -> some View {
         content
             .opacity(opacity)
-            .scaleEffect(0.95 + (opacity * 0.05)) // Subtle scale for depth
+            // Reduce Motion keeps the fade, which is what carries the state
+            // change, and drops the travel.
+            .scaleEffect(reduceMotion ? 1 : 0.95 + (opacity * 0.05))
     }
 }
 

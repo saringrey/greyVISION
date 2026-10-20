@@ -55,9 +55,15 @@ struct ControlLockView: View {
     @ObservedObject var manager: ControlLockManager
     let onDismiss: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Drives its own arrival so the scrim can fade while the card settles in
+    /// from just under full size. Scaling the scrim too would pull a
+    /// full-bleed layer off the screen edges mid-travel.
+    @State private var hasArrived = false
+
     var body: some View {
         ZStack {
-            Color.black.opacity(0.48)
+            Color.black.opacity(hasArrived ? 0.48 : 0)
                 .ignoresSafeArea()
                 .onTapGesture(perform: onDismiss)
 
@@ -71,7 +77,7 @@ struct ControlLockView: View {
                         Image(systemName: "xmark")
                             .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GVPressStyle())
                     .accessibilityLabel("Close control lock")
                 }
 
@@ -96,7 +102,7 @@ struct ControlLockView: View {
                         .frame(minHeight: GVMetrics.touchTarget)
                         .gvGlassChip(radius: 10, active: manager.value(for: lock), tint: .white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GVPressStyle())
                     .accessibilityValue(manager.value(for: lock) ? "locked" : "open")
                 }
 
@@ -116,7 +122,11 @@ struct ControlLockView: View {
             .frame(maxWidth: 360)
             .gvGlass(.primary, radius: 18)
             .padding(24)
+            .opacity(hasArrived ? 1 : 0)
+            .scaleEffect(reduceMotion || hasArrived ? 1 : 0.96)
         }
+        .animation(GVMotion.resolved(GVMotion.tear, reduceMotion: reduceMotion), value: hasArrived)
+        .onAppear { hasArrived = true }
     }
 }
 

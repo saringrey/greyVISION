@@ -94,11 +94,11 @@ final class GVVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
         activeClientCount += 1
         guard activeClientCount == 1 else { return }
         let pairing = GVVirtualCameraConfiguration.load()
-        guard pairing.isEnabled, pairing.passcode.count == 6 else {
-            streamSource.status = "Open grey//visionCAM and save the six-digit iPhone pairing code."
+        guard pairing.isEnabled, GVBroadcastKeyMaterial.isValidCode(pairing.pairingCode) else {
+            streamSource.status = "Open grey//visionCAM and paste the pairing code shown on the iPhone."
             return
         }
-        receiver.start(serviceName: pairing.serviceName, passcode: pairing.passcode)
+        receiver.start(serviceName: pairing.serviceName, pairingCode: pairing.pairingCode)
     }
 
     func stopStreaming() {
@@ -309,18 +309,25 @@ final class GVPhoneReceiver: @unchecked Sendable {
     /// message every frame time, so ten seconds of nothing is unambiguous.
     private static let silenceTimeout: TimeInterval = 10
 
-    func start(serviceName: String, passcode: String) {
+    func start(serviceName: String, pairingCode: String) {
         stop()
         wantsLink = true
         serviceNameForSearch = serviceName
-        passcodeForSearch = passcode
+        passcodeForSearch = pairingCode
         beginSearch()
     }
 
     private func beginSearch() {
         guard wantsLink else { return }
         onStatus?("Looking for \(serviceNameForSearch) on the local network…")
-        let parameters = Self.makeParameters(passcode: passcodeForSearch)
+        // A malformed code is refused before the browse starts. Browsing under the
+        // wrong key would find the phone and then fail the handshake, which
+        // surfaces as a network fault rather than as the pairing mistake it is.
+        guard let secret = GVBroadcastKeyMaterial.secret(forCode: passcodeForSearch) else {
+            onStatus?("That pairing code is not one this app can use. Re-read it from the iPhone.")
+            return
+        }
+        let parameters = GVBroadcastKeyMaterial.parameters(secret: secret, includePeerToPeer: true)
         let browser = NWBrowser(for: .bonjour(type: GVBroadcastProtocol.serviceType, domain: nil), using: parameters)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self, !self.didConnect else { return }
@@ -433,7 +440,12 @@ final class GVPhoneReceiver: @unchecked Sendable {
     }
 
     private func handle(header: GVBroadcastProtocol.Header, payload: Data) {
+        // `kind` is optional in the shared protocol: a peer speaking a newer
+        // vocabulary sends a raw value this build has no case for, and the
+        // framing says exactly how many bytes to skip so the stream survives.
         switch header.kind {
+        case .none:
+            break
         case .hello:
             guard let hello = try? JSONDecoder().decode(GVBroadcastHello.self, from: payload), hello.version == GVBroadcastProtocol.version else {
                 onStatus?("Incompatible grey//vision iPhone stream.")
@@ -451,34 +463,17 @@ final class GVPhoneReceiver: @unchecked Sendable {
             }
         case .videoFrame:
             decoder.decode(payload, timestampNanoseconds: header.timestampNanoseconds)
-        case .command, .keepalive:
+        case .command, .keepalive, .controlSurface, .controlState:
+            // Desktop-driven messages. This extension is a passive sink for the
+            // phone's picture, so there is nothing here to apply them to.
             break
         }
     }
 
-    private static func makeParameters(passcode: String) -> NWParameters {
-        let tls = NWProtocolTLS.Options()
-        let salt = SHA256.hash(data: Data(GVBroadcastProtocol.serviceType.utf8))
-        let key = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: Data(passcode.utf8)),
-            salt: Data(salt),
-            info: Data("greyVISION.link.v1".utf8),
-            outputByteCount: 32
-        )
-        let psk = key.withUnsafeBytes { DispatchData(bytes: $0) }
-        let identity = Data("greyVISION".utf8).withUnsafeBytes { DispatchData(bytes: $0) }
-        sec_protocol_options_add_pre_shared_key(tls.securityProtocolOptions, psk as __DispatchData, identity as __DispatchData)
-        sec_protocol_options_append_tls_ciphersuite(tls.securityProtocolOptions, tls_ciphersuite_t.AES_128_GCM_SHA256)
-        sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
-        let tcp = NWProtocolTCP.Options()
-        tcp.noDelay = true
-        tcp.enableKeepalive = true
-        tcp.keepaliveIdle = 30
-        tcp.keepaliveInterval = 10
-        let parameters = NWParameters(tls: tls, tcp: tcp)
-        parameters.includePeerToPeer = true
-        return parameters
-    }
+    // `makeParameters` used to sit here and derive the key from the passcode
+    // while the phone derived it from a literal, so the handshake could never
+    // succeed. It is now `GVBroadcastKeyMaterial`, which this extension
+    // compiles from the iOS tree exactly as the Mac app does.
 }
 
 @available(macOS 13.0, *)

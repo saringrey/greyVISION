@@ -1,8 +1,23 @@
 @testable import GreyVision
+import os
 import XCTest
 
 @MainActor
 final class ArchitectureModuleTests: XCTestCase {
+    func testRecordingMailboxReportsEveryCompletedTake() {
+        let mailbox = CameraRecordingMailbox()
+        let received = OSAllocatedUnfairLock(initialState: [URL]())
+        let first = URL(fileURLWithPath: "/tmp/first-take.mov")
+        let second = URL(fileURLWithPath: "/tmp/second-take.mov")
+        mailbox.setTakeSavedHandler { url in received.withLock { $0.append(url) } }
+
+        mailbox.reportTakeSaved(first)
+        mailbox.requestStop()
+        mailbox.reportTakeSaved(second)
+
+        XCTAssertEqual(received.withLock { $0 }, [first, second])
+    }
+
     func testCaptureSourceTransitionStopsBeforeStartingDepth() async {
         let events = EventLog()
         let camera = CameraAdapterFake(events: events)
@@ -34,6 +49,22 @@ final class ArchitectureModuleTests: XCTestCase {
         )
         XCTAssertEqual(transition.state.mode, .camera)
         XCTAssertEqual(transition.state.runtimeStatus, .running)
+    }
+
+    func testTimelineCanRestartAfterStoppingWithoutAnotherSelection() {
+        let editor = EffectEditingSession()
+        let player = GVTimelinePlayer()
+        player.attach(editor: editor)
+        player.selectForScrub(.empty)
+        player.toggle()
+        XCTAssertTrue(player.isPlaying)
+        player.toggle()
+        XCTAssertFalse(player.isPlaying)
+
+        player.toggle()
+
+        XCTAssertTrue(player.isPlaying)
+        player.stop()
     }
 
     func testEffectEditingSessionOwnsExclusiveAndAddSelection() throws {
@@ -97,14 +128,42 @@ final class ArchitectureModuleTests: XCTestCase {
         transaction.stop(cameraRuntime: camera, objectsRuntime: objects, sourceMode: .objects)
         XCTAssertFalse(camera.recordingMailbox.isStartPending)
 
-        // The objects path is adapter-owned (the surface vends the size), so
-        // the transaction's own path — not the runtime's dock-driven request
-        // flag — is what proves the intent landed on the right writer.
         transaction.start(cameraRuntime: camera, objectsRuntime: objects, sourceMode: .objects)
-        await waitUntil {
-            if case let .recording(path, _) = transaction.state { return path == .objects }
-            return false
-        }
+        await waitUntil { objects.startRequested }
+        XCTAssertFalse(camera.recordingMailbox.isStartPending)
+        transaction.stop(cameraRuntime: camera, objectsRuntime: objects, sourceMode: .camera)
+        XCTAssertFalse(objects.startRequested)
+    }
+
+    func testCancelledPreparationDoesNotStartRecordingLater() async {
+        let transaction = GVRecordingTransaction()
+        let camera = CameraRuntime()
+        let objects = ARObjectRuntime()
+        transaction.start(cameraRuntime: camera, objectsRuntime: objects, sourceMode: .camera)
+        transaction.stop(cameraRuntime: camera, objectsRuntime: objects, sourceMode: .camera)
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertFalse(camera.recordingMailbox.isStartPending)
+        XCTAssertEqual(transaction.state, .idle)
+    }
+
+    func testLocalTakeRecoveryDoesNotClaimPhotosSuccess() {
+        let transaction = GVRecordingTransaction()
+        let take = GVTake(id: UUID(), createdAt: .now, source: .camera, photosStatus: .failed, photosError: "PHOTOS ACCESS DENIED")
+
+        transaction.handleTakeResult(.success(take))
+
+        XCTAssertEqual(transaction.state, .saved(path: .processedFrames))
+        XCTAssertEqual(transaction.statusMessage, "REC // KEPT IN LIBRARY · PHOTOS NOT SAVED")
+    }
+
+    func testObjectsTakeOutcomeReportsTheObjectsPath() {
+        let transaction = GVRecordingTransaction()
+        let take = GVTake(id: UUID(), createdAt: .now, source: .objects, photosStatus: .saved)
+
+        transaction.handleTakeResult(.success(take))
+
+        XCTAssertEqual(transaction.state, .saved(path: .objects))
+        XCTAssertEqual(transaction.statusMessage, "REC // SAVED TO PHOTOS")
     }
 
     private func waitUntil(

@@ -81,8 +81,16 @@ final class GVTimelinePlayer: ObservableObject {
         if activeTimeline?.id == timeline.id { stop() }
     }
 
+    /// Play, or stop and re-arm the same cue. Stopping clears the active
+    /// timeline but keeps the selection, so the transport's second press has to
+    /// be able to restart what it just stopped — otherwise the button reads
+    /// "play" and does nothing until the operator re-picks the timeline.
     func toggle() {
-        if isPlaying { stop() } else if let timeline = activeTimeline { play(timeline) }
+        if isPlaying {
+            stop()
+        } else if let timeline = activeTimeline ?? selectedTimeline {
+            play(timeline)
+        }
     }
 
     /// Jumps to a specific time and applies the interpolated state without

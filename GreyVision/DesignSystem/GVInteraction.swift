@@ -166,16 +166,3 @@ extension View {
         .shadow(color: level.tint.opacity(level.glowOpacity), radius: level.glowRadius)
     }
 }
-
-/// Layer depth. Not glassmorphism — just distinct black levels so the camera,
-/// the chrome and transient telemetry are separable.
-enum GVLayer {
-    /// The camera image itself.
-    static let camera = Color.black
-    /// Scanline and noise treatments sitting directly on the image.
-    static let treatment = Color(white: 0.02).opacity(0.28)
-    /// Controls and chrome.
-    static let chrome = Color(red: 0.015, green: 0.015, blue: 0.022).opacity(0.82)
-    /// Transient diagnostics floating above everything.
-    static let telemetry = Color.black.opacity(0.35)
-}

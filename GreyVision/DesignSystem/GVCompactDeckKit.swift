@@ -101,7 +101,7 @@ struct GVToastCapsule: View {
                             .foregroundStyle(Color.white)
                             .lineLimit(1)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GVPressStyle())
                     .accessibilityIdentifier("workspace.toast.action")
                 }
             }
@@ -314,7 +314,7 @@ private struct GVGlassChipStyle: ButtonStyle {
         configuration.label
             .gvGlassChip(radius: 8, active: active || configuration.isPressed, tint: tint)
             .frame(height: height)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.97 : 1))
             .animation(
                 GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion),
                 value: configuration.isPressed
@@ -546,5 +546,44 @@ struct GVRailSlider: View {
                 dragStart = nil
                 lastTickBucket = -1
             }
+    }
+}
+
+// MARK: - Hugging deck list
+
+private struct GVDeckContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// A capped vertical list that takes the height of what it holds.
+///
+/// A `ScrollView` has no intrinsic height — it takes every point it is offered
+/// — so a plate that only caps its list reserves the whole cap whatever the
+/// list contains. One starred recipe then sat in a plate three quarters empty,
+/// because the plate was sized by its ceiling rather than its content.
+struct GVDeckList<Content: View>: View {
+    let maxHeight: CGFloat
+    @ViewBuilder var content: Content
+
+    @State private var measured: CGFloat = 0
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            content
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: GVDeckContentHeightKey.self, value: proxy.size.height)
+                    }
+                }
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+        .frame(height: min(max(measured, 0), maxHeight))
+        .onPreferenceChange(GVDeckContentHeightKey.self) { height in
+            if abs(measured - height) > 0.5 { measured = height }
+        }
     }
 }

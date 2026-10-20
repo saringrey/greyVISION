@@ -104,6 +104,8 @@ private struct GVTerminalTrack: View {
     let isActive: Bool
     let segmentCount: Int
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         Canvas(opaque: false, rendersAsynchronously: false) { context, size in
             switch style {
@@ -120,7 +122,7 @@ private struct GVTerminalTrack: View {
             }
         }
         .frame(height: 9)
-        .animation(GVMotion.micro, value: isActive)
+        .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: isActive)
     }
 
     private var dim: Color { GVTheme.faint }
@@ -553,7 +555,7 @@ struct GVTerminalParameterRow: View {
         resetFlash = "\(bound(previous)) → \(bound(value))"
         Task {
             try? await Task.sleep(for: .milliseconds(900))
-            withAnimation(GVMotion.normal) { resetFlash = nil }
+            withAnimation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion)) { resetFlash = nil }
         }
     }
 
@@ -574,171 +576,4 @@ struct GVTerminalParameterRow: View {
 
 // MARK: - Boolean parameter row
 
-/// A boolean with no sliding switch. The whole row is the target; the state is
-/// stated as a word, because a word is unambiguous at 6pt where a 20pt toggle
-/// would dominate the deck.
-struct GVTerminalBooleanRow: View {
-    let label: String
-    @Binding var isOn: Bool
-    var tint: Color = GVTheme.violet
-    var fontSize: CGFloat = 6.5
-    var identifier: String?
-
-    @State private var flashing = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Button {
-            isOn.toggle()
-            GVParameterHaptics.select()
-            flashing = true
-            Task {
-                try? await Task.sleep(for: .milliseconds(140))
-                withAnimation(GVMotion.micro) { flashing = false }
-            }
-        } label: {
-            HStack(spacing: 3) {
-                Text(label)
-                    .foregroundStyle(isOn ? GVTheme.bone : GVTheme.ash)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Spacer(minLength: 2)
-                Text(flashing ? "[\(isOn ? "ON" : "OFF")]" : (isOn ? "ON" : "OFF"))
-                    .foregroundStyle(isOn ? tint : GVTheme.faint)
-                    .contentTransition(.opacity)
-            }
-            .gvMono(fontSize, .bold)
-            .tracking(0.68)
-            .padding(.horizontal, 6)
-            // Matches the enlarged camera rows; 24pt was under the comfortable
-            // tap target for a control used one-handed.
-            .frame(height: 34)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.black.opacity(0.16))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(tint.opacity(isOn ? 0.5 : 0.14), lineWidth: 1)
-            )
-        }
-        .buttonStyle(GVPressStyle(tint: tint))
-        .accessibilityIdentifier(identifier ?? "workspace.parameter.\(label.lowercased())")
-        .accessibilityValue(isOn ? "on" : "off")
-    }
-}
-
 // MARK: - Enum parameter row
-
-/// A mode selector that expands in place into a numbered terminal list and
-/// collapses again the instant a choice is made. No confirmation step — the
-/// selection is the confirmation.
-struct GVTerminalEnumRow<Option: Hashable>: View {
-    let label: String
-    let options: [Option]
-    let title: (Option) -> String
-    @Binding var selection: Option
-    var tint: Color = GVTheme.violet
-    var fontSize: CGFloat = 6.5
-    var identifier: String?
-
-    @State private var isExpanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        VStack(spacing: 2) {
-            Button {
-                withAnimation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion)) {
-                    isExpanded.toggle()
-                }
-                GVParameterHaptics.select()
-            } label: {
-                HStack(spacing: 3) {
-                    Text(isExpanded ? "\(label) //" : label)
-                        .foregroundStyle(GVTheme.ash)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                    Spacer(minLength: 2)
-                    Text(title(selection))
-                        .foregroundStyle(tint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                }
-                .gvMono(fontSize, .bold)
-                .tracking(0.68)
-                .padding(.horizontal, 5)
-                .frame(height: 22)
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(GVPressStyle(tint: tint))
-
-            if isExpanded {
-                VStack(spacing: 0) {
-                    ForEach(Array(options.enumerated()), id: \.element) { index, option in
-                        optionRow(index: index, option: option)
-                    }
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .padding(.vertical, 2)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.black.opacity(0.16))
-        )
-        .accessibilityIdentifier(identifier ?? "workspace.parameter.\(label.lowercased())")
-    }
-
-    private func optionRow(index: Int, option: Option) -> some View {
-        let selected = option == selection
-        return Button {
-            selection = option
-            GVParameterHaptics.select()
-            withAnimation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion)) {
-                isExpanded = false
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(selected ? ">" : " ")
-                    .foregroundStyle(tint)
-                Text(String(format: "%02d", index + 1))
-                    .foregroundStyle(GVTheme.faint)
-                Text(title(option))
-                    .foregroundStyle(selected ? GVTheme.bone : GVTheme.ash)
-                Spacer(minLength: 0)
-            }
-            .gvMono(fontSize, selected ? .black : .bold)
-            .tracking(0.6)
-            .padding(.horizontal, 5)
-            .frame(height: 18)
-            .frame(maxWidth: .infinity)
-            .background(
-                selected ? tint.opacity(0.14) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 4, style: .continuous)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// A numeric field that rolls between values instead of snapping.
-///
-/// Restored alongside the terminal controls: the HUD and telemetry views both
-/// depend on it for readouts that must not jump as digits change.
-struct GVNumericReadout: View {
-    let value: String
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Text(value)
-            .contentTransition(reduceMotion ? .opacity : .numericText())
-            .animation(
-                GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion),
-                value: value
-            )
-    }
-}

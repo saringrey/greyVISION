@@ -20,6 +20,27 @@ import UIKit
 /// - Support for `userForceQuickBoot` environment variable
 ///
 /// **Requirements:** 3.1, 3.2, 3.3, 3.6, 3.7
+/// The boot sequence's phase vocabulary and its progress.
+///
+/// This used to live in `AppStateContainer.swift`, which was deleted along with
+/// the rest of an unreachable parallel state graph. It is genuinely live —
+/// `BootSequenceManager` advances through `BootSequenceState.Phase` — so it
+/// moved here rather than going with the file.
+struct BootSequenceState: Equatable {
+    enum Phase: Equatable {
+        case idle
+        case phosphorBloom
+        case crtScanline
+        case systemStatus
+        case mainInterfaceFadeIn
+        case complete
+    }
+
+    var currentPhase: Phase = .idle
+    var progress: CGFloat = 0.0
+    var forceQuickBoot: Bool = false
+}
+
 @MainActor
 final class BootSequenceManager: ObservableObject {
     // MARK: - Published State

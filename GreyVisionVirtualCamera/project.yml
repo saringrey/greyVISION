@@ -15,7 +15,21 @@ targets:
     platform: macOS
     sources:
       - Sources/Host
-      - Sources/Shared
+      - path: Sources/Shared/GVVirtualCameraConfiguration.swift
+        group: Shared
+      # The wire contract and the key derivation, compiled from the iOS tree
+      # rather than copied here. This target used to carry a hand-kept duplicate
+      # of the protocol that had already drifted — its header decode demanded an
+      # exact length where the phone's accepts at least that many bytes, and it
+      # was missing the control messages entirely — and a third copy of the
+      # key derivation that used the real passcode while the phone used a
+      # literal, so the two could never complete a handshake. Reaching into the
+      # phone's tree is what the Mac app already does; there is now no second
+      # copy of either file anywhere.
+      - path: ../GreyVision/Engine/Broadcast/GVBroadcastProtocol.swift
+        group: Shared
+      - path: ../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
+        group: Shared
     info:
       path: Resources/Host-Info.plist
     entitlements:
@@ -44,7 +58,12 @@ targets:
     platform: macOS
     sources:
       - Sources/CameraExtension
-      - Sources/Shared
+      - path: Sources/Shared/GVVirtualCameraConfiguration.swift
+        group: Shared
+      - path: ../GreyVision/Engine/Broadcast/GVBroadcastProtocol.swift
+        group: Shared
+      - path: ../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
+        group: Shared
     info:
       path: Resources/CameraExtension-Info.plist
     entitlements:

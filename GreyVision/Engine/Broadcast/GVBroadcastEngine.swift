@@ -120,7 +120,7 @@ final class GVBroadcastEngine: @unchecked Sendable {
         }
     }
 
-    func start(serviceName: String, passcode: String) {
+    func start(serviceName: String, pairingCode: String) {
         lock.withLock {
             isRunning = true
             startTimestamp = CACurrentMediaTime()
@@ -130,7 +130,7 @@ final class GVBroadcastEngine: @unchecked Sendable {
             latestFormat = nil
             announcedSize = .zero
         }
-        link.start(serviceName: serviceName, passcode: passcode)
+        link.start(serviceName: serviceName, pairingCode: pairingCode)
     }
 
     func stop() {

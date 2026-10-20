@@ -7,16 +7,8 @@ enum RenderFailurePolicy: Sendable {
     case stop
 }
 
-struct RenderPassMeasurement: Equatable, Sendable {
-    var identifier: String
-    var cpuEncodingMilliseconds: Double
-    var wasBypassed: Bool
-    var failure: String?
-}
-
 struct RenderGraphResult: @unchecked Sendable {
     let texture: MTLTexture
-    let measurements: [RenderPassMeasurement]
     let failedEffectIdentifiers: [String]
 }
 
@@ -43,9 +35,12 @@ final class RenderGraph: @unchecked Sendable {
         frame: FrameContext,
         scratchTextures: (MTLTexture, MTLTexture)? = nil
     ) -> RenderGraphResult {
-        let active = effects.filter { !$0.shouldBypass() }
-        guard !active.isEmpty else {
-            return RenderGraphResult(texture: input, measurements: [], failedEffectIdentifiers: [])
+        // Whether anything runs is a question about the list, not a question
+        // that needs a copy of it answered. The filter this replaced allocated
+        // an array every frame to hold a subset of a list that rarely changed.
+        let hasActiveEffect = effects.contains { !$0.shouldBypass() }
+        guard hasActiveEffect else {
+            return RenderGraphResult(texture: input, failedEffectIdentifiers: [])
         }
 
         let ownsScratchTextures = scratchTextures == nil
@@ -61,12 +56,6 @@ final class RenderGraph: @unchecked Sendable {
         } else if scratchTextures != nil {
             return RenderGraphResult(
                 texture: input,
-                measurements: [RenderPassMeasurement(
-                    identifier: "render.graph",
-                    cpuEncodingMilliseconds: 0,
-                    wasBypassed: true,
-                    failure: "Invalid external graph scratch textures"
-                )],
                 failedEffectIdentifiers: ["render.graph"]
             )
         } else {
@@ -78,12 +67,6 @@ final class RenderGraph: @unchecked Sendable {
             guard let pooledA = texturePool.checkout(key, label: "greyVISION graph ping") else {
                 return RenderGraphResult(
                     texture: input,
-                    measurements: [RenderPassMeasurement(
-                        identifier: "render.graph",
-                        cpuEncodingMilliseconds: 0,
-                        wasBypassed: true,
-                        failure: "Texture pool budget exhausted"
-                    )],
                     failedEffectIdentifiers: ["render.graph"]
                 )
             }
@@ -91,12 +74,6 @@ final class RenderGraph: @unchecked Sendable {
                 texturePool.recycle(pooledA)
                 return RenderGraphResult(
                     texture: input,
-                    measurements: [RenderPassMeasurement(
-                        identifier: "render.graph",
-                        cpuEncodingMilliseconds: 0,
-                        wasBypassed: true,
-                        failure: "Texture pool budget exhausted"
-                    )],
                     failedEffectIdentifiers: ["render.graph"]
                 )
             }
@@ -106,11 +83,9 @@ final class RenderGraph: @unchecked Sendable {
 
         var current = input
         var destination = textureA
-        var measurements: [RenderPassMeasurement] = []
         var failures: [String] = []
 
-        for effect in active {
-            let start = ProcessInfo.processInfo.systemUptime
+        for effect in effects {
             do {
                 try effect.process(EffectRenderRequest(
                     frame: frame,
@@ -120,12 +95,6 @@ final class RenderGraph: @unchecked Sendable {
                     mask: effect.mask,
                     parameters: effect.parameterState
                 ))
-                measurements.append(RenderPassMeasurement(
-                    identifier: effect.identifier,
-                    cpuEncodingMilliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000,
-                    wasBypassed: false,
-                    failure: nil
-                ))
                 current = destination
                 destination = ObjectIdentifier(destination) == ObjectIdentifier(textureA)
                     ? textureB
@@ -133,12 +102,6 @@ final class RenderGraph: @unchecked Sendable {
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 failures.append(effect.identifier)
-                measurements.append(RenderPassMeasurement(
-                    identifier: effect.identifier,
-                    cpuEncodingMilliseconds: (ProcessInfo.processInfo.systemUptime - start) * 1000,
-                    wasBypassed: true,
-                    failure: message
-                ))
                 onFailure?(effect.identifier, message)
                 switch failurePolicy {
                 case .bypass:
@@ -152,7 +115,6 @@ final class RenderGraph: @unchecked Sendable {
                     }
                     return RenderGraphResult(
                         texture: current,
-                        measurements: measurements,
                         failedEffectIdentifiers: failures
                     )
                 }
@@ -165,7 +127,6 @@ final class RenderGraph: @unchecked Sendable {
         }
         return RenderGraphResult(
             texture: current,
-            measurements: measurements,
             failedEffectIdentifiers: failures
         )
     }

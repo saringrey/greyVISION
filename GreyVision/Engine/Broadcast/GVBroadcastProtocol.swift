@@ -29,9 +29,13 @@ enum GVBroadcastProtocol {
     /// Bonjour service type. Registered under the `_tcp` domain; the Mac
     /// browses for exactly this.
     static let serviceType = "_greyvision._tcp"
-    /// Automatic pairing for the single-user local-network workflow.
-    /// Bonjour remains the trust boundary when no code is entered.
-    static let automaticPairingSecret = "greyVISION.local.v1"
+
+    // NOTE: the pre-shared key used to live here as
+    // `automaticPairingSecret`, a string literal compiled into every binary.
+    // It is gone on purpose. The key derivation now takes a real per-pairing
+    // secret and lives in `GVBroadcastKeyMaterial.swift`, which every target
+    // that speaks this link compiles. Nothing in this protocol should depend
+    // on a key: a wire format and a trust boundary are different problems.
 
     /// "GVX1". Bumped only on an incompatible framing change — payload
     /// additions are handled by `version` in the hello message instead.

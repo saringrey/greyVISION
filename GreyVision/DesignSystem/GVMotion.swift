@@ -13,7 +13,7 @@ enum GVMotion {
     /// 200ms — selection changes, card slides, category movement.
     static let normal: Animation = .timingCurve(0.25, 1, 0.5, 1, duration: 0.20)
 
-    /// 320ms — panels arriving and leaving. Decelerates without overshoot so
+    /// 280ms — panels arriving and leaving. Decelerates without overshoot so
     /// chrome never wobbles over a live frame.
     static let panel: Animation = .timingCurve(0.25, 1, 0.5, 1, duration: 0.28)
 

@@ -128,11 +128,11 @@ final class GVRecordingTransaction: ObservableObject {
     private var activePath: GVRecordingPath?
     private var pendingStartPath: GVRecordingPath?
     private var recordingStartTime: Date?
+    private var startTask: Task<Void, Never>?
     fileprivate var currentConfiguration: GVRecordingConfiguration?
 
     // Adapters - created lazily, owned by the transaction
     private lazy var processedFramesAdapter = GVProcessedFramesAdapter()
-    private lazy var objectsAdapter = GVObjectsAdapter()
 
     /// Current recording path based on source mode.
     private func recordingPath(for sourceMode: WorkspaceSourceMode) -> GVRecordingPath {
@@ -201,38 +201,77 @@ final class GVRecordingTransaction: ObservableObject {
         state = .preparing(path: path)
         statusMessage = "REC // PREPARING \(path.rawValue.uppercased())"
 
-        Task { @MainActor [weak self] in
+        let configuration = GVRecordingConfiguration(
+            path: path,
+            videoCodec: cameraRuntime.snapshot.requestedVideoCodec,
+            framesPerSecond: cameraRuntime.snapshot.framesPerSecond,
+            targetSize: nil,
+            // The take library is written first and Photos is attempted after,
+            // so a refusal cannot destroy footage.
+            saveToPhotos: true,
+            burnHUD: burnHUD,
+            watermark: burnHUD ? "grey//VISION" : nil
+        )
+        currentConfiguration = configuration
+        let rawCapture = configuration.videoCodec.isProResRAW
+
+        startTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let adapter = try await self.prepareAdapter(for: path, cameraRuntime: cameraRuntime, objectsRuntime: objectsRuntime)
-                self.activePath = path
-                self.pendingStartPath = nil
-                self.recordingStartTime = Date()
-
-                let rawCapture = self.currentConfiguration?.videoCodec.isProResRAW == true
                 let started: Bool
                 if rawCapture {
-                    guard let codec = self.currentConfiguration?.videoCodec.avVideoCodecType else {
+                    guard let codec = configuration.videoCodec.avVideoCodecType else {
                         throw GVRecordingTransactionError.startFailed(path, "PRORES RAW CODEC UNAVAILABLE")
                     }
                     self.activeAdapter = nil
                     started = await cameraRuntime.startNativeRAWRecording(codec: codec)
+                } else if path == .objects {
+                    // The objects runtime owns its own writer; the AR surface
+                    // vends the drawable size on its next update. A second,
+                    // disconnected session here would have recorded nothing.
+                    self.activeAdapter = nil
+                    started = objectsRuntime.requestStartRecording()
                 } else {
+                    let adapter = self.processedFramesAdapter
+                    guard await adapter.prepare(configuration: configuration) else {
+                        throw GVRecordingTransactionError.prepareFailed(path, "ADAPTER PREPARE RETURNED FALSE")
+                    }
                     self.activeAdapter = adapter
                     started = await adapter.start()
                 }
-                if !started {
+
+                // Stop may have landed while this was awaiting. Releasing
+                // whatever just came up and abandoning the start is the only
+                // safe answer: continuing would arm a writer the operator has
+                // already asked to stop, and the button would read idle over a
+                // recording take.
+                if Task.isCancelled {
+                    switch path {
+                    case .objects:
+                        if started { objectsRuntime.cancelRecordingStart() }
+                    case .processedFrames:
+                        if started, !rawCapture { cameraRuntime.recordingMailbox.requestStop() }
+                        else if started { _ = await cameraRuntime.stopNativeRAWRecording() }
+                    }
+                    return
+                }
+
+                guard started else {
                     throw GVRecordingTransactionError.startFailed(path, "ADAPTER REFUSED START")
                 }
 
+                self.activePath = path
+                self.pendingStartPath = nil
+                self.recordingStartTime = Date()
+
                 if path == .processedFrames, !rawCapture {
-                    guard let codec = self.currentConfiguration?.videoCodec.avVideoCodecType else {
+                    guard let codec = configuration.videoCodec.avVideoCodecType else {
                         throw GVRecordingTransactionError.startFailed(path, "VIDEO CODEC UNAVAILABLE")
                     }
                     cameraRuntime.recordingMailbox.requestStart(
                         codecRawValue: codec.rawValue,
-                        fps: self.currentConfiguration?.framesPerSecond ?? 30,
-                        burnHUD: self.currentConfiguration?.burnHUD ?? false
+                        fps: configuration.framesPerSecond,
+                        burnHUD: configuration.burnHUD
                     )
                 }
 
@@ -255,40 +294,36 @@ final class GVRecordingTransaction: ObservableObject {
         let path = activePath ?? pendingStartPath ?? recordingPath(for: sourceMode)
 
         if currentConfiguration?.videoCodec.isProResRAW == true {
+            startTask?.cancel()
+            startTask = nil
             state = .finalizing(path: path)
             statusMessage = "REC // FINALIZING SENSOR RAW"
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                let saved = await cameraRuntime.stopNativeRAWRecording()
-                if saved {
-                    // The sensor writes and saves its own movie, and the runtime
-                    // records that take's URL as it lands, so the transaction has an
-                    // outcome here and no path of its own. The `/dev/null` this used to
-                    // invent travelled to the UI looking like a take that opens.
-                    self.markSaved(path: path)
-                } else {
-                    await self.handleResult(
-                        .failure(GVRecordingTransactionError.finalizeFailed(path, "RAW SAVE FAILED")),
-                        path: path,
-                        cameraRuntime: cameraRuntime
-                    )
+                let filed = await cameraRuntime.stopNativeRAWRecording()
+                // The runtime files the take and reports the outcome through
+                // `handleTakeResult`; only reach in when that never arrived.
+                if !filed, case .finalizing = self.state {
+                    self.state = .failed(path: path, message: "RECORDING // RAW TAKE NOT FILED")
+                    self.statusMessage = "RECORDING // RAW TAKE NOT FILED"
                 }
             }
             return
         }
 
         // If we're only in pending-start, cancel it.
-        if pendingStartPath != nil, activeAdapter == nil {
-            cancelPendingStart(path: path, objectsRuntime: objectsRuntime)
+        if pendingStartPath != nil, activeAdapter == nil, !objectsRuntime.isRecording {
+            cancelPendingStart(path: path, cameraRuntime: cameraRuntime, objectsRuntime: objectsRuntime)
             return
         }
 
-        guard let adapter = activeAdapter, isPathLive(path, cameraRuntime: cameraRuntime, objectsRuntime: objectsRuntime) else {
+        guard isPathLive(path, cameraRuntime: cameraRuntime, objectsRuntime: objectsRuntime) else {
             cleanup()
             return
         }
 
-        if path == .processedFrames {
+        switch path {
+        case .processedFrames:
             let writerWasActive = cameraRuntime.isRecording
             cameraRuntime.recordingMailbox.requestStop()
             guard writerWasActive else {
@@ -297,99 +332,78 @@ final class GVRecordingTransaction: ObservableObject {
             }
             state = .finalizing(path: path)
             statusMessage = "REC // FINALIZING"
-            return
-        }
-
-        state = .finalizing(path: path)
-        statusMessage = "REC // FINALIZING"
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let result = await adapter.stop()
-            await self.handleResult(result, path: path, cameraRuntime: cameraRuntime)
+        case .objects:
+            // A request the AR surface never consumed must be withdrawn, or the
+            // next frame after "stop" starts recording anyway.
+            objectsRuntime.cancelRecordingStart()
+            guard objectsRuntime.isRecording else {
+                cleanup()
+                return
+            }
+            state = .finalizing(path: path)
+            statusMessage = "REC // FINALIZING"
+            // The runtime finalizes and files the movie; the outcome comes back
+            // through handleTakeResult rather than an adapter that never owned
+            // the session.
+            objectsRuntime.stopRecording()
         }
     }
 
     /// Cancel a pending start that hasn't fully begun.
-    private func cancelPendingStart(path: GVRecordingPath, objectsRuntime: ARObjectRuntime) {
-        if path == .objects {
+    private func cancelPendingStart(
+        path: GVRecordingPath,
+        cameraRuntime: CameraRuntime,
+        objectsRuntime: ARObjectRuntime
+    ) {
+        startTask?.cancel()
+        startTask = nil
+        switch path {
+        case .objects:
             objectsRuntime.cancelRecordingStart()
+        case .processedFrames:
+            cameraRuntime.recordingMailbox.requestStop()
         }
-        // For processed frames, the mailbox handles it via CameraRuntime
+        activeAdapter = nil
         pendingStartPath = nil
         state = .idle
         statusMessage = nil
     }
 
-    /// Prepare the appropriate adapter for the path.
-    private func prepareAdapter(
-        for path: GVRecordingPath,
-        cameraRuntime: CameraRuntime,
-        objectsRuntime _: ARObjectRuntime
-    ) async throws -> any GVRecordingAdapter {
-        let adapter: any GVRecordingAdapter
-        let targetSize: CGSize?
-        let fps = cameraRuntime.snapshot.framesPerSecond
-        let codec = cameraRuntime.snapshot.requestedVideoCodec
-        let burnHUD = self.burnHUD
-
-        switch path {
-        case .processedFrames:
-            adapter = processedFramesAdapter
-            // Size will be determined by the renderer on first frame
-            targetSize = nil
-        case .objects:
-            adapter = objectsAdapter
-            // AR objects rendering size comes from the surface
-            targetSize = nil
+    /// Install the transaction as the listener for finished takes. Both writers
+    /// file their movie in the take library before Photos is attempted, and the
+    /// verdict has to reach the operator-visible state from there rather than
+    /// through a message string: two identical outcomes in a row are not a
+    /// change, and the second take would look like it never happened.
+    func bindTakeOutcomes(cameraRuntime: CameraRuntime, objectsRuntime: ARObjectRuntime) {
+        cameraRuntime.takeOutcomeHandler = { [weak self] result in
+            self?.handleTakeResult(result)
         }
-
-        let config = GVRecordingConfiguration(
-            path: path,
-            videoCodec: codec,
-            framesPerSecond: fps,
-            targetSize: targetSize,
-            saveToPhotos: true,
-            burnHUD: burnHUD,
-            watermark: burnHUD ? "grey//VISION" : nil
-        )
-        self.currentConfiguration = config
-
-        let prepared = await adapter.prepare(configuration: config)
-        if !prepared {
-            throw GVRecordingTransactionError.prepareFailed(path, "ADAPTER PREPARE RETURNED FALSE")
+        objectsRuntime.takeOutcomeHandler = { [weak self] result in
+            self?.handleTakeResult(result)
         }
-        return adapter
     }
 
-    /// Handle the result of a finished recording.
-    private func handleResult(
-        _ result: GVRecordingResult,
-        path: GVRecordingPath,
-        cameraRuntime: CameraRuntime
-    ) async {
+    /// Handle the outcome of a filed take.
+    func handleTakeResult(_ result: Result<GVTake, any Error>) {
         switch result {
         case let .success(take):
-            // Handing the file on is the point of the result. It used to be dropped
-            // here, which left the session holding no address for a movie it had
-            // just written — and nothing downstream could open one to look at.
-            cameraRuntime.noteCompletedTake(take)
-            markSaved(path: path)
+            let path: GVRecordingPath = take.source == .objects ? .objects : .processedFrames
+            state = .saved(path: path)
+            statusMessage = take.photosStatus == .saved
+                ? "REC // SAVED TO PHOTOS"
+                : "REC // KEPT IN LIBRARY · PHOTOS NOT SAVED"
+            scheduleSavedCleanup()
         case let .failure(error):
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            state = .failed(path: path, message: message)
+            state = .failed(path: state.path, message: message)
             statusMessage = message
-        case .cancelled:
-            cleanup()
+            activeAdapter = nil
+            activePath = nil
+            pendingStartPath = nil
         }
     }
 
-    /// The one saved-state transition. A take that landed in Photos gets the same
-    /// notice and retires on the same beat whichever path produced it, because the
-    /// sensor path, the adapters, and the renderer's own message all end up here.
-    private func markSaved(path: GVRecordingPath) {
-        state = .saved(path: path)
-        statusMessage = "REC // SAVED TO CAMERA ROLL"
+    private func scheduleSavedCleanup() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard let self, case .saved = self.state else { return }
@@ -424,7 +438,9 @@ final class GVRecordingTransaction: ObservableObject {
     }
 
     /// Abort any in-progress recording immediately (used on app background/interruption).
-    func abort(cameraRuntime: CameraRuntime, objectsRuntime _: ARObjectRuntime) async {
+    func abort(cameraRuntime: CameraRuntime, objectsRuntime: ARObjectRuntime) async {
+        startTask?.cancel()
+        startTask = nil
         if currentConfiguration?.videoCodec.isProResRAW == true, cameraRuntime.isRecording {
             _ = await cameraRuntime.stopNativeRAWRecording()
         }
@@ -433,11 +449,19 @@ final class GVRecordingTransaction: ObservableObject {
         }
         // Also abort the camera runtime's writer
         cameraRuntime.recordingMailbox.requestStop()
+        // An objects take has its writer inside the AR runtime; leaving it armed
+        // means the surface starts recording again on the next frame.
+        objectsRuntime.cancelRecordingStart()
 
         cleanup()
     }
 
-    /// One screenshot entry point — CLEAN grabs the render target; HUD grabs the composed screen.
+    /// One capture entry point: saves a photograph of the effect stack at sensor
+    /// resolution.
+    ///
+    /// This used to snapshot the window, which produced a screen-sized image of
+    /// the instrument rather than a picture of it. The window-snapshot path was
+    /// removed with its caller rather than left behind unreferenced.
     func takeScreenshot(cameraRuntime: CameraRuntime) {
         cameraRuntime.takeScreenshot()
     }
@@ -488,21 +512,19 @@ final class GVRecordingTransaction: ObservableObject {
         }
     }
 
-    /// Called by the renderer when the writer could not start or the export failed.
+    /// Called by the renderer when the writer could not start or finalize. A
+    /// take that *did* finish reports through `handleTakeResult`, which carries
+    /// whether Photos accepted it; nothing arriving here may be read as a save,
+    /// because "SAVED TO CAMERA ROLL" over a movie nobody filed is worse than
+    /// silence.
     func handleRecordingMessage(_ message: String) {
-        if message.contains("SAVED") {
-            markSaved(path: activePath ?? .processedFrames)
-            return
-        }
-        if message.contains("FAILED") || message.contains("ERROR") || message.contains("UNAVAILABLE") {
-            // Extract path from current state
-            let path = state.path
-            state = .failed(path: path, message: message)
-            statusMessage = message
-            activeAdapter = nil
-            activePath = nil
-            pendingStartPath = nil
-        }
+        guard message.contains("FAILED") || message.contains("ERROR") || message.contains("UNAVAILABLE") else { return }
+        let path = state.path
+        state = .failed(path: path, message: message)
+        statusMessage = message
+        activeAdapter = nil
+        activePath = nil
+        pendingStartPath = nil
     }
 
     /// Called by the renderer when a screenshot is saved or failed.
@@ -590,123 +612,7 @@ extension GVProcessedFramesAdapter {
     weak static var shared: GVProcessedFramesAdapter?
 }
 
-// MARK: - Objects Adapter
-
-@MainActor
-final class GVObjectsAdapter: GVRecordingAdapter {
-    private var recordingSession: GVRealtimeRecordingSession?
-    private var startTime: Date?
-
-    var isRecording: Bool { recordingSession != nil }
-    var recordingState: GVAdapterRecordingState {
-        if recordingSession == nil { return .idle }
-        // The session doesn't expose state directly; infer from existence.
-        return .recording(startedAt: startTime ?? Date())
-    }
-
-    func prepare(configuration _: GVRecordingConfiguration) async -> Bool {
-        // Size comes from the surface at start time
-        true
-    }
-
-    func start() async -> Bool {
-        // Actual start happens when surface calls consumeStartRequest with size
-        true
-    }
-
-    func stop() async -> GVRecordingResult {
-        guard let session = recordingSession else {
-            return .failure(GVRecordingTransactionError.finalizeFailed(.objects, "NO SESSION"))
-        }
-        recordingSession = nil
-        return await withCheckedContinuation { continuation in
-            session.finish { result in
-                switch result {
-                case let .success(url):
-                    continuation.resume(returning: .success(url))
-                case let .failure(error):
-                    continuation.resume(returning: .failure(error))
-                }
-            }
-        }
-    }
-
-    func abort() async {
-        recordingSession?.finish { _ in } // Best effort
-        recordingSession = nil
-    }
-
-    /// Called by ARObjectRuntime when the surface provides the drawable size.
-    func consumeStartRequest(size: CGSize) {
-        guard recordingSession == nil, size.width > 0, size.height > 0 else { return }
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("greyvision-ar-\(timestamp).mp4")
-        let session = GVRealtimeRecordingSession(outputURL: url, size: size, saveToPhotos: true)
-        guard session.start() else { return }
-        recordingSession = session
-        startTime = Date()
-    }
-
-    /// Called by ARObjectRuntime each frame to append the rendered pixel buffer.
-    func appendFrame(_ pixelBuffer: CVPixelBuffer, timestamp: TimeInterval) {
-        recordingSession?.append(pixelBuffer, timestamp: timestamp)
-    }
-}
-
 // MARK: - Screen Capture (stills, not video)
-
-/// Screen capture remains a static utility — it captures the composed window
-/// including chrome, which the Metal render path cannot do.
-enum GVRecordingTransactionScreenCapture {
-    static func save(_ image: UIImage, message: @escaping @Sendable (String) -> Void) {
-        guard let png = image.pngData() else {
-            message("SCREENSHOT // ENCODE FAILED")
-            return
-        }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("greyvision-ui-\(UUID().uuidString).png")
-        do {
-            try png.write(to: url)
-        } catch {
-            message("SCREENSHOT // WRITE FAILED")
-            return
-        }
-        requestAddAccess { granted in
-            guard granted else {
-                try? FileManager.default.removeItem(at: url)
-                message("SCREENSHOT // PHOTOS ACCESS DENIED")
-                return
-            }
-            PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: url)
-            } completionHandler: { success, error in
-                try? FileManager.default.removeItem(at: url)
-                if success {
-                    message("PHOTO // SAVED TO CAMERA ROLL")
-                } else {
-                    message("SCREENSHOT // SAVE FAILED")
-                    GVLog.recording.error(
-                        "UI screenshot save failed: \(error?.localizedDescription ?? "unknown")"
-                    )
-                }
-            }
-        }
-    }
-
-    private static func requestAddAccess(_ completion: @escaping @Sendable (Bool) -> Void) {
-        switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
-        case .authorized, .limited:
-            completion(true)
-        case .notDetermined:
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-                completion(status == .authorized || status == .limited)
-            }
-        default:
-            completion(false)
-        }
-    }
-}
 
 // MARK: - Singleton access for renderer callbacks (temporary bridge)
 

@@ -189,30 +189,3 @@ extension View {
 }
 
 // MARK: - Breathing stroke shape helper (for direct use inside glass modifiers)
-
-struct GVBreathingStroke: View {
-    var radius: CGFloat
-    var baseOpacity: Double
-    var lineWidth: CGFloat = GVMetrics.hairline
-    var speed: Double = 0.42
-    var seed: Double = 0
-    var clipped: Bool = false
-
-    var body: some View {
-        shape
-            .stroke(
-                Color.white.opacity(borderOpacity(base: baseOpacity)),
-                lineWidth: lineWidth
-            )
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-
-    private var shape: AnyShape {
-        if clipped {
-            AnyShape(GVClippedRectangle(cut: radius + 3))
-        } else {
-            AnyShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-        }
-    }
-}

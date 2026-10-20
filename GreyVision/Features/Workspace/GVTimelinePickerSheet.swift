@@ -8,34 +8,47 @@ struct GVTimelinePickerSheet: View {
     @ObservedObject var player: GVTimelinePlayer
     let editor: EffectEditingSession
     let setup: CaptureSetupDraft
+    /// Vertical budget handed down by the workspace, shared with the other two
+    /// collection plates.
+    let maximumHeight: CGFloat
     let onClose: () -> Void
 
     @State private var renaming: GVTimeline?
     @State private var renameDraft: String = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
             header
 
-            ScrollView {
-                LazyVStack(spacing: 8) {
+            GVDeckList(maxHeight: max(84, maximumHeight - 44)) {
+                VStack(spacing: GVMetrics.gap) {
+                    if store.timelines.isEmpty {
+                        Text("No timelines saved yet")
+                            .font(GVTheme.font(.control, scale: 0.8125))
+                            .foregroundStyle(GVTheme.ash)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                    }
                     ForEach(store.timelines) { timeline in
                         timelineRow(timeline)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 24)
+                .padding(.horizontal, GVMetrics.screenInset + 2)
+                .padding(.bottom, 8)
             }
         }
         .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(red: 0.078, green: 0.078, blue: 0.085).opacity(0.94))
+            RoundedRectangle(cornerRadius: GVMetrics.radiusPanel + 4, style: .continuous)
+                .fill(GVTheme.surfacePrimary)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: GVMetrics.radiusPanel + 4, style: .continuous)
+                        .strokeBorder(GVTheme.bone.opacity(0.12), lineWidth: GVMetrics.hairline)
                 }
         }
-        .frame(maxHeight: 520)
+        // The other two collection plates rise into the dock's space on this
+        // exact transition; this one used to appear already in place.
+        .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
         .accessibilityIdentifier("workspace.timeline.picker")
         .alert("RENAME TIMELINE", isPresented: Binding(
             get: { renaming != nil },
@@ -56,24 +69,25 @@ struct GVTimelinePickerSheet: View {
     private var header: some View {
         HStack {
             Text("TIMELINES")
-                .font(.system(size: 13, weight: .black))
+                .font(GVTheme.font(.control, scale: 0.8125))
                 .tracking(1.2)
-                .foregroundStyle(.white)
+                .foregroundStyle(GVTheme.bone)
             Spacer()
             Button {
                 onClose()
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .font(.system(size: GVMetrics.textValue * 1.565, weight: .regular))
+                    .foregroundStyle(GVTheme.bone.opacity(0.55))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GVPressStyle())
+            .contentShape(Rectangle())
             .accessibilityLabel("Close")
             .accessibilityIdentifier("workspace.timeline.picker.close")
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
+        .padding(.horizontal, GVMetrics.screenInset + 4)
+        .padding(.top, GVMetrics.stepInternal)
+        .padding(.bottom, GVMetrics.gapTight)
     }
 
     private func timelineRow(_ timeline: GVTimeline) -> some View {
@@ -81,16 +95,16 @@ struct GVTimelinePickerSheet: View {
         // transport leaves the timeline armed for scrubbing, and a row that went
         // quiet at that moment would look like the choice had been taken away.
         let isActive = (player.activeTimeline?.id ?? player.selectedTimeline?.id) == timeline.id
-        return HStack(spacing: 10) {
+        return HStack(spacing: GVMetrics.gap) {
             Button {
                 player.selectForScrub(timeline)
             } label: {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: GVMetrics.gapHair) {
                     Text(timeline.name)
-                        .font(.system(size: 13, weight: .black))
+                        .font(GVTheme.font(.control, scale: 0.8125))
                         .tracking(0.8)
-                        .foregroundStyle(.white)
-                    HStack(spacing: 6) {
+                        .foregroundStyle(GVTheme.bone)
+                    HStack(spacing: GVMetrics.gapTight) {
                         Text("\(Int(timeline.duration))s")
                         Text("·")
                         Text("\(timeline.keyframes.count) KF")
@@ -98,45 +112,57 @@ struct GVTimelinePickerSheet: View {
                             Text("· FACTORY")
                         }
                     }
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .font(GVTheme.font(.diagnostic, scale: 1.1765))
+                    .foregroundStyle(GVTheme.bone.opacity(0.55))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GVPressStyle())
+            .contentShape(Rectangle())
             .accessibilityLabel("Scrub \(timeline.name)")
 
             Spacer()
 
             Button {
-                player.play(timeline)
+                // The glyph says Stop, so the press has to stop. Running
+                // `play(timeline)` in every state meant a playing cue restarted
+                // from zero on each tap and the row never went quiet.
+                if isActive, player.isPlaying {
+                    player.stop()
+                } else {
+                    player.play(timeline)
+                    onClose()
+                }
             } label: {
                 Image(systemName: isActive && player.isPlaying ? "stop.fill" : "play.fill")
-                    .font(.system(size: 13, weight: .black))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 30)
+                    .font(.system(size: GVMetrics.textValue * 1.13, weight: .black))
+                    .foregroundStyle(GVTheme.bone)
+                    .frame(width: GVMetrics.controlHeight - 4, height: GVMetrics.cardHeight - 16)
                     .background {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(isActive ? Color.red.opacity(0.65) : Color.white.opacity(0.18))
+                        RoundedRectangle(cornerRadius: GVMetrics.radiusTight, style: .continuous)
+                            .fill(isActive ? GVTheme.record.opacity(0.65) : GVTheme.bone.opacity(0.18))
                     }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GVPressStyle())
+            .contentShape(Rectangle())
             .accessibilityLabel(isActive && player.isPlaying ? "Stop" : "Play")
+            .accessibilityIdentifier("workspace.timeline.picker.play.\(timeline.id.uuidString)")
 
             Button {
                 renaming = timeline
                 renameDraft = timeline.name
             } label: {
                 Image(systemName: "pencil")
-                    .font(.system(size: 12, weight: .black))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
+                    .font(.system(size: GVMetrics.textValue * 1.043, weight: .black))
+                    .foregroundStyle(GVTheme.bone)
+                    .frame(width: GVMetrics.cardHeight - 6, height: GVMetrics.cardHeight - 6)
                     .background {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(.white.opacity(0.10))
+                        RoundedRectangle(cornerRadius: GVMetrics.radiusTight, style: .continuous)
+                            .fill(GVTheme.bone.opacity(0.10))
                     }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GVPressStyle())
+            .contentShape(Rectangle())
             .accessibilityLabel("Rename timeline")
 
             Button {
@@ -144,25 +170,26 @@ struct GVTimelinePickerSheet: View {
                 player.deselect(timeline)
             } label: {
                 Image(systemName: "trash")
-                    .font(.system(size: 12, weight: .black))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
+                    .font(.system(size: GVMetrics.textValue * 1.043, weight: .black))
+                    .foregroundStyle(GVTheme.bone)
+                    .frame(width: GVMetrics.cardHeight - 6, height: GVMetrics.cardHeight - 6)
                     .background {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(.red.opacity(0.18))
+                        RoundedRectangle(cornerRadius: GVMetrics.radiusTight, style: .continuous)
+                            .fill(GVTheme.record.opacity(0.18))
                     }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GVPressStyle())
+            .contentShape(Rectangle())
             .accessibilityLabel("Delete timeline")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, GVMetrics.gap)
+        .padding(.vertical, GVMetrics.gapTight)
         .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(isActive ? Color.white.opacity(0.12) : Color.white.opacity(0.04))
+            RoundedRectangle(cornerRadius: GVMetrics.radius, style: .continuous)
+                .fill(isActive ? GVTheme.bone.opacity(0.12) : GVTheme.bone.opacity(0.04))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(.white.opacity(isActive ? 0.45 : 0.08), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: GVMetrics.radius, style: .continuous)
+                        .strokeBorder(GVTheme.bone.opacity(isActive ? 0.45 : 0.08), lineWidth: GVMetrics.hairline)
                 }
         }
     }

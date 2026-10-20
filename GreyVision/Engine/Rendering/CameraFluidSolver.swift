@@ -133,7 +133,7 @@ final class CameraFluidSolver {
         quality: GVRenderQuality
     ) -> Bool {
         guard applyQuality(edge: quality.simulationEdge, iterations: quality.pressureIterations),
-              ensureTextures(for: source) else { return false }
+              ensureTextures(for: source, commandBuffer: commandBuffer) else { return false }
         guard let velocityA, let velocityB, let dyeA, let dyeB,
               let divergenceTexture, let pressureA, let pressureB
         else { return false }
@@ -384,7 +384,7 @@ final class CameraFluidSolver {
         return true
     }
 
-    private func ensureTextures(for source: MTLTexture) -> Bool {
+    private func ensureTextures(for source: MTLTexture, commandBuffer: MTLCommandBuffer) -> Bool {
         let aspect = Double(source.height) / Double(max(source.width, 1))
         let width = min(gridLimit, source.width)
         let height = max(Int(Double(width) * aspect), 1)
@@ -433,12 +433,20 @@ final class CameraFluidSolver {
         gridSize = MTLSize(width: width, height: height, depth: 1)
 
         // A fresh grid must start empty or the first frame advects garbage.
-        if let queue = device.makeCommandQueue(), let buffer = queue.makeCommandBuffer() {
-            for texture in [velocityA, velocityB, dyeA, dyeB, divergenceTexture, pressureA, pressureB] {
-                clear(buffer, texture: texture)
-            }
-            buffer.commit()
-            buffer.waitUntilCompleted()
+        //
+        // The clears are encoded into the caller's command buffer rather than
+        // into a private queue. A private queue meant a `waitUntilCompleted()`
+        // on the render thread, which stalled the whole pipeline for the
+        // duration of seven render passes every time the grid was reallocated
+        // — and it also allocated a command queue per reallocation. Encoding
+        // into the caller's buffer keeps the clear ordered before the first
+        // simulation pass without ever blocking the CPU.
+        //
+        // The textures are `.private` storage, so the clear must land before
+        // any pass reads them. Encoding it first in the same command buffer
+        // gives exactly that ordering.
+        for texture in [velocityA, velocityB, dyeA, dyeB, divergenceTexture, pressureA, pressureB] {
+            clear(commandBuffer, texture: texture)
         }
         return true
     }

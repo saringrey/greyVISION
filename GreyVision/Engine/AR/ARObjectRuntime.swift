@@ -500,6 +500,10 @@ final class ARObjectRuntime: ObservableObject {
     /// fires ("CONSTELLATION WITNESSED" / "CONSTELLATION CONSUMED").
     @Published private(set) var constellationMessage: String?
 
+    /// Where the recording transaction hears the outcome of a finished objects
+    /// take, including one kept in the library because Photos refused it.
+    var takeOutcomeHandler: (@MainActor (Result<GVTake, any Error>) -> Void)?
+
     let capability: ARObjectCapability
     let mailbox: LatestARObjectFrameMailbox
 
@@ -749,8 +753,11 @@ final class ARObjectRuntime: ObservableObject {
     /// The dock requests a recording; the surface supplies the actual drawable
     /// size on its next update so the writer's pixel buffer pool matches the
     /// rendered frame exactly.
-    func requestStartRecording() {
+    @discardableResult
+    func requestStartRecording() -> Bool {
+        guard !startRequested, recordingSession == nil else { return false }
         startRequested = true
+        return true
     }
 
     func cancelRecordingStart() {
@@ -779,12 +786,18 @@ final class ARObjectRuntime: ObservableObject {
         else {
             return
         }
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("greyvision-ar-\(timestamp).mp4")
-        let session = GVRealtimeRecordingSession(outputURL: url, size: size, saveToPhotos: true)
+        // Durable from the first frame: a rendered objects take is as much
+        // footage as a camera take, and the temporary directory used to be the
+        // only place it ever went.
+        guard let url = try? GVTakeArchive.shared.makeRecordingURL() else {
+            recordingState = .failed(GVRecordingError.writerSetupFailed.localizedDescription)
+            takeOutcomeHandler?(.failure(GVRecordingError.writerSetupFailed))
+            return
+        }
+        let session = GVRealtimeRecordingSession(outputURL: url, size: size, saveToPhotos: false)
         guard session.start() else {
             recordingState = .failed(GVRecordingError.writerSetupFailed.localizedDescription)
+            takeOutcomeHandler?(.failure(GVRecordingError.writerSetupFailed))
             return
         }
         recordingSession = session
@@ -797,18 +810,34 @@ final class ARObjectRuntime: ObservableObject {
         guard let session = recordingSession else { return }
         recordingSession = nil
         recordingState = .finalizing
+        // The runtime owns the archive handoff, so this completion is the only
+        // thing that files a finished objects take.
         session.finish { [weak self] result in
-            Task { @MainActor [weak self] in
+            Task { @MainActor in
                 guard let self else { return }
                 switch result {
-                case .success:
-                    recordingState = .saved
+                case let .success(url):
+                    self.recordingState = .saved
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    await self.fileCompletedTake(url)
                 case let .failure(error):
-                    recordingState = .failed(error.localizedDescription)
+                    self.recordingState = .failed(error.localizedDescription)
                     UINotificationFeedbackGenerator().notificationOccurred(.error)
+                    self.takeOutcomeHandler?(.failure(error))
                 }
             }
+        }
+    }
+
+    /// Writes the take record and attempts the Photos export, then reports the
+    /// outcome — including a take kept locally after a refused export — to the
+    /// transaction that owns the operator-visible capture state.
+    private func fileCompletedTake(_ url: URL) async {
+        do {
+            let take = try await GVTakeArchive.shared.completeRecording(at: url, source: .objects, exporter: GVSystemPhotosExporter())
+            takeOutcomeHandler?(.success(take))
+        } catch {
+            takeOutcomeHandler?(.failure(error))
         }
     }
 

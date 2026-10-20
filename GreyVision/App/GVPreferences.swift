@@ -18,6 +18,14 @@ final class GVPreferences: ObservableObject {
         static let coachSeen = "gv.preferences.coach.seen"
         static let startupAnimation = "gv.preferences.startup.animation"
         static let renderQuality = "gv.preferences.renderQuality"
+        static let countdown = "gv.preferences.capture.countdown"
+    }
+
+    /// Self-timer delay before the shutter fires, in seconds. `0` captures
+    /// immediately. Applies to both photo and record so a countdown can be used
+    /// to get in frame for a clip, not only for a still.
+    @Published var captureCountdownSeconds: Int {
+        didSet { defaults.set(captureCountdownSeconds, forKey: Key.countdown) }
     }
 
     /// How hard the renderer is allowed to work.
@@ -167,6 +175,8 @@ final class GVPreferences: ObservableObject {
         renderQuality = GVRenderQuality(
             rawValue: defaults.string(forKey: Key.renderQuality) ?? ""
         ) ?? .automatic
+        // Unset is 0, and 0 is "fire the shutter now" — the pre-timer behaviour.
+        captureCountdownSeconds = defaults.integer(forKey: Key.countdown)
 
         defaults.register(defaults: [Key.startupAnimation: true])
         startupAnimationEnabled = defaults.object(forKey: Key.startupAnimation) == nil

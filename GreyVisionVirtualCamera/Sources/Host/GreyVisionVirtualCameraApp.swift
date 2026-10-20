@@ -46,11 +46,12 @@ struct ContentView: View {
                     .help("Bonjour service name the iPhone advertises under. Leave at greyVISION unless you changed it on the iPhone.")
 
                 HStack(spacing: 6) {
-                    SecureField("Six-digit code from iPhone", text: $controller.passcode)
+                    SecureField("Pairing code from iPhone", text: $controller.pairingCode)
                         .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
                     Button("Paste") {
                         if let clip = NSPasteboard.general.string(forType: .string) {
-                            controller.passcode = clip.filter(\.isNumber)
+                            controller.pairingCode = GVBroadcastKeyMaterial.normalizeCode(clip)
                         }
                     }
                     .controlSize(.regular)
@@ -125,14 +126,14 @@ private struct StatusBar: View {
     }
 
     private var pairingLabel: String {
-        if controller.passcode.count == 6, controller.isEnabled {
-            return "PAIR // \(controller.passcode)"
+        if GVBroadcastKeyMaterial.isValidCode(controller.pairingCode), controller.isEnabled {
+            return "PAIR // \(controller.pairingCode)"
         }
         return "PAIR // --"
     }
 
     private var pairingColor: Color {
-        if controller.passcode.count == 6, controller.isEnabled {
+        if GVBroadcastKeyMaterial.isValidCode(controller.pairingCode), controller.isEnabled {
             return .green
         }
         return .secondary
@@ -175,9 +176,9 @@ final class GVVirtualCameraHostController: NSObject, ObservableObject {
     enum StreamState: Equatable { case idle, waiting, live }
 
     @Published var serviceName: String
-    @Published var passcode: String
+    @Published var pairingCode: String
     @Published var isEnabled: Bool
-    @Published private(set) var status = "Enter the one-time six-digit code shown by grey//vision on iPhone."
+    @Published private(set) var status = "Long-press Mac Camera on the iPhone to read its pairing code, then paste it here."
     @Published private(set) var statusIsError = false
     @Published private(set) var extensionState: ExtensionState = .unknown
     @Published private(set) var streamState: StreamState = .idle
@@ -187,23 +188,23 @@ final class GVVirtualCameraHostController: NSObject, ObservableObject {
     override init() {
         let pairing = GVVirtualCameraConfiguration.load()
         serviceName = pairing.serviceName
-        passcode = pairing.passcode
+        pairingCode = pairing.pairingCode
         isEnabled = pairing.isEnabled
         super.init()
-        if isEnabled, passcode.count == 6 {
+        if isEnabled, GVBroadcastKeyMaterial.isValidCode(pairingCode) {
             streamState = .waiting
         }
     }
 
     func persistPairing() {
-        let normalizedCode = passcode.filter(\.isNumber)
-        guard normalizedCode.count == 6 || !isEnabled else {
-            setStatus("Enter the six-digit code shown on the iPhone before enabling the feed.", error: true)
+        let normalizedCode = GVBroadcastKeyMaterial.normalizeCode(pairingCode)
+        guard GVBroadcastKeyMaterial.isValidCode(normalizedCode) || !isEnabled else {
+            setStatus("Paste the \(GVBroadcastKeyMaterial.codeLength)-character pairing code shown on the iPhone before enabling the feed.", error: true)
             return
         }
-        passcode = normalizedCode
-        GVVirtualCameraConfiguration.save(serviceName: serviceName, passcode: passcode, isEnabled: isEnabled)
-        streamState = isEnabled && passcode.count == 6 ? .waiting : .idle
+        pairingCode = normalizedCode
+        GVVirtualCameraConfiguration.save(serviceName: serviceName, pairingCode: pairingCode, isEnabled: isEnabled)
+        streamState = isEnabled && GVBroadcastKeyMaterial.isValidCode(pairingCode) ? .waiting : .idle
         setStatus(isEnabled
             ? "Pairing saved. Open FaceTime, Photo Booth, OBS, or Zoom and select grey//visionCAM."
             : "Pairing disabled.")
@@ -257,7 +258,7 @@ extension GVVirtualCameraHostController: OSSystemExtensionRequestDelegate {
     nonisolated func request(_: OSSystemExtensionRequest, didFinishWithResult _: OSSystemExtensionRequest.Result) {
         Task { @MainActor in
             extensionState = .installed
-            streamState = isEnabled && passcode.count == 6 ? .waiting : .idle
+            streamState = isEnabled && GVBroadcastKeyMaterial.isValidCode(pairingCode) ? .waiting : .idle
             setStatus("Camera Extension activated. Select grey//visionCAM in FaceTime, Photo Booth, OBS, Zoom, or any other camera client.")
         }
     }

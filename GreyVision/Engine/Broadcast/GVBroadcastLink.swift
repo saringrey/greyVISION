@@ -13,13 +13,22 @@ enum GVBroadcastLinkState: Equatable, Sendable {
 /// The phone's side of the link: a Bonjour-advertised, TLS-protected listener
 /// that accepts one Mac at a time and streams framed messages to it.
 ///
-/// ## Why TLS with a passcode
+/// ## Why TLS with a pairing code
 ///
 /// This publishes a live camera feed onto whatever network the phone is on —
 /// a studio, an office, a café. Unencrypted that is a camera anyone on the
-/// subnet can watch, and Bonjour tells them it is there. The passcode shown on
-/// the phone is mixed into a pre-shared key, so a peer that cannot produce the
-/// same code fails the TLS handshake and never sees a frame.
+/// subnet can watch, and Bonjour tells them it is there.
+///
+/// The pairing code shown on the phone is mixed into a pre-shared key, so a
+/// peer that cannot produce the same code fails the TLS handshake and never
+/// sees a frame. The code reaches the Mac out of band — the user reads it off
+/// this phone and types it in — so it is never carried by the link it
+/// protects. There is no automatic fallback: with no code, the listener does
+/// not start at all.
+///
+/// The derivation itself is in `GVBroadcastKeyMaterial.swift`, which the Mac
+/// app and the camera extension compile too. It used to be duplicated here and
+/// in both of those, and the copies disagreed.
 ///
 /// ## One peer
 ///
@@ -36,9 +45,11 @@ final class GVBroadcastLink: @unchecked Sendable {
     private static let sendBacklogLimit = 256 * 1024
 
     /// Seconds of silence before the first TCP keepalive probe goes out.
-    static let keepaliveIdleSeconds: Int = 30
+    /// Re-exported from the shared key material so callers that only import
+    /// this file keep working.
+    static var keepaliveIdleSeconds: Int { GVBroadcastKeyMaterial.keepaliveIdleSeconds }
     /// Spacing between probes once a probe has been sent.
-    static let keepaliveIntervalSeconds: Int = 10
+    static var keepaliveIntervalSeconds: Int { GVBroadcastKeyMaterial.keepaliveIntervalSeconds }
 
     private let queue = DispatchQueue(label: "greyVISION.broadcast.link")
     private let lock = NSLock()
@@ -62,11 +73,19 @@ final class GVBroadcastLink: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
-    /// Starts advertising. Pairing is automatic for this personal local-network workflow.
-    func start(serviceName: String, passcode: String) {
+    /// Starts advertising to Macs that already hold the pairing code.
+    ///
+    /// A malformed code is refused here rather than being papered over with a
+    /// fallback key: a listener that came up under any other key would accept a
+    /// connection it should have rejected.
+    func start(serviceName: String, pairingCode: String) {
         stop()
+        guard let secret = GVBroadcastKeyMaterial.secret(forCode: pairingCode) else {
+            publish(.failed(reason: "PAIRING CODE REJECTED"))
+            return
+        }
         do {
-            let parameters = Self.makeParameters(passcode: passcode)
+            let parameters = GVBroadcastKeyMaterial.listenerParameters(secret: secret)
             let listener = try NWListener(using: parameters)
             listener.service = NWListener.Service(name: serviceName, type: GVBroadcastProtocol.serviceType)
 
@@ -272,61 +291,10 @@ final class GVBroadcastLink: @unchecked Sendable {
     }
 
     // MARK: - Parameters
-
-    private static func makeParameters(passcode _: String) -> NWParameters {
-        let tlsOptions = NWProtocolTLS.Options()
-
-        // The shared automatic credential is stretched through HKDF rather than
-        // used as key material directly.
-        let key = SymmetricKey(data: SHA256.hash(data: Data(GVBroadcastProtocol.serviceType.utf8)))
-        let derived = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: Data(GVBroadcastProtocol.automaticPairingSecret.utf8)),
-            salt: key.withUnsafeBytes { Data($0) },
-            info: Data("greyVISION.link.v1".utf8),
-            outputByteCount: 32
-        )
-        let pskData = derived.withUnsafeBytes { DispatchData(bytes: $0) }
-        let identity = Data("greyVISION".utf8).withUnsafeBytes { DispatchData(bytes: $0) }
-
-        sec_protocol_options_add_pre_shared_key(
-            tlsOptions.securityProtocolOptions,
-            pskData as __DispatchData,
-            identity as __DispatchData
-        )
-        sec_protocol_options_append_tls_ciphersuite(
-            tlsOptions.securityProtocolOptions,
-            tls_ciphersuite_t.AES_128_GCM_SHA256
-        )
-        sec_protocol_options_set_min_tls_protocol_version(tlsOptions.securityProtocolOptions, .TLSv12)
-
-        let tcpOptions = NWProtocolTCP.Options()
-        // Nagle batches small writes, which is exactly wrong for a stream of
-        // frames that are each already the right size to send.
-        tcpOptions.noDelay = true
-        tcpOptions.enableKeepalive = true
-        // Probing every 2 seconds holds the Wi-Fi and AWDL radios awake for the
-        // whole session and costs noticeably more battery than the link itself
-        // when the Mac is idle between bursts. A video stream that stalls for
-        // 30 seconds is already visibly broken, so the short interval bought
-        // nothing but wake-ups.
-        tcpOptions.keepaliveIdle = Self.keepaliveIdleSeconds
-        tcpOptions.keepaliveInterval = Self.keepaliveIntervalSeconds
-        tcpOptions.keepaliveCount = 3
-
-        let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
-        // Lets the Mac find the phone over AWDL when there is no shared
-        // network — the difference between "works in the studio" and "works
-        // only if both are on the same Wi-Fi".
-        //
-        // This stays on for the listener even though the Mac now browses the
-        // LAN first, because it is advertisement rather than connection that
-        // needs the interface: a phone that does not advertise over AWDL is
-        // invisible to a Mac that has fallen back to looking for it. The
-        // expensive part — a Mac holding AWDL awake while idle on a shared
-        // network — is what the Mac-side two-phase browse now avoids.
-        parameters.includePeerToPeer = true
-        return parameters
-    }
+    //
+    // `makeParameters` used to live here. It is now `GVBroadcastKeyMaterial`,
+    // shared with the Mac app and the camera extension — see that file for why
+    // duplicating it was a security bug rather than only a maintenance cost.
 
     private static func describe(_ endpoint: NWEndpoint) -> String {
         switch endpoint {

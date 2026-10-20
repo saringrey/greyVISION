@@ -214,7 +214,7 @@ private struct GVGlassButtonStyle: ButtonStyle {
                         lineWidth: configuration.isPressed ? 1.3 : 1
                     )
             )
-            .scaleEffect(configuration.isPressed ? 0.975 : 1)
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.975 : 1))
             .colorEffect(
                 ShaderLibrary.pressPulse(
                     .float(Float(Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600))),
@@ -224,24 +224,6 @@ private struct GVGlassButtonStyle: ButtonStyle {
                 )
             )
             .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
-    }
-}
-
-struct GVStatusPip: View {
-    let label: String
-    let isActive: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(isActive ? GVTheme.acid : GVTheme.ash)
-                .frame(width: 5, height: 5)
-                .shadow(color: isActive ? GVTheme.acid : .clear, radius: 4)
-            Text(label.uppercased())
-                .gvMono(GVMetrics.textSmall, .bold)
-                .tracking(1.1)
-                .foregroundStyle(isActive ? GVTheme.bone : GVTheme.ash)
-        }
     }
 }
 
@@ -384,27 +366,6 @@ struct GVChamferedPlate: Shape, InsettableShape {
         var plate = self
         plate.cut = max(0, cut - insetAmount)
         return plate
-    }
-}
-
-/// Two short rules that sit inside a plate's cut corners, like registration
-/// marks on a control surface. Drawn only when selected so they read as state.
-struct GVPlateRegistration: View {
-    var color: Color
-    var inset: CGFloat = 4
-
-    var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            Path { path in
-                path.move(to: CGPoint(x: inset, y: size.height - inset))
-                path.addLine(to: CGPoint(x: inset + 6, y: size.height - inset))
-                path.move(to: CGPoint(x: size.width - inset - 6, y: inset))
-                path.addLine(to: CGPoint(x: size.width - inset, y: inset))
-            }
-            .stroke(color, lineWidth: 1)
-        }
-        .allowsHitTesting(false)
     }
 }
 

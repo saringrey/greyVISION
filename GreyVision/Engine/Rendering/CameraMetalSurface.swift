@@ -27,6 +27,7 @@ enum CameraMetalShaderNames {
     static let bandLuma = "gvCameraBandLuma"
     static let previewVertex = "gvCameraPreviewVertex"
     static let previewFragment = "gvCameraPreviewFragment"
+    static let stillFragment = "gvCameraStillFragment"
     static let styleModeFunctionConstantIndex = 0
 }
 
@@ -100,7 +101,9 @@ final class CameraRecordingMailbox: @unchecked Sendable {
     private var startRequested = false
     private var active = false
     private var activeSession: GVRealtimeRecordingSession?
-    /// Called with the finished movie's file URL once Photos has accepted it.
+    /// Called with the finished movie's file URL once the writer has finalized
+    /// it. The runtime files the take in the library and attempts the Photos
+    /// export from there, so this is the point a take becomes addressable.
     ///
     /// A handler on the mailbox rather than a closure threaded through the
     /// representable, the coordinator and the renderer, because the runtime
@@ -108,6 +111,10 @@ final class CameraRecordingMailbox: @unchecked Sendable {
     /// answer. The renderer's `stopRecording` completes on a writer queue, so the
     /// handler is expected to hop to the main actor itself.
     private var takeSavedHandler: (@Sendable (URL) -> Void)?
+    /// The last movie handed to the handler, so one take is one report even if
+    /// the writer's completion runs twice, while the handler itself stays
+    /// installed for every take after it.
+    private var lastReportedTake: URL?
 
     private var requestedCodecRawValue: String = AVVideoCodecType.h264.rawValue
     private var requestedFPS: Int = 30
@@ -166,12 +173,15 @@ final class CameraRecordingMailbox: @unchecked Sendable {
         lock.withLock { takeSavedHandler = handler }
     }
 
-    /// Reports the finished movie to whoever installed a handler, and always
-    /// after clearing the stored one: a handler captures the runtime weakly, and
-    /// firing it twice for one take would note the same file twice.
+    /// Reports the finished movie to whoever installed a handler, once per take.
+    ///
+    /// The handler stays installed: the runtime arms it when it is built, and
+    /// clearing it after the first report meant every later take wrote a movie
+    /// nothing ever read back — the scrub preview kept showing take one.
     func reportTakeSaved(_ url: URL) {
         let handler: (@Sendable (URL) -> Void)? = lock.withLock {
-            defer { takeSavedHandler = nil }
+            guard lastReportedTake != url else { return nil }
+            lastReportedTake = url
             return takeSavedHandler
         }
         handler?(url)
@@ -350,8 +360,16 @@ struct CameraMetalSurface: UIViewRepresentable {
             },
             screenshotMailbox: runtime.screenshotMailbox,
             previewMailbox: runtime.previewMailbox,
-            onScreenshotMessage: { [weak recordingTransaction] message in
-                Task { @MainActor [weak recordingTransaction] in
+            onScreenshotMessage: { [weak recordingTransaction, weak runtime] message in
+                Task { @MainActor [weak recordingTransaction, weak runtime] in
+                    // Both, not one. The transaction owns the toast; the
+                    // runtime owns the value the capture button reads back.
+                    // Reporting only to the transaction left the button
+                    // showing "RENDERING AT SENSOR RESOLUTION" for ever,
+                    // which is indistinguishable from a shutter that did
+                    // nothing — even when the photograph was sitting in
+                    // Photos the whole time.
+                    runtime?.setScreenshotMessage(message)
                     recordingTransaction?.handleScreenshotMessage(message)
                 }
             },
@@ -388,6 +406,7 @@ struct CameraMetalSurface: UIViewRepresentable {
             rgbSplitParameters: rgbSplitParameters,
             effectStack: effectStack,
             isSynthetic: runtime.snapshot.isSynthetic,
+            sourceDimensions: runtime.snapshot.sourceDimensions ?? .fullHD,
             sourceIdentifier: runtime.snapshot.deviceID ?? "camera",
             audioSnapshot: audioSnapshot,
             audioIntensity: audioIntensity,
@@ -689,6 +708,10 @@ private struct CameraRenderSettings {
     let rgbSplit: RGBSplitEffectParameters
     let effectStack: CameraEffectStackParameters
     let isSynthetic: Bool
+    /// The source's own frame size. Only consulted for the synthetic path,
+    /// which has no frame mailbox to read it from; a real source reports its
+    /// own dimensions on every frame it delivers.
+    let sourceDimensions: CaptureDimensions
     let sourceIdentifier: String
     let temporalHoldActive: Bool
     let audio: SIMD4<Float>
@@ -1086,6 +1109,11 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private var isWorldAnchorRunning = false
     private let fracturePipeline: MTLComputePipelineState
     private let previewPipeline: MTLRenderPipelineState
+    /// Resolves the effect chain's `rgba16Float` output into the 8-bit sRGB
+    /// texture a photograph is written from. Separate from `previewPipeline`
+    /// because the target format differs and because the preview's aspect
+    /// letterbox and scanlines must not reach a saved image.
+    private let stillPipeline: MTLRenderPipelineState?
     private let textureCache: CVMetalTextureCache
     private let temporalFrames: TemporalFrameBuffer
     private let settingsLock = NSLock()
@@ -1110,6 +1138,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// refusal reads as `1/2` instead of as a one-Slot stack.
     private var codecSlotsRequestedSnapshot = 0
     private var bandLumaFrame = 0
+    /// The synthetic source's own frame size, kept out of `CameraRenderSettings`
+    /// because it only changes when the capture format does, not per frame.
+    private var sourceDimensions: CaptureDimensions = .fullHD
     /// Frames left before the chain may drop back to preview resolution.
     ///
     /// A hold rather than a single frame: resizing the working textures throws
@@ -1202,6 +1233,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
               let fractureFunction = library.makeFunction(name: CameraMetalShaderNames.signalFracture),
               let previewVertex = library.makeFunction(name: CameraMetalShaderNames.previewVertex),
               let previewFragment = library.makeFunction(name: CameraMetalShaderNames.previewFragment),
+              let stillFragment = library.makeFunction(name: CameraMetalShaderNames.stillFragment),
               let yuvPipeline = try? device.makeComputePipelineState(function: yuvFunction),
               let syntheticPipeline = try? device.makeComputePipelineState(function: syntheticFunction),
               let rgbSplitPipeline = try? device.makeComputePipelineState(function: rgbSplitFunction),
@@ -1227,6 +1259,21 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         guard let previewPipeline = try? device.makeRenderPipelineState(descriptor: previewDescriptor) else {
             return nil
         }
+
+        // Same vertex stage as the preview, different fragment and a fixed
+        // 8-bit sRGB target. `.bgra8Unorm_srgb` has to match the format the
+        // screenshot lease's texture is created with, or the pass is invalid.
+        let stillDescriptor = MTLRenderPipelineDescriptor()
+        stillDescriptor.label = "greyVISION Camera Still"
+        stillDescriptor.vertexFunction = previewVertex
+        stillDescriptor.fragmentFunction = stillFragment
+        stillDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+        // Deliberately optional, unlike every other pipeline above. Returning
+        // nil here would fail the whole renderer — turning "photographs are
+        // unavailable" into "the camera is dead" for the whole app, over a
+        // feature that only runs when the shutter is pressed. If this one
+        // cannot be built, stills report why and everything else carries on.
+        let stillPipeline = try? device.makeRenderPipelineState(descriptor: stillDescriptor)
 
         var cache: CVMetalTextureCache?
         guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache) == kCVReturnSuccess,
@@ -1276,6 +1323,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         flowField = CameraFlowField(device: device)
         self.fracturePipeline = fracturePipeline
         self.previewPipeline = previewPipeline
+        self.stillPipeline = stillPipeline
         textureCache = cache
         temporalFrames = TemporalFrameBuffer(device: device, divisor: 3)
         temporalEngine = CameraTemporalEngine(device: device)
@@ -1293,6 +1341,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         rgbSplitParameters: RGBSplitEffectParameters,
         effectStack: CameraEffectStackParameters,
         isSynthetic: Bool,
+        sourceDimensions: CaptureDimensions,
         sourceIdentifier: String,
         audioSnapshot: AudioReactiveSnapshot,
         audioIntensity: Float,
@@ -1309,6 +1358,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             self.rgbSplitParameters = rgbSplitParameters.sanitized
             self.effectStack = effectStack
             self.isSynthetic = isSynthetic
+            self.sourceDimensions = sourceDimensions
             self.sourceIdentifier = sourceIdentifier
             let audioGain = min(max(audioIntensity, 0), 1)
             audio = audioSnapshot.metalBands * audioGain
@@ -1381,6 +1431,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 rgbSplit: rgbSplitParameters,
                 effectStack: effectStack,
                 isSynthetic: isSynthetic,
+                sourceDimensions: self.sourceDimensions,
                 sourceIdentifier: sourceIdentifier,
                 temporalHoldActive: temporalHoldActive,
                 audio: audio,
@@ -1815,29 +1866,54 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             )
         }
         var screenshotLease: CameraScreenshotLease?
+        // The chain output, not the drawable.
+        //
+        // `workingTextureSize` holds the chain at full sensor resolution for as
+        // long as a capture is pending, so by the time this runs the effect
+        // stack has already been re-rendered at capture size. Copying
+        // `drawable.texture` -- which is what this used to do -- threw all of
+        // that away and saved a screen-sized snapshot of the letterboxed
+        // preview with the HUD burned into it.
+        //
+        // The drawable is `bgra8Unorm` while the chain output is `rgba16Float`,
+        // and `blit.copy` will not convert between formats, so the resolve has
+        // to be a pass rather than a copy.
+        //
+        // Nested rather than guarded-and-returned: bailing out of the draw here
+        // would abandon the present, the recording append and the broadcast
+        // frame on exactly the frame somebody pressed the shutter, turning a
+        // missing photograph into a dropped video.
         if screenshotMailbox.consumeRequest() {
-            if let lease = makeScreenshotLease(
-                width: drawable.texture.width,
-                height: drawable.texture.height
-            ), let blit = commandBuffer.makeBlitCommandEncoder() {
-                blit.label = "greyVISION Screenshot Copy"
-                blit.copy(
-                    from: drawable.texture,
-                    sourceSlice: 0,
-                    sourceLevel: 0,
-                    sourceOrigin: .init(x: 0, y: 0, z: 0),
-                    sourceSize: .init(
-                        width: drawable.texture.width,
-                        height: drawable.texture.height,
-                        depth: 1
-                    ),
-                    to: lease.texture,
-                    destinationSlice: 0,
-                    destinationLevel: 0,
-                    destinationOrigin: .init(x: 0, y: 0, z: 0)
-                )
-                blit.endEncoding()
-                screenshotLease = lease
+            if let stillPipeline, let lease = makeScreenshotLease(
+                width: presentedTexture.width,
+                height: presentedTexture.height
+            ) {
+                let descriptor = MTLRenderPassDescriptor()
+                descriptor.colorAttachments[0].texture = lease.texture
+                descriptor.colorAttachments[0].loadAction = .clear
+                descriptor.colorAttachments[0].storeAction = .store
+                descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+
+                if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) {
+                    encoder.label = "greyVISION Still Resolve"
+                    encoder.setRenderPipelineState(stillPipeline)
+                    encoder.setFragmentTexture(presentedTexture, index: 0)
+                    encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                    encoder.endEncoding()
+                    screenshotLease = lease
+                    // Reported the moment the take is taken rather than only
+                    // when it lands. The gap between here and the save is a
+                    // chain re-render plus a GPU readback, which is long
+                    // enough that a shutter that says nothing in the meantime
+                    // reads as broken rather than as working.
+                    onScreenshotMessage(
+                        "PHOTO // RESOLVING \(presentedTexture.width)×\(presentedTexture.height)"
+                    )
+                } else {
+                    onScreenshotMessage("PHOTO // ENCODE FAILED")
+                }
+            } else {
+                onScreenshotMessage("PHOTO // STILL UNAVAILABLE")
             }
         }
         var recordLease: CameraRecordLease?
@@ -2304,7 +2380,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         CVPixelBufferLockBaseAddress(lease.pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(lease.pixelBuffer, .readOnly) }
         guard let baseAddress = CVPixelBufferGetBaseAddress(lease.pixelBuffer) else {
-            onScreenshotMessage("SCREENSHOT // READ FAILED")
+            onScreenshotMessage("PHOTO // READ FAILED")
             return
         }
         let width = CVPixelBufferGetWidth(lease.pixelBuffer)
@@ -2319,11 +2395,24 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         ), let image = context.makeImage() else {
-            onScreenshotMessage("SCREENSHOT // ENCODE FAILED")
+            onScreenshotMessage("PHOTO // ENCODE FAILED")
             return
         }
+        // JPEG, because this is a camera frame at sensor resolution. The PNG
+        // path still exists for the interface snapshot, where lossless is the
+        // right call for flat UI colour.
+        //
+        // The size goes in the message on purpose. "Full sensor resolution" is
+        // a claim, and a readout that states what was actually written is what
+        // makes it checkable rather than merely asserted — on the simulator
+        // it will name the synthetic source's size, which is a different
+        // number from the screen, so a regression to the old drawable-sized
+        // grab is visible immediately.
+        let captured = "\(width)×\(height)"
         GVScreenCapture.save(UIImage(cgImage: image)) { [onScreenshotMessage] message in
-            onScreenshotMessage(message)
+            onScreenshotMessage(message.hasPrefix("PHOTO // SAVED")
+                ? "PHOTO // SAVED \(captured)"
+                : message)
         }
     }
 
@@ -2439,14 +2528,21 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         }
 
         let codec = AVVideoCodecType(rawValue: codecRawValue)
-        let ext = codecRawValue.lowercased().contains("hevc") || codecRawValue.lowercased().contains("hvc1") ? "mov" : "mov" // All mov
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("greyvision-camera-\(timestamp).\(ext)")
+        // Written straight into the durable library rather than the temporary
+        // directory, and without the writer touching Photos. A take is only
+        // useful if it survives the session that made it: on the old path a
+        // denied Photos permission deleted the finished movie, and a completed
+        // one aged out of tmp long before anyone went looking for it.
+        guard let url = try? GVTakeArchive.shared.makeRecordingURL() else {
+            GVLog.recording.error("Camera recording has no writable take library")
+            recordingMailbox.requestStop()
+            onRecordingMessage("WRITER UNAVAILABLE")
+            return
+        }
         let session = GVRealtimeRecordingSession(
             outputURL: url,
             size: size,
-            saveToPhotos: true,
+            saveToPhotos: false,
             codec: codec,
             burnHUD: burnHUD
         )
@@ -2480,8 +2576,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         session.finish { [weak self] result in
             switch result {
             case let .success(url):
-                GVLog.recording.notice("Camera recording saved to Photos")
-                self?.onRecordingMessage("RECORD // SAVED TO PHOTOS")
+                GVLog.recording.notice("Camera recording finalized")
+                // The runtime owns what happens next — library record, Photos
+                // export, and the message that reports both. Saying "saved to
+                // Photos" here would have pre-empted an export that had not run.
                 self?.recordingMailbox.reportTakeSaved(url)
             case let .failure(error):
                 GVLog.recording.error("Camera recording finalize failed: \(error.localizedDescription)")
@@ -3873,14 +3971,26 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     }
 
     private func syntheticTextureSize(for drawableSize: CGSize) -> (width: Int, height: Int) {
-        let drawableWidth = max(Int(drawableSize.width.rounded()), 1)
-        let drawableHeight = max(Int(drawableSize.height.rounded()), 1)
-        let longestSide = max(drawableWidth, drawableHeight)
-        let scale = min(1, 1280.0 / Double(longestSide))
-        return (
-            max(1, Int(Double(drawableWidth) * scale)),
-            max(1, Int(Double(drawableHeight) * scale))
+        // A real frame's size comes off the capture device and is handed to
+        // `workingTextureSize`, which decides the chain resolution from it.
+        //
+        // This used to mirror the drawable instead, capped at 1280 on the
+        // longest edge. That made the synthetic source a function of the
+        // viewfinder's size, so it had no sensor to speak of: the HUD could
+        // say 4K while the chain rendered 588x1280, and a photograph taken at
+        // "sensor resolution" came out exactly as large as the screen. Every
+        // property that depends on the source being bigger than the preview
+        // was therefore untestable outside a device.
+        //
+        // Now it claims the configured capture format and goes through the
+        // same governor, so the simulator exercises the same code path a
+        // phone does.
+        let working = workingTextureSize(
+            sourceWidth: Int(sourceDimensions.width),
+            sourceHeight: Int(sourceDimensions.height),
+            drawableSize: drawableSize
         )
+        return (max(1, working.width), max(1, working.height))
     }
 }
 

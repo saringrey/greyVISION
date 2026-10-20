@@ -180,7 +180,12 @@ final class BootstrapUITests: XCTestCase {
         XCTAssertTrue(app.buttons["workspace.capture.photo"].exists)
         XCTAssertFalse(app.buttons["workspace.clear-effects"].exists)
         XCTAssertFalse(app.buttons["workspace.menu"].exists)
-        XCTAssertFalse(app.buttons["workspace.presets"].exists)
+        // The three collections — recipes, takes, timelines — are rail items
+        // now, so they have to survive the landscape rotation. An operator
+        // framing a shot sideways still needs to reach the library.
+        XCTAssertTrue(app.buttons["workspace.recipes"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["workspace.takes"].exists)
+        XCTAssertTrue(app.buttons["workspace.timeline"].exists)
         XCTAssertFalse(app.buttons["workspace.social"].exists)
         XCTAssertFalse(app.buttons["workspace.exit"].exists)
 
@@ -250,11 +255,11 @@ final class BootstrapUITests: XCTestCase {
         stackButton.tap()
         XCTAssertEqual(stackButton.value as? String, "armed")
 
-        // Families no longer open a second horizontal card rail. Holding the
-        // family presents all variants around the touch point instead.
-        glitchCategory.press(forDuration: 0.6)
-        let signalTear = app.buttons["radial.slot.glitch-signalTear"]
-        XCTAssertTrue(signalTear.waitForExistence(timeout: 3))
+        // Families open the browser rather than a second horizontal card rail
+        // or a radial ring. Both of those are gone.
+        glitchCategory.tap()
+        let signalTear = app.buttons["workspace.effect.signalTear"]
+        XCTAssertTrue(signalTear.waitForExistence(timeout: 5))
         signalTear.tap()
         XCTAssertTrue(
             app.descendants(matching: .any)["workspace.parameters.signalTear"]

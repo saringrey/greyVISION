@@ -1,4 +1,7 @@
 @testable import GreyVision
+import Combine
+import Metal
+import UIKit
 import XCTest
 
 final class EffectCatalogTests: XCTestCase {
@@ -123,9 +126,9 @@ final class EffectCatalogTests: XCTestCase {
         }
     }
 
-    func testTenFamiliesPartitionEveryEffectExactlyOnce() {
+    func testFamiliesPartitionEveryEffectExactlyOnce() {
         let groups = WorkspaceAdjustableEffect.curatedCategoryEffectGroups
-        XCTAssertEqual(groups.count, 10)
+        XCTAssertEqual(groups.count, EffectCatalog.shelves.count)
         XCTAssertTrue(WorkspaceAdjustableEffect.repeatedCuratedCategoryEffects.isEmpty)
         let grouped = groups.flatMap(\.self)
         XCTAssertEqual(grouped.count, Set(grouped).count, "A curated effect appears in two families")
@@ -135,22 +138,96 @@ final class EffectCatalogTests: XCTestCase {
         }
     }
 
-    func testTenShelvesMatchTenFamiliesWithExpectedSizes() {
-        let expected: [(id: String, count: Int)] = [
-            ("color", 5),
-            ("time", 33),
-            ("motion", 12),
-            ("decay", 24),
-            ("signal", 17),
-            ("optics", 16),
-            ("form", 23),
-            ("shaders", 36),
-            ("audio", 17),
-            ("scope", 6),
-        ]
-        XCTAssertEqual(EffectCatalog.shelves.map(\.id), expected.map(\.id))
-        for (id, count) in expected {
-            XCTAssertEqual(EffectCatalog.effects(in: id).count, count, id)
+    func testConsolidatedCategoryMenuRetainsEveryShelf() {
+        let categories = WorkspaceDockCategory.browsable.filter(\.isShelf)
+        XCTAssertEqual(categories.map(\.rawValue), EffectCatalog.shelves.map(\.id))
+        XCTAssertTrue(categories.contains(.experimental))
+        XCTAssertTrue(categories.contains(.developer))
+        XCTAssertFalse(WorkspaceDockCategory.browsable.contains(.lidar))
+        for shelf in EffectCatalog.shelves {
+            XCTAssertFalse(shelf.effects.isEmpty, shelf.id)
+            XCTAssertEqual(shelf.effects.count, Set(shelf.effects).count, shelf.id)
         }
+    }
+
+    /// Families are named for what they contain. This locks in the split so a
+    /// future edit cannot quietly fold the moshes back into the sorts, or
+    /// leave the depth-named luma sorts filed as though they were LiDAR.
+    func testFamiliesAreNamedForTheirContentsAndSeparateRealDepth() {
+        let datamosh = EffectCatalog.effects(in: "datamosh")
+        XCTAssertEqual(Set(datamosh), [.datamosh, .liquidMosh, .heavyMosh])
+        // `canonicalEffects` collapses a variant onto its family's first entry and
+        // that entry supplies the caption. A variant filed under a different
+        // shelf than its canonical would therefore render the other shelf's
+        // name, so every effect's canonical representative must live in the
+        // same group it is filed under.
+        for group in WorkspaceAdjustableEffect.curatedCategoryEffectGroups {
+            for effect in group {
+                let canonical = EffectCatalog.canonical(effect)
+                XCTAssertTrue(
+                    group.contains(canonical),
+                    "\(effect.rawValue) canonicalises to \(canonical.rawValue), which is filed elsewhere"
+                )
+            }
+        }
+
+        let sort = Set(EffectCatalog.effects(in: "sort"))
+        for expected in [WorkspaceAdjustableEffect.sort, .depthSort, .objectSort, .radialSort] {
+            XCTAssertTrue(sort.contains(expected), expected.rawValue)
+        }
+        XCTAssertFalse(datamosh.contains(.sort), "A sort is not a mosh")
+
+        let history = Set(EffectCatalog.effects(in: "time"))
+        XCTAssertTrue(history.contains(.rollingTime))
+        XCTAssertTrue(history.contains(.frameHoldSmear))
+        XCTAssertTrue(Set(datamosh).isDisjoint(with: history))
+        XCTAssertTrue(Set(datamosh).isDisjoint(with: sort))
+
+        // Depth-named effects are luma/edge sorts, not scanner reads. They must
+        // never be presented as the real depth modes.
+        XCTAssertTrue(sort.contains(.depthSort))
+        XCTAssertTrue(sort.contains(.pointCloudSmear))
+        XCTAssertFalse(WorkspaceDockCategory.browsable.filter(\.isShelf).contains(.spatial))
+        XCTAssertTrue(WorkspaceDockCategory.spatial.displayLabel == "Depth")
+        XCTAssertFalse(WorkspaceDockCategory.spatial.isShelf, "Depth modes are not catalogue effects")
+
+        let labels = EffectCatalog.shelves.map(\.label)
+        XCTAssertEqual(labels, ["TONAL", "DATAMOSH", "SORT", "HISTORY", "MOTION", "DECAY",
+                                "ANALOG", "LENS", "GEOMETRY", "GENERATIVE", "SPECTRUM",
+                                "INSTRUMENTS", "SOLVERS", "RESEARCH"])
+    }
+
+    @MainActor
+    func testShippingShaderSamplesRenderDistinctImagesIncludingSimulationsAndHistory() throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal unavailable") }
+        let renderer = try XCTUnwrap(GVEffectSampleRenderer())
+        let reference = try XCTUnwrap(GVEffectThumbnailStore.makeReferenceStill())
+        var outputs = Set<Data>()
+        for effect in [WorkspaceAdjustableEffect.rgbSplit, .cmykPress, .spectralDiffraction,
+                       .kaleidoscope, .kaleido6, .cyberGrid, .feedback, .fluid, .reactionGarden] {
+            let sample = try XCTUnwrap(renderer.render(effect, over: reference), effect.rawValue)
+            XCTAssertEqual(sample.cgImage?.width, GVEffectThumbnailStore.side, effect.rawValue)
+            XCTAssertEqual(sample.cgImage?.height, GVEffectThumbnailStore.side, effect.rawValue)
+            let data = try XCTUnwrap(sample.pngData())
+            XCTAssertTrue(outputs.insert(data).inserted, "Duplicate preview: \(effect.rawValue)")
+        }
+    }
+
+    @MainActor
+    func testThumbnailCompletionPublishesAndRepeatedRequestsUseCache() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else { throw XCTSkip("Metal unavailable") }
+        let store = GVEffectThumbnailStore.shared
+        let effect = WorkspaceAdjustableEffect.cmykPress
+        let published = expectation(description: "thumbnail cache invalidates the browser")
+        let token = store.objectWillChange.sink { published.fulfill() }
+        if store.image(for: effect) == nil {
+            store.request(effect)
+            store.request(effect)
+            await fulfillment(of: [published], timeout: 15)
+        }
+        let image = try XCTUnwrap(store.image(for: effect))
+        store.request(effect)
+        XCTAssertTrue(store.image(for: effect) === image)
+        withExtendedLifetime(token) {}
     }
 }

@@ -17,8 +17,12 @@ final class CameraRuntime: ObservableObject {
     private let controller: CameraController
     private var activeConfiguration: CaptureConfiguration?
     private var torchPulseTask: Task<Void, Never>?
+    private var captureWatchdogTask: Task<Void, Never>?
     private var nativeStopContinuation: CheckedContinuation<Bool, Never>?
     private var nativeFinishedResult: Bool?
+    /// The library destination handed to the sensor writer, kept so a start that
+    /// never came up can be cleaned up.
+    private var nativeTakeURL: URL?
 
     var captureSession: AVCaptureSession {
         controller.captureSession
@@ -32,13 +36,17 @@ final class CameraRuntime: ObservableObject {
     @Published private(set) var screenshotMessage: String?
     @Published private(set) var isFrameFrozen = false
 
-    /// The most recent take this session wrote and saved. The timeline scrub
-    /// preview reads a frame out of this file. It is a session-lifetime value, not
-    /// a permanent library reference: a relaunch legitimately starts with none, and
-    /// the UI has to say so rather than show an empty well.
+    /// The most recent take this session wrote. The timeline scrub preview reads a
+    /// frame out of this file, and the take library can open it even after a Photos
+    /// export was refused or failed.
     @Published private(set) var lastCompletedTake: URL?
 
     let recordingMailbox = CameraRecordingMailbox()
+    /// Where the recording transaction hears the outcome of a finished take —
+    /// including one kept in the library because Photos refused it. A message
+    /// string cannot carry this: two identical outcomes in a row are not an
+    /// `onChange` event, and the second take would look like it never happened.
+    var takeOutcomeHandler: (@MainActor (Result<GVTake, any Error>) -> Void)?
     let screenshotMailbox = CameraScreenshotMailbox()
     /// One pending scrub-preview frame. A mailbox rather than a published value
     /// because the render thread and the main actor must not share observable state,
@@ -55,13 +63,6 @@ final class CameraRuntime: ObservableObject {
 
     var latestFrameMailbox: LatestCapturedFrameMailbox {
         controller.latestFrameMailbox
-    }
-
-    /// Recording is now delegated to GVRecordingTransaction.
-    /// This method is kept for any legacy callers but does nothing.
-    @available(*, deprecated, message: "Use GVRecordingTransaction.toggleRecording instead")
-    func toggleRecording() {
-        // No-op: recording is owned by GVRecordingTransaction
     }
 
     /// Records the take that just finished, for anything that has to read it back.
@@ -120,9 +121,18 @@ final class CameraRuntime: ObservableObject {
     /// demosaiced/effected frame is substituted into the RAW movie.
     func startNativeRAWRecording(codec: AVVideoCodecType) async -> Bool {
         nativeFinishedResult = nil
+        // The sensor writes this file itself, so it goes to the take library
+        // before recording starts rather than to tmp: a RAW take that survived
+        // only until the next purge was not a take the operator could find.
+        guard let outputURL = try? GVTakeArchive.shared.makeRecordingURL() else {
+            recordingMessage = "RECORD // TAKE LIBRARY UNAVAILABLE"
+            return false
+        }
+        nativeTakeURL = outputURL
         return await withCheckedContinuation { continuation in
             controller.startNativeRAWRecording(
                 codec: codec,
+                outputURL: outputURL,
                 onStarted: { [weak self] started in
                     Task { @MainActor in
                         guard let self else {
@@ -133,6 +143,9 @@ final class CameraRuntime: ObservableObject {
                             self.isRecording = true
                             self.recordingStartedAt = .now
                             self.recordingMessage = "RECORD // SENSOR RAW"
+                        } else if let stale = self.nativeTakeURL {
+                            try? FileManager.default.removeItem(at: stale)
+                            self.nativeTakeURL = nil
                         }
                         continuation.resume(returning: started)
                     }
@@ -160,29 +173,27 @@ final class CameraRuntime: ObservableObject {
     private func handleNativeRAWFinished(_ result: NativeCaptureResult) async {
         isRecording = false
         recordingStartedAt = nil
-        let saved: Bool
+        let filed: Bool
         switch result {
         case let .success(url):
-            saved = await withCheckedContinuation { continuation in
-                GVPhotoLibrary.saveVideo(at: url) { didSave in
-                    continuation.resume(returning: didSave)
-                }
-            }
-            // The sensor owns this file, so this is where the take becomes
-            // addressable for the session. A save Photos refused is not a take.
-            if saved {
-                noteCompletedTake(url)
-            }
-            recordingMessage = saved ? "RECORD // RAW SAVED TO PHOTOS" : "RECORD // RAW SAVE FAILED"
+            // Filing happens before the Photos verdict reaches the transaction,
+            // so a refused permission leaves a take in the library instead of
+            // deleting footage the sensor already captured.
+            let take = await fileCompletedTake(url, source: .raw)
+            nativeTakeURL = nil
+            filed = take != nil
         case let .failure(reason):
-            saved = false
+            if let nativeTakeURL { try? FileManager.default.removeItem(at: nativeTakeURL) }
+            nativeTakeURL = nil
+            filed = false
             recordingMessage = "RECORD // \(reason.uppercased())"
+            takeOutcomeHandler?(.failure(GVRecordingError.finishFailed(reason)))
         }
         if let continuation = nativeStopContinuation {
             nativeStopContinuation = nil
-            continuation.resume(returning: saved)
+            continuation.resume(returning: filed)
         } else {
-            nativeFinishedResult = saved
+            nativeFinishedResult = filed
         }
     }
 
@@ -194,48 +205,49 @@ final class CameraRuntime: ObservableObject {
         recordingMessage = "RECORD // \(reason.uppercased())"
     }
 
-    /// The workspace screenshot control: requests a capture of the next
-    /// rendered frame and exports the PNG to Photos when the GPU delivers it.
-    /// Captures the whole window, interface included.
+    /// The workspace capture control: asks the renderer for a photograph.
     ///
-    /// The renderer's own still path reads the Metal texture, which is the
-    /// camera and effects with no chrome over them. Snapshotting the window
-    /// composites the live layer together with the SwiftUI interface, so what
-    /// lands in Photos is what was on screen.
+    /// The renderer holds the effect chain at full sensor resolution while this
+    /// request is pending, re-renders it at that size, and resolves the chain
+    /// output — camera plus every armed effect, no HUD, no scanlines, no
+    /// letterbox — into a JPEG for Photos. What lands in the camera roll is the
+    /// frame the operator composed, not a picture of the screen showing it.
     func takeScreenshot() {
-        screenshotMessage = "SCREENSHOT // CAPTURING"
-        guard let window = Self.keyWindow else {
-            // No window to read: fall back to the clean render rather than
-            // failing outright.
-            screenshotMailbox.requestCapture()
-            return
-        }
-
-        let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
-        let image = renderer.image { _ in
-            // `afterScreenUpdates` is required for the Metal layer to be
-            // present; without it the camera reads back black.
-            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-        }
-        GVScreenCapture.save(image) { [weak self] message in
-            Task { @MainActor in self?.screenshotMessage = message }
-        }
+        screenshotMessage = "PHOTO // RENDERING AT SENSOR RESOLUTION"
+        screenshotMailbox.requestCapture()
+        armCaptureWatchdog()
     }
 
-    private static var keyWindow: UIWindow? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let activeScene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-        if #available(iOS 15.0, *) {
-            if let window = activeScene?.keyWindow {
-                return window
-            }
+    /// A shutter that is never serviced has to say so.
+    ///
+    /// The request lives in a mailbox that only the render loop drains, so
+    /// every failure mode that is not a Metal failure — the surface fell back
+    /// to a non-Metal preview, the view left the hierarchy, the renderer is
+    /// paused — looks identical from here: a button that flashes and no
+    /// photograph. Left alone that is the worst possible outcome, because
+    /// nothing on screen distinguishes it from a capture in progress.
+    ///
+    /// The renderer overwrites this the moment it takes the frame, and again
+    /// when the save resolves, so the watchdog only ever fires when nobody
+    /// else has spoken.
+    private func armCaptureWatchdog() {
+        captureWatchdogTask?.cancel()
+        captureWatchdogTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled, let self else { return }
+            guard self.screenshotMessage == "PHOTO // RENDERING AT SENSOR RESOLUTION" else { return }
+            self.screenshotMessage = "PHOTO // RENDERER DID NOT RESPOND"
         }
-        return activeScene?.windows.first { $0.isKeyWindow }
     }
 
     /// Called by the renderer when the capture is saved or failed.
     func setScreenshotMessage(_ message: String) {
         screenshotMessage = message
+        // Any word from the renderer means the request was serviced, so the
+        // watchdog has nothing left to say.
+        if message != "PHOTO // RENDERING AT SENSOR RESOLUTION" {
+            captureWatchdogTask?.cancel()
+        }
     }
 
     var deviceTelemetryMailbox: CameraDeviceTelemetryMailbox {
@@ -259,8 +271,32 @@ final class CameraRuntime: ObservableObject {
         // has nothing to open after a normal recording.
         recordingMailbox.setTakeSavedHandler { [weak self] url in
             Task { @MainActor [weak self] in
-                self?.noteCompletedTake(url)
+                await self?.fileCompletedTake(url, source: .camera)
             }
+        }
+    }
+
+    /// Files a finished movie in the take library, then attempts the Photos
+    /// export. The library write comes first: a take that cannot be exported is
+    /// still a take, and an export that never runs because the app was killed in
+    /// between leaves a pending record the library can retry.
+    @discardableResult
+    private func fileCompletedTake(_ url: URL, source: GVTake.Source) async -> GVTake? {
+        noteCompletedTake(url)
+        recordingMessage = "RECORD // FILING TAKE"
+        do {
+            let take = try await GVTakeArchive.shared.completeRecording(at: url, source: source, exporter: GVSystemPhotosExporter())
+            recordingMessage = take.completionMessage
+            takeOutcomeHandler?(.success(take))
+            if take.photosStatus == .failed, let reason = take.photosError {
+                GVLog.recording.error("Photos export failed for take \(take.id, privacy: .public): \(reason, privacy: .public)")
+            }
+            return take
+        } catch {
+            recordingMessage = "RECORD // TAKE COULD NOT BE FILED"
+            takeOutcomeHandler?(.failure(error))
+            GVLog.recording.error("Take filing failed: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
@@ -293,6 +329,13 @@ final class CameraRuntime: ObservableObject {
                 isRequestedVideoCodecAvailable: false,
                 codecAvailabilityReason: "SIMULATOR CANNOT VERIFY HARDWARE CODECS",
                 isSynthetic: true,
+                // The synthetic source claims a real sensor format rather than
+                // mirroring the viewfinder. Deriving its size from the drawable
+                // meant the simulator could never demonstrate anything that
+                // depends on source resolution — including a photograph taken
+                // at sensor resolution, which came out the same size as the
+                // screen it was taken from.
+                sourceDimensions: configuration.dimensions,
                 hdrEnabled: false,
                 zoom: 1,
                 minimumZoom: 1,
@@ -524,6 +567,7 @@ final class CameraRuntime: ObservableObject {
             isRequestedVideoCodecAvailable: codecAvailable,
             codecAvailabilityReason: codecAvailable ? nil : "ACTIVE FORMAT DOES NOT ADVERTISE \(info.requestedVideoCodec.rawValue)",
             isSynthetic: false,
+            sourceDimensions: info.dimensions,
             hdrEnabled: info.hdrEnabled,
             zoom: 1,
             minimumZoom: info.minimumZoom,

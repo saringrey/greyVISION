@@ -3,7 +3,7 @@ import Foundation
 /// Discovery metadata only. Render identity and saved parameters always use
 /// the original effect, including variants hidden behind a family card.
 enum EffectCatalog {
-    struct Shelf {
+    struct Shelf: Sendable {
         let id: String
         let label: String
         let effects: [WorkspaceAdjustableEffect]
@@ -72,23 +72,44 @@ enum EffectCatalog {
 
     /// These are the phone's existing visible shelves. The desktop consumes
     /// the same arrays instead of reconstructing an older category taxonomy.
-    static var shelves: [Shelf] {
-        [
-            Shelf(id: "color", label: "COLOR", effects: canonicalEffects(WorkspaceAdjustableEffect.colorCategoryEffects)),
-            Shelf(id: "time", label: "TIME", effects: canonicalEffects(WorkspaceAdjustableEffect.timeCategoryEffects)),
-            Shelf(id: "motion", label: "MOTION", effects: canonicalEffects(WorkspaceAdjustableEffect.motionCategoryEffects)),
-            Shelf(id: "decay", label: "DECAY", effects: canonicalEffects(WorkspaceAdjustableEffect.decayCategoryEffects)),
-            Shelf(id: "signal", label: "SIGNAL", effects: canonicalEffects(WorkspaceAdjustableEffect.signalCategoryEffects)),
-            Shelf(id: "optics", label: "OPTICS", effects: canonicalEffects(WorkspaceAdjustableEffect.opticsCategoryEffects)),
-            Shelf(id: "form", label: "FORM", effects: canonicalEffects(WorkspaceAdjustableEffect.formCategoryEffects)),
-            Shelf(id: "shaders", label: "SHADERS", effects: canonicalEffects(WorkspaceAdjustableEffect.shaderCategoryEffects)),
-            Shelf(id: "audio", label: "AUDIO", effects: canonicalEffects(WorkspaceAdjustableEffect.audioCategoryEffects)),
-            Shelf(id: "scope", label: "SCOPE", effects: canonicalEffects(WorkspaceAdjustableEffect.scopeCategoryEffects))
-        ]
-    }
+    ///
+    /// Built exactly once. The browser asks for this on every body pass — and
+    /// `isShelf` asks for a *single* shelf, which used to rebuild all fourteen
+    /// (each running `canonicalEffects`: a `Set`, a `map` and a `filter`).
+    /// Fourteen of those per body pass meant hundreds of throwaway
+    /// allocations per redraw for a list that can never change at runtime.
+    ///
+    /// Safe to share across actors because it is `Sendable` and derived purely
+    /// from frozen `static let` category lists — written once during
+    /// initialisation, read-only afterwards.
+    static let shelves: [Shelf] = [
+        Shelf(id: "color", label: "TONAL", effects: canonicalEffects(WorkspaceAdjustableEffect.colorCategoryEffects)),
+        Shelf(id: "datamosh", label: "DATAMOSH", effects: canonicalEffects(WorkspaceAdjustableEffect.datamoshCategoryEffects)),
+        Shelf(id: "sort", label: "SORT", effects: canonicalEffects(WorkspaceAdjustableEffect.sortCategoryEffects)),
+        Shelf(id: "time", label: "HISTORY", effects: canonicalEffects(WorkspaceAdjustableEffect.timeCategoryEffects)),
+        Shelf(id: "motion", label: "MOTION", effects: canonicalEffects(WorkspaceAdjustableEffect.motionCategoryEffects)),
+        Shelf(id: "decay", label: "DECAY", effects: canonicalEffects(WorkspaceAdjustableEffect.decayCategoryEffects)),
+        Shelf(id: "signal", label: "ANALOG", effects: canonicalEffects(WorkspaceAdjustableEffect.signalCategoryEffects)),
+        Shelf(id: "optics", label: "LENS", effects: canonicalEffects(WorkspaceAdjustableEffect.opticsCategoryEffects)),
+        Shelf(id: "form", label: "GEOMETRY", effects: canonicalEffects(WorkspaceAdjustableEffect.formCategoryEffects)),
+        Shelf(id: "shaders", label: "GENERATIVE", effects: canonicalEffects(WorkspaceAdjustableEffect.shaderCategoryEffects)),
+        Shelf(id: "audio", label: "SPECTRUM", effects: canonicalEffects(WorkspaceAdjustableEffect.audioCategoryEffects)),
+        Shelf(id: "scope", label: "INSTRUMENTS", effects: canonicalEffects(WorkspaceAdjustableEffect.scopeCategoryEffects)),
+        Shelf(id: "experimental", label: "SOLVERS", effects: canonicalEffects(WorkspaceAdjustableEffect.experimentalCategoryEffects)),
+        Shelf(id: "developer", label: "RESEARCH", effects: canonicalEffects(WorkspaceAdjustableEffect.developerCategoryEffects))
+    ]
+
+    /// Shelf id to effect list, for the single-shelf lookups that dominated
+    /// the old hot path. Avoids a linear scan plus a rebuild on every call.
+    private static let shelfIndex: [String: [WorkspaceAdjustableEffect]] = {
+        var index: [String: [WorkspaceAdjustableEffect]] = [:]
+        index.reserveCapacity(shelves.count)
+        for shelf in shelves { index[shelf.id] = shelf.effects }
+        return index
+    }()
 
     static func effects(in shelfID: String) -> [WorkspaceAdjustableEffect] {
-        shelves.first { $0.id == shelfID }?.effects ?? []
+        shelfIndex[shelfID] ?? []
     }
 
     static func aliases(for effect: WorkspaceAdjustableEffect) -> [String] {
@@ -125,54 +146,5 @@ enum EffectCatalog {
         }
         var seen = Set<WorkspaceAdjustableEffect>()
         return ranked.filter { seen.insert(canonical($0)).inserted }
-    }
-
-    /// Restrict incumbent radial groups to the same curated shelf and append
-    /// new entries in bounded groups so a new effect never becomes rail-only.
-    static func radialSubcategories(title: String, effects: [WorkspaceAdjustableEffect]) -> [GVRadialSubcategory] {
-        let available = Set(effects)
-        var seen = Set<WorkspaceAdjustableEffect>()
-        var groups = (WorkspaceAdjustableEffect.curatedRadialSubcategories(for: title) ?? []).compactMap { group -> GVRadialSubcategory? in
-            let members = group.effects.flatMap(variants).filter { available.contains($0) && seen.insert($0).inserted }
-            guard !members.isEmpty else { return nil }
-            return GVRadialSubcategory(title: group.title, hue: group.hue, glyph: group.glyph, effects: members)
-        }
-        let remaining = effects.filter { seen.insert($0).inserted }
-        guard !groups.isEmpty || remaining.count > 8 else { return [] }
-        for start in stride(from: 0, to: remaining.count, by: 6) {
-            groups.append(GVRadialSubcategory(
-                title: start == 0 ? "MORE" : "MORE \(start / 6 + 1)",
-                hue: .sand,
-                glyph: .frame,
-                effects: Array(remaining[start ..< min(start + 6, remaining.count)])
-            ))
-        }
-        // Push-through contract: one gesture across 2-6 large wedges.
-        // Curated groups stay as-is; only overflow beyond 6 wedges merges
-        // the smallest groups into bounded MORE chunks of 6.
-        if groups.count > 6 {
-            let ranked = groups.indices.sorted { groups[$0].effects.count > groups[$1].effects.count }
-            var keepCount = 5
-            while keepCount > 0 {
-                let overflowCount = ranked.dropFirst(keepCount).reduce(0) { $0 + groups[$1].effects.count }
-                if keepCount + (overflowCount + 5) / 6 <= 6 { break }
-                keepCount -= 1
-            }
-            let kept = Set(ranked.prefix(keepCount))
-            let overflow = ranked.dropFirst(keepCount).sorted().flatMap { groups[$0].effects }
-            var capped = groups.indices.filter { kept.contains($0) }.map { groups[$0] }
-            var moreIndex = 0
-            for start in stride(from: 0, to: overflow.count, by: 6) {
-                moreIndex += 1
-                capped.append(GVRadialSubcategory(
-                    title: moreIndex == 1 ? "MORE" : "MORE \(moreIndex)",
-                    hue: .sand,
-                    glyph: .frame,
-                    effects: Array(overflow[start ..< min(start + 6, overflow.count)])
-                ))
-            }
-            groups = capped
-        }
-        return groups
     }
 }

@@ -41,45 +41,6 @@ private final class GVWriterBox: @unchecked Sendable {
     }
 }
 
-/// A one-shot request for a processed still.
-final class GVStillRequestMailbox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var isRequested = false
-    private var handler: (@Sendable (CGImage?) -> Void)?
-
-    func request(_ handler: @escaping @Sendable (CGImage?) -> Void) {
-        lock.withLock {
-            isRequested = true
-            self.handler = handler
-        }
-    }
-
-    /// Consuming clears the flag so a single tap captures exactly one frame.
-    func consume() -> Bool {
-        lock.withLock {
-            let requested = isRequested
-            isRequested = false
-            return requested
-        }
-    }
-
-    func deliver(_ image: CGImage?) {
-        let handler = lock.withLock {
-            let stored = self.handler
-            self.handler = nil
-            return stored
-        }
-        handler?(image)
-    }
-
-    func cancel() {
-        lock.withLock {
-            isRequested = false
-            handler = nil
-        }
-    }
-}
-
 /// Writes processed frames to a QuickTime file.
 ///
 /// Frames arrive already encoded to display-referred BGRA in a pixel buffer
@@ -361,29 +322,6 @@ final class GVVideoRecorder: @unchecked Sendable {
 
 /// Photos access, isolated so the renderer never touches PhotoKit directly.
 enum GVPhotoLibrary {
-    static func saveImage(_ image: CGImage, completion: @escaping @Sendable (Bool) -> Void) {
-        requestAddAccess { granted in
-            guard granted else {
-                completion(false)
-                return
-            }
-            let data = UIImage(cgImage: image).pngData()
-            guard let data else {
-                completion(false)
-                return
-            }
-            PHPhotoLibrary.shared().performChanges {
-                let request = PHAssetCreationRequest.forAsset()
-                request.addResource(with: .photo, data: data, options: nil)
-            } completionHandler: { saved, error in
-                if let error {
-                    GVLog.rendering.error("Still save failed: \(error.localizedDescription, privacy: .public)")
-                }
-                completion(saved)
-            }
-        }
-    }
-
     static func saveVideo(at url: URL, completion: @escaping @Sendable (Bool) -> Void) {
         requestAddAccess { granted in
             guard granted else {

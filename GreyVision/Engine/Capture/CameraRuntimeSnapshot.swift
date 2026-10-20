@@ -32,6 +32,13 @@ struct CameraRuntimeSnapshot: Sendable, Equatable {
     var isRequestedVideoCodecAvailable: Bool
     var codecAvailabilityReason: String?
     var isSynthetic: Bool
+    /// The source's own frame size, before any preview scaling.
+    ///
+    /// The HUD already prints this as `formatLabel`; the renderer needs it as
+    /// numbers, because "sensor resolution" is only a claim until something
+    /// allocates a texture this big. Nil on a source that has not negotiated a
+    /// format yet, which is every state before `running`.
+    var sourceDimensions: CaptureDimensions? = nil
     var hdrEnabled: Bool
     var zoom: Double
     var minimumZoom: Double

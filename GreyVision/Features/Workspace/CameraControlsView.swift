@@ -20,6 +20,7 @@ struct CameraControlsView: View {
     /// Same latch the workspace toolbar writes through, so arming audio here
     /// is not undone by the next composition edit.
     @EnvironmentObject private var audioArmPolicy: GVAudioArmPolicy
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var format: CaptureSetupDraft.Resolution = .ultraHD
     @State private var aspect: CaptureSetupDraft.AspectRatio = .native
@@ -255,7 +256,7 @@ struct CameraControlsView: View {
         .buttonStyle(GVGlassToolButtonStyle(active: active, tint: tint ?? .white))
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.34)
-        .animation(GVMotion.micro, value: active)
+        .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: active)
         .accessibilityLabel(label)
         .accessibilityValue(active ? "active" : "inactive")
     }
@@ -271,7 +272,7 @@ private struct GVGlassToolButtonStyle: ButtonStyle {
         configuration.label
             .gvGlassChip(radius: 12, active: active || configuration.isPressed, tint: tint)
             .frame(maxWidth: .infinity, minHeight: 46)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
             .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 }

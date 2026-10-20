@@ -18,33 +18,33 @@ struct GVTimelineBar: View {
     @State private var pulse: Bool = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: GVMetrics.gap) {
             playButton
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: GVMetrics.gapHair) {
                 Text(player.activeTimeline?.name ?? player.selectedTimeline?.name ?? "NO TIMELINE")
-                    .font(.system(size: 11, weight: .black))
+                    .font(GVTheme.font(.control, scale: 0.6875))
                     .tracking(0.8)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(GVTheme.bone)
                     .lineLimit(1)
 
-                HStack(spacing: 6) {
+                HStack(spacing: GVMetrics.gapTight) {
                     Text(timecode)
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(player.isPlaying ? Color.white : .white.opacity(0.55))
+                        .font(GVTheme.font(.diagnostic, scale: 1.0588))
+                        .foregroundStyle(player.isPlaying ? GVTheme.bone : GVTheme.ash)
                     if let timeline = player.activeTimeline ?? player.selectedTimeline {
                         Text("/ \(formatDuration(timeline.duration))")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.4))
+                            .font(GVTheme.font(.diagnostic, scale: 1.0588))
+                            .foregroundStyle(GVTheme.ash.opacity(0.7))
                     }
                     // The viewfinder is showing recorded content while scrubbing, and
                     // it has to say so: this instrument also has a real freeze
                     // control, and the two must not be confusable.
                     if cameraRuntime.isShowingTakePreview {
                         Text("SCRUB")
-                            .font(.system(size: 9, weight: .black, design: .monospaced))
+                            .font(GVTheme.font(.diagnostic, scale: 1.0588))
                             .tracking(0.6)
-                            .foregroundStyle(.white.opacity(0.75))
+                            .foregroundStyle(GVTheme.bone.opacity(0.75))
                             .accessibilityLabel("Showing a frame from the recorded take")
                     }
                 }
@@ -57,14 +57,14 @@ struct GVTimelineBar: View {
             pickButton
             saveButton
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, GVMetrics.screenInset)
+        .padding(.vertical, GVMetrics.gapTight)
         .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.black.opacity(0.42))
+            RoundedRectangle(cornerRadius: GVMetrics.radiusPanel, style: .continuous)
+                .fill(GVTheme.surfaceSecondary)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(.white.opacity(player.isPlaying ? 0.65 : 0.18), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: GVMetrics.radiusPanel, style: .continuous)
+                        .strokeBorder(GVTheme.violet.opacity(player.isPlaying ? 0.65 : 0.18), lineWidth: GVMetrics.hairline)
                 }
         }
         .scaleEffect(pulse ? 1.02 : 1)
@@ -84,14 +84,15 @@ struct GVTimelineBar: View {
             player.toggle()
         } label: {
             Image(systemName: player.isPlaying ? "stop.fill" : "play.fill")
-                .font(.system(size: 14, weight: .black))
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
+                .font(.system(size: GVMetrics.textValue * 1.217, weight: .black))
+                .foregroundStyle(GVTheme.bone)
+                .frame(width: GVMetrics.controlHeight - 8, height: GVMetrics.controlHeight - 8)
                 .background {
-                    Circle().fill(player.isPlaying ? Color.red.opacity(0.65) : Color.white.opacity(0.18))
+                    Circle().fill(player.isPlaying ? GVTheme.record.opacity(0.65) : GVTheme.bone.opacity(0.18))
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVPressStyle())
+        .contentShape(Rectangle())
         .accessibilityLabel(player.isPlaying ? "Stop timeline" : "Play timeline")
         .accessibilityIdentifier("workspace.timeline.play")
     }
@@ -101,16 +102,17 @@ struct GVTimelineBar: View {
             player.mode = nextMode(after: player.mode)
         } label: {
             Text(player.mode.rawValue.uppercased())
-                .font(.system(size: 9, weight: .black))
+                .font(GVTheme.font(.diagnostic, scale: 1.0588))
                 .tracking(0.6)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .frame(height: 24)
+                .foregroundStyle(GVTheme.bone)
+                .padding(.horizontal, GVMetrics.gapTight)
+                .frame(height: GVMetrics.controlHeight - 16)
                 .background {
-                    Capsule().fill(.white.opacity(0.10))
+                    Capsule().fill(GVTheme.bone.opacity(0.10))
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVPressStyle())
+        .contentShape(Rectangle())
         .accessibilityLabel("Mode \(player.mode.rawValue)")
         .accessibilityIdentifier("workspace.timeline.mode")
     }
@@ -118,15 +120,16 @@ struct GVTimelineBar: View {
     private var pickButton: some View {
         Button(action: onPickTimeline) {
             Image(systemName: "rectangle.stack.fill")
-                .font(.system(size: 12, weight: .black))
-                .foregroundStyle(.white)
-                .frame(width: 28, height: 28)
+                .font(.system(size: GVMetrics.textValue * 1.043, weight: .black))
+                .foregroundStyle(GVTheme.bone)
+                .frame(width: GVMetrics.controlHeight - 12, height: GVMetrics.controlHeight - 12)
                 .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(.white.opacity(0.10))
+                    RoundedRectangle(cornerRadius: GVMetrics.radiusTight, style: .continuous)
+                        .fill(GVTheme.bone.opacity(0.10))
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVPressStyle())
+        .contentShape(Rectangle())
         .accessibilityLabel("Pick timeline")
         .accessibilityIdentifier("workspace.timeline.pick")
     }
@@ -134,15 +137,16 @@ struct GVTimelineBar: View {
     private var saveButton: some View {
         Button(action: onSaveTimeline) {
             Image(systemName: "tray.and.arrow.down.fill")
-                .font(.system(size: 12, weight: .black))
-                .foregroundStyle(.white)
-                .frame(width: 28, height: 28)
+                .font(.system(size: GVMetrics.textValue * 1.043, weight: .black))
+                .foregroundStyle(GVTheme.bone)
+                .frame(width: GVMetrics.controlHeight - 12, height: GVMetrics.controlHeight - 12)
                 .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(.white.opacity(0.10))
+                    RoundedRectangle(cornerRadius: GVMetrics.radiusTight, style: .continuous)
+                        .fill(GVTheme.bone.opacity(0.10))
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVPressStyle())
+        .contentShape(Rectangle())
         .accessibilityLabel("Save current composition as timeline")
         .accessibilityIdentifier("workspace.timeline.save")
     }
@@ -158,18 +162,18 @@ struct GVTimelineBar: View {
         return GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(.white.opacity(0.14))
-                    .frame(height: 8)
+                    .fill(GVTheme.bone.opacity(0.14))
+                    .frame(height: GVMetrics.hairline * 2)
                 Capsule()
-                    .fill(.white.opacity(duration > 0 ? 0.5 : 0.14))
-                    .frame(width: max(0, proxy.size.width * fraction), height: 8)
+                    .fill(GVTheme.bone.opacity(duration > 0 ? 0.5 : 0.14))
+                    .frame(width: max(0, proxy.size.width * fraction), height: GVMetrics.hairline * 2)
                 // A rule with no handle reads as progress that has stalled, not as
                 // something to grab.
                 if duration > 0 {
                     Circle()
-                        .fill(.white)
-                        .frame(width: 8, height: 8)
-                        .offset(x: max(0, proxy.size.width * fraction - 4))
+                        .fill(GVTheme.bone)
+                        .frame(width: GVMetrics.hairline * 2, height: GVMetrics.hairline * 2)
+                        .offset(x: max(0, proxy.size.width * fraction - GVMetrics.hairline))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -183,9 +187,9 @@ struct GVTimelineBar: View {
                     }
             )
         }
-        // The rule is 8pt; the hit area is 22. Nothing here was meant to be hit at
-        // its drawn size.
-        .frame(maxWidth: .infinity, minHeight: 22)
+        // The rule is 8pt; the hit area is 22 (GVMetrics.touchTarget - 22 padding).
+        // Nothing here was meant to be hit at its drawn size.
+        .frame(maxWidth: .infinity, minHeight: GVMetrics.touchTarget - 22)
         .accessibilityRepresentation {
             Slider(value: scrubBinding, in: 0 ... max(duration, 0.01), step: 0.05)
         }

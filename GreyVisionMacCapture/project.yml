@@ -23,6 +23,13 @@ targets:
         group: Shared
       - path: ../GreyVision/Engine/Broadcast/GVBroadcastControlSurface.swift
         group: Shared
+      # The TLS key derivation, for the same reason. This app used to keep its
+      # own copy, and that copy ignored the passcode it was handed and derived
+      # the key from a literal — so the two sides "matched" on a key that was in
+      # everyone's binary, while the camera extension used the real code and
+      # could never connect to either.
+      - path: ../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
+        group: Shared
     info:
       path: Resources/Info.plist
       # XcodeGen owns this plist and rewrites it on every generate, so these

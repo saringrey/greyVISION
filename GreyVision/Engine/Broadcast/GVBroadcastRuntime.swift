@@ -17,6 +17,11 @@ final class GVBroadcastRuntime: ObservableObject {
 
     private let engine = GVBroadcastEngine()
     private var statsTimer: Timer?
+    /// The pairing code this phone shows the user. The Mac apps derive the
+    /// link's pre-shared key from whatever is typed into them, so this is the
+    /// only thing standing between a live camera feed and anyone else on the
+    /// network. See `GVBroadcastKeyMaterial`.
+    private let pairing = GVBroadcastPairingStore()
 
     /// Translates desktop commands into composition changes and publishes the
     /// result back. Owned here because it has to outlive any one presentation
@@ -69,11 +74,27 @@ final class GVBroadcastRuntime: ObservableObject {
 
     func start() {
         guard !isArmed else { return }
-        engine.start(
-            serviceName: serviceName,
-            passcode: GVBroadcastProtocol.automaticPairingSecret
-        )
+        engine.start(serviceName: serviceName, pairingCode: pairing.code)
         startPolling()
+    }
+
+    /// The code to read off this phone and type into the Mac app.
+    var pairingCode: String { pairing.code }
+
+    /// Whether this phone has a code a Mac could already be holding.
+    var hasPairingCode: Bool { pairing.hasStoredCode }
+
+    /// Rolls the code. Anything paired with the old one stops connecting,
+    /// which is what the user wants after a code has been seen by someone it
+    /// should not have been.
+    func regeneratePairingCode() {
+        _ = pairing.regenerate()
+        // A Mac already attached was authenticated under the old code, so it
+        // has to re-handshake to stay attached.
+        if isArmed {
+            stop()
+            start()
+        }
     }
 
     func stop() {

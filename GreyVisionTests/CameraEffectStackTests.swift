@@ -162,9 +162,10 @@ final class CameraEffectStackTests: XCTestCase {
     }
 
     /// The camera path reaches the runtime through the recording mailbox, which
-    /// already outlives the renderer that finishes the take. One installed handler
-    /// fires once: it is cleared on the way out, so a repeated report cannot make
-    /// the timeline note the same movie twice.
+    /// already outlives the renderer that finishes the take. The handler stays
+    /// installed for the life of the runtime — clearing it after one report left
+    /// every later take unnoted — and reports are deduplicated by movie URL, so a
+    /// repeated report cannot make the timeline note the same take twice.
     func testRecordingMailboxReportsASavedTakeOnce() {
         let mailbox = CameraRecordingMailbox()
         let seen = GVSavedTakeCollector()

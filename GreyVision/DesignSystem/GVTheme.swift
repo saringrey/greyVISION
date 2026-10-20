@@ -198,33 +198,3 @@ enum GVTheme {
             .width(.condensed)
     }
 }
-
-extension GVTheme {
-    /// Identity hues for radial-menu subcategories.
-    ///
-    /// The core palette is deliberately tiny; these are different in kind —
-    /// they identify *which* subcategory is under the finger inside a
-    /// transient menu, so a dozen hues are the point rather than a violation.
-    /// All are tuned to sit on the black field without reading as state
-    /// colours: none of them equals acid/record/warn.
-    enum RadialHue {
-        case magenta, cyan, amber, lime, rose, teal, ember, sky, moss, plum, sand, azure
-
-        var color: Color {
-            switch self {
-            case .magenta: Color(red: 1.00, green: 0.30, blue: 0.78)
-            case .cyan: Color(red: 0.12, green: 0.96, blue: 1.00)
-            case .amber: Color(red: 1.00, green: 0.72, blue: 0.18)
-            case .lime: Color(red: 0.64, green: 1.00, blue: 0.12)
-            case .rose: Color(red: 1.00, green: 0.38, blue: 0.42)
-            case .teal: Color(red: 0.14, green: 0.86, blue: 0.66)
-            case .ember: Color(red: 1.00, green: 0.44, blue: 0.14)
-            case .sky: Color(red: 0.36, green: 0.62, blue: 1.00)
-            case .moss: Color(red: 0.62, green: 0.92, blue: 0.42)
-            case .plum: Color(red: 0.76, green: 0.42, blue: 1.00)
-            case .sand: Color(red: 0.92, green: 0.86, blue: 0.56)
-            case .azure: Color(red: 0.44, green: 0.80, blue: 1.00)
-            }
-        }
-    }
-}

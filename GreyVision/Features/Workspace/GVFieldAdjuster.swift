@@ -139,7 +139,7 @@ private extension GVFieldAdjuster {
                 .frame(height: GVMetrics.touchTarget)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVPressStyle())
         .accessibilityIdentifier("workspace.field.\(field.rawValue).auto")
         .accessibilityLabel("Restore auto exposure")
     }
@@ -228,7 +228,7 @@ private extension GVFieldAdjuster {
                 .overlay { stardustBorder(isPressed: configuration.isPressed) }
                 .clipShape(RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: GVMetrics.radiusTight * scale, style: .continuous))
-                .scaleEffect(configuration.isPressed ? 0.96 : 1)
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
                 .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
         }
 
@@ -284,45 +284,6 @@ private extension GVFieldAdjuster {
         onNotice("\(field.controlLabel): \(option.label) · Reconfiguring")
         appModel.restartEngine()
         hud.clearField()
-    }
-}
-
-/// A quiet white shimmer behind the codec chooser. It traverses slowly and
-/// never changes the tray's black base color; only the edge and a narrow band
-/// of reflected light move.
-private struct GVCodecTrayGlimmer: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 30, paused: reduceMotion)) { timeline in
-            GeometryReader { geometry in
-                let width = max(geometry.size.width, 1)
-                let period = 7.5
-                let phase = reduceMotion
-                    ? 0.42
-                    : timeline.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: period) / period
-                let x = -width * 0.35 + CGFloat(phase) * width * 1.7
-
-                LinearGradient(
-                    colors: [
-                        .clear,
-                        .white.opacity(0.008),
-                        .white.opacity(0.045),
-                        .white.opacity(0.012),
-                        .clear
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: max(72, width * 0.24), height: geometry.size.height * 1.8)
-                .rotationEffect(.degrees(-12))
-                .blur(radius: 5)
-                .offset(x: x, y: -geometry.size.height * 0.4)
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 

@@ -33,6 +33,10 @@ struct WorkspaceView: View {
     @StateObject private var controlLock = ControlLockManager()
     @StateObject private var beforeAfter = BeforeAfterManager()
     @State private var showControlLockSheet = false
+    /// The Mac-link pairing code. Opened from the broadcast button's long
+    /// press rather than the tap, because tapping still means "turn the link
+    /// on" and the code only needs reading once per Mac.
+    @State private var showPairingSheet = false
 
     /// Shared cadence anchor for every 4 Hz telemetry consumer (status line,
     /// both scrims). One start instant means their periodic timers fire in
@@ -60,14 +64,20 @@ struct WorkspaceView: View {
 
     @StateObject private var presetStore = GVPresetStore.shared
     @State private var presetsPresented = false
+    /// The take library and the timeline picker, opened from the dock's
+    /// collection chips.
+    @State private var takesPresented = false
+    @State private var timelinePresented = false
+    @StateObject private var timelineStore = GVTimelineStore.shared
+    /// Self-timer for the shutter. Session state only — the delay itself is a
+    /// preference, the countdown is not.
+    @State private var countdown = GVCaptureCountdown()
     @State private var coachPresented = false
 
     // MARK: Timeline (GOD MODE)
 
     @StateObject private var timelinePlayer = GVTimelinePlayer()
     @StateObject private var beatDetector = GVBeatDetector()
-    @StateObject private var radialCoordinator = GVRadialMenuCoordinator()
-    @State private var isPreviewHoldActive = false
     /// Owns when the microphone is allowed to stay open, and when the display
     /// is allowed to stay awake. See `GVPowerPolicy`.
     @State private var audioArmPolicy = GVAudioArmPolicy()
@@ -93,11 +103,59 @@ struct WorkspaceView: View {
     private var rgbSplitParameters: RGBSplitEffectParameters { effectEditor.renderedRGBSplitParameters }
     private var effectStack: CameraEffectStackParameters { effectEditor.renderedEffectStack }
 
+    /// One of the collection plates is up.
+    private var collectionPlatePresented: Bool {
+        presetsPresented || takesPresented || timelinePresented
+    }
+
     /// The effect browser is away when chrome is hidden, when it has been
-    /// collapsed on its own, or during a take unless the operator has just
-    /// tapped the preview to bring it back.
+    /// collapsed on its own, when a collection plate has taken its space, or
+    /// during a take unless the operator has just tapped the preview to bring
+    /// it back.
     private var isDeckCollapsed: Bool {
-        isChromeHidden || isFXCollapsed || (isTakeLive && !hud.isChromeRevealed)
+        isChromeHidden || isFXCollapsed || collectionPlatePresented || (isTakeLive && !hud.isChromeRevealed)
+    }
+
+    private func dismissCollectionPlates() {
+        withAnimation(GVMotion.resolved(GVMotion.collapse, reduceMotion: reduceMotion)) {
+            presetsPresented = false
+            takesPresented = false
+            timelinePresented = false
+        }
+    }
+
+    /// The plate the rail is currently showing, if any.
+    private var activeCollectionPlate: GVCollectionPlate? {
+        if presetsPresented { return .recipes }
+        if takesPresented { return .takes }
+        if timelinePresented { return .timeline }
+        return nil
+    }
+
+    /// One plate at a time, and the chip that is up closes it again — the rail
+    /// stays on screen while a plate is open, so it is the way back out.
+    private func toggleCollectionPlate(_ plate: GVCollectionPlate) {
+        if activeCollectionPlate == plate {
+            dismissCollectionPlates()
+        } else {
+            openCollectionPlate(plate)
+        }
+    }
+
+    /// A plate arriving has to be read; one leaving does not. So it tears open
+    /// on the slower token and collapses shut on the faster one.
+    private func openCollectionPlate(_ plate: GVCollectionPlate) {
+        withAnimation(GVMotion.resolved(GVMotion.tear, reduceMotion: reduceMotion)) {
+            presetsPresented = plate == .recipes
+            takesPresented = plate == .takes
+            timelinePresented = plate == .timeline
+        }
+    }
+
+    /// The dock leaves the screen entirely only when the chrome is away. A
+    /// collection plate takes the browser's room, not the rail's.
+    private var dockRemoved: Bool {
+        isChromeHidden || (isTakeLive && !hud.isChromeRevealed)
     }
 
     /// Screen recording that keeps the instrument in frame. The render-target
@@ -128,6 +186,16 @@ struct WorkspaceView: View {
                 geometry.size.height * (isLandscape ? 0.38 : 0.48),
                 max(44, geometry.size.height - dockMaxHeight - fixedChromeHeight)
             )
+            // A collection plate replaces the effect browser, so it gets the
+            // browser's room — but it is capped rather than left to its own
+            // ideal height. An uncapped plate grew past the top HUD, and the
+            // controls stacked at its top ended up under the status row. The
+            // rail (118pt: two rows plus the dock's own padding) stays up,
+            // because it is what closes the plate again.
+            let collectionPlateMaxHeight = min(
+                geometry.size.height * 0.44,
+                max(96, geometry.size.height - fixedChromeHeight - 118)
+            )
 
             ZStack {
                 GVTheme.void.ignoresSafeArea()
@@ -135,13 +203,11 @@ struct WorkspaceView: View {
                 viewport
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
-                    .gesture(previewRadialGesture)
                     // In objects mode the AR surface owns taps — that is how
                     // geometry gets placed. A SwiftUI tap layered over the whole
                     // viewport competed with the UIKit recogniser inside it, so
                     // placement taps were being eaten by the dismiss handler.
                     .onTapGesture {
-                        guard !isPreviewHoldActive, radialCoordinator.menu == nil else { return }
                         // While chrome is hidden the tap only restores it, so
                         // a single tap never both reveals the UI and changes
                         // the effect selection underneath it.
@@ -160,6 +226,19 @@ struct WorkspaceView: View {
                         guard appModel.sourceMode != .objects else { return }
                         dismissWorkspaceSelection()
                     }
+
+                // Tap-away scrim for the three collection plates. It has to be
+                // a sibling declared *below* the chrome group: as an overlay of
+                // the whole screen it sat above the plates it dimmed, so a tap
+                // on a plate's own controls landed on the scrim and closed the
+                // plate instead of using it.
+                if collectionPlatePresented {
+                    Color.black.opacity(0.45)
+                        .ignoresSafeArea()
+                        .onTapGesture { dismissCollectionPlates() }
+                        .transition(.opacity)
+                        .accessibilityIdentifier("workspace.collection.scrim")
+                }
 
                 // The mid-take effect summary. The recording header itself
                 // lives in the top row's own slot below, so it lands exactly
@@ -241,6 +320,55 @@ struct WorkspaceView: View {
                     // safe bottom edge. A toast is an overlay, never a layout
                     // row, so it cannot push these controls into the frame.
                     VStack(spacing: 0) {
+                        // The collection plates rise into the dock's space and
+                        // stop above the capture pair, so a look can be
+                        // auditioned and a take started without closing the
+                        // plate first.
+                        if presetsPresented {
+                            GVPresetsDrawer(
+                                setup: $appModel.setup,
+                                editor: effectEditor,
+                                maximumHeight: collectionPlateMaxHeight,
+                                onClose: { dismissCollectionPlates() }
+                            )
+                            .environmentObject(presetStore)
+                            .padding(.horizontal, 6)
+                        }
+                        if takesPresented {
+                            GVTakeLibrarySheet(
+                                maximumHeight: collectionPlateMaxHeight,
+                                onClose: { dismissCollectionPlates() }
+                            )
+                            .padding(.horizontal, 6)
+                        }
+                        if timelinePresented {
+                            GVTimelinePickerSheet(
+                                store: timelineStore,
+                                player: timelinePlayer,
+                                editor: effectEditor,
+                                setup: appModel.setup,
+                                maximumHeight: collectionPlateMaxHeight,
+                                onClose: { dismissCollectionPlates() }
+                            )
+                            .padding(.horizontal, 6)
+                        }
+
+                        // The transport appears once a timeline is armed, and
+                        // stays out of the way until then. A cue with nothing
+                        // selected has nothing to scrub, and a permanent bar
+                        // would cost viewfinder height on every take.
+                        if timelinePlayer.selectedTimeline != nil {
+                            GVTimelineBar(
+                                player: timelinePlayer,
+                                onPickTimeline: { openCollectionPlate(.timeline) },
+                                onSaveTimeline: saveCompositionAsTimeline
+                            )
+                            .padding(.horizontal, GVMetrics.gapWide)
+                            .padding(.bottom, GVMetrics.gapTight)
+                            .opacity(isChromeHidden ? 0 : 1)
+                            .allowsHitTesting(!isChromeHidden)
+                        }
+
                         detachedCaptureControls
                             .padding(.horizontal, GVMetrics.gapWide)
                             .padding(.leading, -bleedLeading)
@@ -256,19 +384,24 @@ struct WorkspaceView: View {
                             recording: capture,
                             dismissSelectionSignal: $dismissSelectionSignal,
                             statsMailbox: renderStats,
+                            onOpenRecipes: { toggleCollectionPlate(.recipes) },
+                            onOpenTakes: { toggleCollectionPlate(.takes) },
+                            onOpenTimeline: { toggleCollectionPlate(.timeline) },
+                            activeCollection: activeCollectionPlate,
+                            hidesBrowser: collectionPlatePresented,
                             maximumHeight: dockMaxHeight
                         )
-                        .frame(height: isDeckCollapsed ? 0 : nil, alignment: .bottom)
+                        .frame(height: dockRemoved ? 0 : nil, alignment: .bottom)
                         .clipped()
                         .padding(.horizontal, 6)
                         .padding(.leading, -bleedLeading)
                         .padding(.trailing, -bleedTrailing)
-                        .padding(.bottom, isDeckCollapsed ? 0 : 2)
-                        .opacity(isDeckCollapsed ? 0 : 1)
-                        .allowsHitTesting(!isDeckCollapsed)
-                        .accessibilityHidden(isDeckCollapsed)
-                        .allowsHitTesting(!isDeckCollapsed && !controlLock.lockEffectStack && !controlLock.lockUI)
-                        .animation(GVMotion.deck, value: isDeckCollapsed)
+                        .padding(.bottom, dockRemoved ? 0 : 2)
+                        .opacity(dockRemoved ? 0 : 1)
+                        .allowsHitTesting(!dockRemoved)
+                        .accessibilityHidden(dockRemoved)
+                        .allowsHitTesting(!dockRemoved && !controlLock.lockEffectStack && !controlLock.lockUI)
+                        .animation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion), value: dockRemoved)
                     }
                     .overlay(alignment: .top) {
                         GVToastCapsule(
@@ -328,6 +461,34 @@ struct WorkspaceView: View {
                         .zIndex(30)
                 }
 
+                // Self-timer. The number is the whole point of the surface, so
+                // it is set at frame size rather than docked in a corner, and
+                // the only other control is the way out.
+                if countdown.deadline != nil {
+                    VStack(spacing: 12) {
+                        Text("\(countdown.remaining)")
+                            .font(.system(size: 76, weight: .thin, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(GVTheme.bone)
+                            .contentTransition(.numericText(countsDown: true))
+                            .accessibilityLabel("Shutter in \(countdown.remaining) seconds")
+
+                        Button {
+                            cancelCountdown()
+                        } label: {
+                            Text("Cancel")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(GVTheme.bone)
+                                .padding(.horizontal, 18)
+                                .frame(height: 34)
+                        }
+                        .buttonStyle(GVGlassActionButtonStyle())
+                        .accessibilityIdentifier("workspace.countdown.cancel")
+                    }
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: countdown.remaining)
+                    .zIndex(29)
+                }
+
                 if controlLock.lockUI {
                     Button {
                         showControlLockSheet = true
@@ -338,7 +499,7 @@ struct WorkspaceView: View {
                             .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
                             .gvGlassChip(radius: 12, active: true, tint: .white)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GVPressStyle())
                     .accessibilityLabel("Unlock interface")
                     .position(x: geometry.size.width - 32, y: geometry.safeAreaInsets.top + 26)
                     .zIndex(36)
@@ -349,25 +510,6 @@ struct WorkspaceView: View {
                         .transition(.opacity)
                         .allowsHitTesting(false)
                         .zIndex(25)
-                }
-
-                // Preview and category holds retain their original touch;
-                // this shared overlay only draws the thumb-safe selection.
-                if let radial = radialCoordinator.menu {
-                    GVRadialPieMenu(
-                        center: radial.center,
-                        title: radial.title,
-                        subcategories: radial.subcategories,
-                        fallbackSlots: radial.slots,
-                        families: radial.families,
-                        centerOffset: radial.centerOffset,
-                        onSelect: radial.onSelect,
-                        onDismiss: radialCoordinator.dismiss,
-                        externalDragLocation: $radialCoordinator.dragLocation,
-                        externalReleaseLocation: $radialCoordinator.releaseLocation,
-                        safeAreaInsets: geometry.safeAreaInsets
-                    )
-                    .zIndex(50)
                 }
 
                 // Signal path opened by the splash raster tear; removes itself.
@@ -382,25 +524,12 @@ struct WorkspaceView: View {
                 }
             }
         }
-        // Recipes drawer. Sits over the dock; tap outside closes.
-        .overlay(alignment: .bottom) {
-            if presetsPresented {
-                Color.black.opacity(0.35)
-                    .ignoresSafeArea()
-                    .onTapGesture { withAnimation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion)) { presetsPresented = false } }
-
-                GVPresetsDrawer(
-                    setup: $appModel.setup,
-                    editor: effectEditor,
-                    onClose: { withAnimation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion)) { presetsPresented = false } }
-                )
-                .zIndex(26)
-            }
-        }
         .overlay {
             if coachPresented {
                 GVCoachCard {
-                    coachPresented = false
+                    withAnimation(GVMotion.resolved(GVMotion.collapse, reduceMotion: reduceMotion)) {
+                        coachPresented = false
+                    }
                     preferences.coachSeen = true
                 }
                 .zIndex(34)
@@ -409,9 +538,23 @@ struct WorkspaceView: View {
         .overlay {
             if showControlLockSheet {
                 ControlLockView(manager: controlLock) {
-                    showControlLockSheet = false
+                    withAnimation(GVMotion.resolved(GVMotion.collapse, reduceMotion: reduceMotion)) {
+                        showControlLockSheet = false
+                    }
                 }
                 .zIndex(35)
+            }
+            if showPairingSheet {
+                GVPairingCodeSheet(
+                    code: broadcastRuntime.pairingCode,
+                    onRegenerate: { broadcastRuntime.regeneratePairingCode(); return broadcastRuntime.pairingCode },
+                    onDismiss: {
+                        withAnimation(GVMotion.resolved(GVMotion.collapse, reduceMotion: reduceMotion)) {
+                            showPairingSheet = false
+                        }
+                    }
+                )
+                .zIndex(36)
             }
         }
         .background {
@@ -419,10 +562,7 @@ struct WorkspaceView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             refreshAmbientSampling()
-            if phase != .active {
-                radialCoordinator.cancel()
-                isPreviewHoldActive = false
-            }
+            if phase != .active { cancelCountdown() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
             guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
@@ -454,6 +594,10 @@ struct WorkspaceView: View {
         .onAppear {
             attachBroadcastControl()
             audioArmPolicy.attach(audio: audioRuntime, editor: effectEditor)
+            // Finished movies reach the operator-visible capture state through
+            // the runtimes, because a writer's message string cannot tell a
+            // Photos save from a take kept on the device.
+            capture.bindTakeOutcomes(cameraRuntime: cameraRuntime, objectsRuntime: objectsRuntime)
             publishTakeRisk()
             // A shortcut may have fired while this view was not mounted.
             if let command = intentBridge.pendingCommand {
@@ -490,7 +634,11 @@ struct WorkspaceView: View {
         .environmentObject(audioArmPolicy)
         .onAppear {
             refreshAmbientSampling()
-            if !preferences.coachSeen { coachPresented = true }
+            if !preferences.coachSeen {
+                withAnimation(GVMotion.resolved(GVMotion.tear, reduceMotion: reduceMotion)) {
+                    coachPresented = true
+                }
+            }
             capture.burnHUD = preferences.watermarkEnabled
             // Ensure vignette is disabled on the preview screen
             effectEditor.setEnabled(.vignette, false)
@@ -506,8 +654,7 @@ struct WorkspaceView: View {
             hud.stop()
             decay.stop()
             timelinePlayer.stop()
-            radialCoordinator.cancel()
-            isPreviewHoldActive = false
+            cancelCountdown()
         }
         .animation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion), value: activeTopDeck)
         // Capture failures were being written to `snapshot.errorMessage` and
@@ -537,50 +684,12 @@ struct WorkspaceView: View {
         // Any touch anywhere in the workspace means the operator is present,
         // which is what postpones the idle-timer release. Installed as a
         // simultaneous gesture so it observes without consuming: the
-        // viewfinder's own tap/pan/pinch and the radial hold have to keep
+        // viewfinder's own tap, pan and pinch recognizers have to keep
         // working exactly as they did.
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in noteOperatorInteraction() }
         )
-    }
-
-    private var previewRadialGesture: GVRadialHoldGesture {
-        // The preview sits over CameraMetalView's own tap (focus/dismiss),
-        // pan (touch/spectrum drag) and pinch recognizers. The hold must run
-        // simultaneously with those taps — the isPreviewHoldActive guard
-        // already suppresses tap-dismiss after a hold — and tolerates wider
-        // finger drift than the dock's rail hold.
-        // Simultaneous recognition is mandatory here: the underlying
-        // CameraMetalView installs an eager pan recognizer for touch/spectrum
-        // drag. Without it the pan steals the touch on the slightest drift and
-        // fails the hold before it can begin, so the radial menu never opened.
-        // The isPreviewHoldActive guard in the tap handler suppresses the
-        // competing tap-to-focus/dismiss once a hold completes.
-        GVRadialHoldGesture(isEnabled: !voiceOverEnabled && !isChromeHidden
-            && !controlLock.lockUI && !controlLock.lockEffectStack && appModel.sourceMode == .camera,
-            allowsSimultaneousTaps: true,
-            allowableMovement: 24)
-        { state, location in
-            switch state {
-            case .began:
-                guard radialCoordinator.menu == nil else { return }
-                isPreviewHoldActive = true
-                radialCoordinator.beginRoot(center: location,
-                                            isActive: effectEditor.isEnabled, onSelect: selectRadialEffect)
-            case .changed:
-                if isPreviewHoldActive { radialCoordinator.move(to: location) }
-            case .ended:
-                guard isPreviewHoldActive else { return }
-                radialCoordinator.end(at: location)
-                isPreviewHoldActive = false
-            case .cancelled, .failed:
-                guard isPreviewHoldActive else { return }
-                radialCoordinator.cancel()
-                isPreviewHoldActive = false
-            default: break
-            }
-        }
     }
 
     private func refreshAmbientSampling() {
@@ -589,6 +698,68 @@ struct WorkspaceView: View {
         } else {
             GVAmbientLight.shared.deactivate()
         }
+    }
+
+    // MARK: - Shutter with an optional self-timer
+
+    /// The one entry point both capture controls go through.
+    ///
+    /// The delay is a preference and the countdown is session state, so a
+    /// backgrounded app drops the countdown rather than firing a shutter into a
+    /// viewfinder nobody is looking at.
+    private func requestCapture(_ intent: GVCaptureCountdown.Intent) {
+        fire(intent, after: GVCaptureCountdown.Delay(rawValue: preferences.captureCountdownSeconds) ?? .off)
+    }
+
+    /// Fires an intent now or when the self-timer runs out.
+    ///
+    /// The work is written against the runtimes rather than `self`: a countdown
+    /// outlives the render pass that started it, and `WorkspaceView` is a struct
+    /// whose lifetime is exactly that render pass.
+    private func fire(_ intent: GVCaptureCountdown.Intent, after delay: GVCaptureCountdown.Delay) {
+        let transaction = capture
+        let camera = cameraRuntime
+        let objects = objectsRuntime
+        let sourceMode = appModel.sourceMode
+        let perform: @MainActor (GVCaptureCountdown.Intent) -> Void = { intent in
+            switch intent {
+            case .photo:
+                transaction.takeScreenshot(cameraRuntime: camera)
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            case .video:
+                transaction.toggleRecording(
+                    cameraRuntime: camera,
+                    objectsRuntime: objects,
+                    sourceMode: sourceMode
+                )
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
+        }
+        guard delay != .off else {
+            perform(intent)
+            return
+        }
+        UISelectionFeedbackGenerator().selectionChanged()
+        // Arming the timer puts the frame back on screen: the operator is about
+        // to stand behind the camera, and a countdown half hidden under the
+        // settings deck is not a countdown they can trust.
+        withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
+            activeTopDeck = nil
+        }
+        countdown.run(intent, delay: delay, onFire: perform)
+    }
+
+    private func cancelCountdown() {
+        countdown.cancel()
+    }
+
+    /// Arms the timeline bar by saving the composition that is on screen.
+    /// Keyframes are authored from the picker, not here: a saved cue with no
+    /// keyframes still carries the capture format and the base stack, which is
+    /// what the bar's play button needs.
+    private func saveCompositionAsTimeline() {
+        timelineStore.save(name: "", duration: 8, from: effectEditor, setup: appModel.setup)
+        showTopNotice("Composition saved as a timeline")
     }
 
     /// Built once and used in two places: the header goes in the top row's
@@ -674,23 +845,11 @@ struct WorkspaceView: View {
         .accessibilityAction(named: "Redo") { redoComposition() }
     }
 
-    // MARK: Radial summon
-
-    /// Applies a radial choice. Presentation and gesture state stay in the
-    /// coordinator; composition policy stays with the workspace.
-    private func selectRadialEffect(_ effect: WorkspaceAdjustableEffect) {
-        appModel.deactivateDepthMode()
-        appModel.deactivateObjectMode()
-        let activated = effectEditor.selectExclusively(effect)
-        if activated {
-            preferences.noteEffectUsed((effectEditor.selectedEffect ?? effect).rawValue)
-            armAudioIfNeeded(for: effect)
-        }
-        showTopNotice(activated ? "\(effect.label) enabled" : "\(effect.label) off")
-    }
+    // MARK: Audio arming
 
     /// Audio-reactive effects are inert without the analyser, so selecting one
-    /// from the ring requests the microphone too — the same path as a card tap.
+    /// anywhere — a browser tile, a shortcut, a preset — requests the
+    /// microphone too.
     private func armAudioIfNeeded(for effect: WorkspaceAdjustableEffect) {
         guard effect.requiresAudioAnalysis, !audioRuntime.isEnabled else { return }
         switch audioRuntime.state {
@@ -897,8 +1056,7 @@ struct WorkspaceView: View {
         // Same treatment the dock's rails already get.
         return HStack(spacing: GVMetrics.gapTight) {
             Button {
-                capture.takeScreenshot(cameraRuntime: cameraRuntime)
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                requestCapture(.photo)
             } label: {
                 Image(systemName: "camera.viewfinder")
                     .font(.system(size: 16, weight: .medium))
@@ -908,6 +1066,10 @@ struct WorkspaceView: View {
             .buttonStyle(GVGlassCaptureButtonStyle(tint: .white, buttonSize: CGSize(width: capturePairWidth, height: capturePairHeight)))
             .accessibilityLabel("Capture photo")
             .accessibilityIdentifier("workspace.capture.photo")
+            // The capture reports what it actually wrote, resolution included,
+            // so the outcome is readable from here rather than only in a toast
+            // that has already faded.
+            .accessibilityValue(cameraRuntime.screenshotMessage ?? "")
             .opacity(isChromeHidden ? 0 : 1)
             .allowsHitTesting(!isChromeHidden && !controlLock.lockUI)
 
@@ -922,16 +1084,19 @@ struct WorkspaceView: View {
             Spacer(minLength: 0)
 
             Button {
-                let wasRecording = recording
-                capture.toggleRecording(
-                    cameraRuntime: cameraRuntime,
-                    objectsRuntime: objectsRuntime,
-                    sourceMode: appModel.sourceMode
-                )
-                if wasRecording {
+                // A running countdown is cancelled by the same control that
+                // started it; a live take is stopped, never delayed.
+                if countdown.deadline != nil {
+                    cancelCountdown()
+                } else if recording {
+                    capture.toggleRecording(
+                        cameraRuntime: cameraRuntime,
+                        objectsRuntime: objectsRuntime,
+                        sourceMode: appModel.sourceMode
+                    )
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 } else {
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    requestCapture(.video)
                 }
             } label: {
                 Image(systemName: recording ? "stop.fill" : "record.circle")
@@ -940,7 +1105,7 @@ struct WorkspaceView: View {
                     .frame(width: capturePairWidth, height: capturePairHeight)
             }
             .buttonStyle(GVGlassCaptureButtonStyle(tint: recording ? GVTheme.record : .white, isRecording: recording, buttonSize: CGSize(width: capturePairWidth, height: capturePairHeight)))
-            .accessibilityLabel(recording ? "Stop recording" : "Record video")
+            .accessibilityLabel(countdown.deadline != nil ? "Cancel countdown" : (recording ? "Stop recording" : "Record video"))
             .accessibilityIdentifier("workspace.record.toggle")
             .opacity(isChromeHidden && !recording ? 0 : 1)
             .allowsHitTesting(!isChromeHidden || recording)
@@ -1044,8 +1209,6 @@ struct WorkspaceView: View {
         }
     }
 
-    private enum WorkspaceTopDeckPlaceholder {}
-
     private enum WorkspaceTopDeck: String, Identifiable {
         case camera
         case settings
@@ -1082,7 +1245,7 @@ private extension WorkspaceView {
                     .accessibilityLabel("grey VISION")
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(GVPressStyle())
                 // The wordmark was hugging the very edge of the screen and
                 // reading as off-centre with the device shoulder. A small
                 // optical lead shifts it away from the rounded glass and lines
@@ -1169,7 +1332,7 @@ private extension WorkspaceView {
                 .frame(width: 45, height: 44)
         }
         .buttonStyle(GVGlassShellChipStyle(active: active))
-        .animation(GVMotion.snap, value: active)
+        .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: active)
         .accessibilityLabel(id == "camera" ? "Camera tools" : "Capture settings")
         .accessibilityValue(active ? "expanded" : "collapsed")
         .accessibilityIdentifier("workspace.\(id)")
@@ -1346,7 +1509,7 @@ private extension WorkspaceView {
                     ? (broadcastRuntime.isConnected ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
                     : "display.and.arrow.down",
                 label: broadcastRuntime.isArmed
-                    ? "Mac Camera · Auto"
+                    ? "Mac Camera · Paired"
                     : "Mac Camera",
                 tint: broadcastRuntime.isConnected ? GVTheme.acid : GVTheme.bone.opacity(0.65)
             ) {
@@ -1355,11 +1518,16 @@ private extension WorkspaceView {
                     showTopNotice("Mac Camera link stopped")
                 } else {
                     broadcastRuntime.start()
-                    showTopNotice("Mac Camera auto-pair enabled")
+                    showTopNotice("Mac Camera listening for a paired Mac")
                 }
             }
             .accessibilityIdentifier("workspace.broadcast")
             .accessibilityValue(broadcastRuntime.statusLine)
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                    showPairingSheet = true
+                }
+            )
 
             captureActionButton(
                 symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
@@ -1455,8 +1623,28 @@ private extension WorkspaceView {
                 .accessibilityIdentifier("workspace.restart")
             }
 
+            // Self-timer. Three fixed stops rather than a slider: the point is
+            // "get in frame", and an operator setting up a shot needs to hear
+            // one number, not read a scale.
+            captureActionButton(
+                symbol: preferences.captureCountdownSeconds == 0 ? "timer" : "timer.circlepath",
+                label: preferences.captureCountdownSeconds == 0
+                    ? "Self Timer · Off"
+                    : "Self Timer · \(preferences.captureCountdownSeconds)s",
+                tint: preferences.captureCountdownSeconds == 0 ? GVTheme.bone.opacity(0.6) : GVTheme.acid
+            ) {
+                let delays = [0, 3, 10, 30]
+                let current = delays.firstIndex(of: preferences.captureCountdownSeconds) ?? 0
+                let next = delays[(current + 1) % delays.count]
+                preferences.captureCountdownSeconds = next
+                showTopNotice(next == 0 ? "Shutter fires immediately" : "Shutter fires in \(next)s")
+            }
+            .accessibilityIdentifier("workspace.countdown")
+
             captureActionButton(symbol: "questionmark.circle", label: "Help & Guide", tint: GVTheme.bone.opacity(0.75)) {
-                coachPresented = true
+                withAnimation(GVMotion.resolved(GVMotion.tear, reduceMotion: reduceMotion)) {
+                    coachPresented = true
+                }
             }
             .accessibilityIdentifier("workspace.help")
         }
@@ -1574,7 +1762,6 @@ private extension WorkspaceView {
     }
 
     func dismissWorkspaceSelection() {
-        guard !isPreviewHoldActive, radialCoordinator.menu == nil else { return }
         activeTopDeck = nil
         hud.clearField()
         dismissSelectionSignal += 1
@@ -1725,13 +1912,16 @@ private struct SigilMark: View {
 private struct GVCoachCard: View {
     let onClose: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private let lines: [(String, String)] = [
         ("Camera tools", "Composition guides, flip, and torch in the camera menu"),
         ("Effects button", "Show or hide the browser · badge shows active count"),
         ("Double-tap a dial", "Reset a parameter to its default"),
         ("Clean preview", "Record with or without the interface"),
-        ("Press and hold a category", "Open variants in a radial menu"),
-        ("Presets", "Save looks · hold the eye icon to preview")
+        ("Collection rail", "Recipes, takes and timelines open above the shutter · tap the chip again to close"),
+        ("Recipes", "Star the looks worth keeping · hold the eye to preview"),
+        ("Self timer", "Delay the shutter from the settings deck")
     ]
 
     var body: some View {
@@ -1774,7 +1964,7 @@ private struct GVCoachCard: View {
                 .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
         )
         .padding(.horizontal, 26)
-        .transition(.scale(scale: 0.94).combined(with: .opacity))
+        .transition(reduceMotion ? .opacity : .scale(scale: 0.94).combined(with: .opacity))
         .onTapGesture { onClose() }
     }
 }

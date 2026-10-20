@@ -302,69 +302,6 @@ final class GVDepthSignalMailbox: @unchecked Sendable {
     }
 }
 
-// `GestureType` and `GestureStateRegistry` live in App/GestureStateRegistry.swift.
-// This file carried an older, cut-down copy of both; keeping it would have
-// given the project two arbiters and two priority tables.
-
-/// Detects a coherent one-finger circular path and publishes its wrapped phase
-/// only after enough arc has accumulated to distinguish it from a normal drag.
-@MainActor
-final class GVModulationOrbitTracker: ObservableObject {
-    private var samples: [CGPoint] = []
-    private var lastAngle: Double?
-    private var travel = 0.0
-
-    func update(
-        at point: CGPoint,
-        isEnabled: Bool,
-        registry: GestureStateRegistry,
-        signal: GVSignal
-    ) {
-        guard isEnabled else { return }
-        samples.append(point)
-        if samples.count > 24 {
-            samples.removeFirst(samples.count - 24)
-        }
-        guard samples.count >= 5 else { return }
-
-        let sum = samples.reduce(CGPoint.zero) { partial, sample in
-            CGPoint(x: partial.x + sample.x, y: partial.y + sample.y)
-        }
-        let divisor = CGFloat(samples.count)
-        let center = CGPoint(x: sum.x / divisor, y: sum.y / divisor)
-        let radii = samples.map { hypot($0.x - center.x, $0.y - center.y) }
-        let meanRadius = radii.reduce(0, +) / CGFloat(radii.count)
-        guard meanRadius > 0.025 else { return }
-        let radialError = radii.reduce(0.0) { $0 + abs($1 - meanRadius) } /
-            CGFloat(radii.count) / meanRadius
-        guard radialError < 0.68 else { return }
-
-        let angle = atan2(Double(point.y - center.y), Double(point.x - center.x))
-        if let lastAngle {
-            travel += atan2(sin(angle - lastAngle), cos(angle - lastAngle))
-        }
-        self.lastAngle = angle
-        guard abs(travel) > .pi * 0.45 else { return }
-
-        if registry.activeGesture != .modulationOrbit {
-            registry.activateGesture(.modulationOrbit)
-        } else {
-            registry.updateActivity(for: .modulationOrbit)
-        }
-        let phase = travel.truncatingRemainder(dividingBy: .pi * 2) / (.pi * 2)
-        signal.submitModulationOrbit(phase < 0 ? phase + 1 : phase, isActive: true)
-    }
-
-    func end(registry: GestureStateRegistry, signal: GVSignal) {
-        if registry.activeGesture == .modulationOrbit {
-            registry.completeGesture(.modulationOrbit)
-        }
-        signal.submitModulationOrbit(0, isActive: false)
-        samples.removeAll(keepingCapacity: true)
-        lastAngle = nil
-        travel = 0
-    }
-}
 
 extension EnvironmentValues {
     @Entry var gvSignal: GVSignalSnapshot = .idle

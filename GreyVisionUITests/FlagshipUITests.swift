@@ -76,14 +76,45 @@ final class FlagshipUITests: XCTestCase {
         capture("Datamosh live controls")
     }
 
-    func testRadialHoldCancelsOrCommitsOnRelease() {
+    func testConsolidatedEffectsEntryAndLeftCategoryGroups() {
         let app = launchWorkspace()
-        let category = app.buttons["workspace.category.color"]
-        XCTAssertTrue(category.waitForExistence(timeout: 5))
-        category.press(forDuration: 1)
-        XCTAssertFalse(app.descendants(matching: .any)["radial.menu.effects"].exists)
+        let browse = app.buttons["workspace.categories.all"]
+        XCTAssertTrue(browse.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["workspace.category.color"].exists)
+        browse.tap()
+        XCTAssertTrue(app.scrollViews["workspace.effects.all"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["workspace.browser.families"].exists)
+        let color = app.buttons["workspace.browser.category.color"]
+        XCTAssertTrue(color.waitForExistence(timeout: 5))
+        color.tap()
         XCTAssertTrue(app.scrollViews["workspace.effects.color"].waitForExistence(timeout: 5))
-        capture("Category chips browse without a radial hold")
+        XCTAssertEqual(color.frame.minX, app.buttons["workspace.browser.category.all"].frame.minX, accuracy: 1)
+        capture("Aligned left-side groups")
+    }
+
+    func testPreviewGallerySelectionAndAdjustInPortraitAndLandscape() {
+        let app = launchWorkspace()
+        defer { XCUIDevice.shared.orientation = .portrait }
+        app.buttons["workspace.categories.all"].tap()
+        let field = app.textFields["workspace.search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("CMYK\n")
+        let tile = app.buttons["workspace.effect.cmykPress"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 5))
+        tile.tap()
+        XCTAssertTrue(app.buttons["workspace.browser.adjust"].waitForExistence(timeout: 5))
+        capture("Quiet preview gallery portrait")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
+        wait(for: [landscape], timeout: 5)
+        // The system rotation animation finishes after the geometry changes.
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertTrue(app.buttons["workspace.browser.close"].isHittable)
+        XCTAssertTrue(app.buttons["workspace.browser.adjust"].isHittable)
+        capture("Quiet preview gallery landscape")
+        app.buttons["workspace.browser.adjust"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["workspace.parameters.cmykPress"].waitForExistence(timeout: 5))
     }
 
     func testPreviewHoldCancelsOrCommitsOnRelease() {
@@ -99,7 +130,6 @@ final class FlagshipUITests: XCTestCase {
                     thenDragTo: start.withOffset(CGVector(dx: -112, dy: -40)),
                     withVelocity: .slow, thenHoldForDuration: 3)
         XCTAssertTrue(deck.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["radial.menu.effects"].waitForNonExistence(timeout: 3))
         let selected = deck.identifier
         start.press(forDuration: 1)
         XCTAssertTrue(deck.exists, "Cancelling must preserve the selected effect")
@@ -107,57 +137,112 @@ final class FlagshipUITests: XCTestCase {
         capture("Preview category then effect selection")
     }
 
-    func testEveryCategoryIsReachableIncludingLiDAR() {
+    func testEveryFamilyIsReachableIncludingDatamoshAndDepth() {
         let app = launchWorkspace()
         let picker = app.buttons["workspace.categories.all"]
-        for category in ["all", "color", "time", "motion", "decay", "signal", "optics", "form", "shaders", "audio", "scope", "objects", "blobs", "lidar"] {
-            picker.tap()
-            let option = app.buttons["workspace.categoryPicker.\(category)"]
-            let grid = app.scrollViews["workspace.categoryPicker.scroll"]
-            XCTAssertTrue(grid.waitForExistence(timeout: 5))
-            for _ in 0 ..< 5 where !option.exists || !option.isHittable {
-                let start = grid.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
-                start.press(forDuration: 0.05, thenDragTo: grid.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)))
-            }
+        picker.tap()
+        XCTAssertTrue(app.scrollViews["workspace.browser.categories"].waitForExistence(timeout: 5))
+        // The families the browser actually draws, in shelf order.
+        for category in ["all", "color", "datamosh", "sort", "time", "motion", "decay",
+                         "signal", "optics", "form", "shaders", "audio", "scope",
+                         "experimental", "developer", "spatial"] {
+            let option = app.buttons["workspace.browser.category.\(category)"]
+            let sidebar = app.scrollViews["workspace.browser.categories"]
+            for _ in 0 ..< 10 where !option.exists || !option.isHittable { sidebar.swipeUp() }
+            XCTAssertTrue(option.waitForExistence(timeout: 5), category)
             XCTAssertTrue(option.isHittable, category)
             option.tap()
-            if category == "shaders" {
-                let shader = app.buttons["workspace.action.cyber-grid"]
-                XCTAssertTrue(shader.waitForExistence(timeout: 5))
-                shader.tap()
-                XCTAssertTrue(app.descendants(matching: .any)["workspace.parameters.cyberGrid"].waitForExistence(timeout: 5))
+            if category == "spatial" {
+                // Real depth modes, gated on hardware rather than the catalogue.
+                XCTAssertTrue(app.scrollViews["workspace.depth.modes"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.buttons["workspace.depth.0"].exists)
+            } else {
+                XCTAssertTrue(app.scrollViews["workspace.effects.\(category)"].waitForExistence(timeout: 5), category)
             }
-            capture("Category \(category)")
+            capture("Family \(category)")
         }
-        let rail = app.scrollViews["workspace.categories"]
-        let lidar = app.buttons["workspace.category.lidar"]
-        for _ in 0 ..< 15 where !lidar.isHittable {
-            rail.swipeLeft()
-        }
-        XCTAssertTrue(lidar.isHittable)
-        XCTAssertGreaterThan(lidar.frame.minX, app.buttons["workspace.category.recents"].frame.minX)
-        capture("LiDAR last in category row")
+        // The datamosh shelf holds the codec effects and nothing else.
+        app.buttons["workspace.browser.category.datamosh"].tap()
+        XCTAssertTrue(app.buttons["workspace.effect.datamosh"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["workspace.effect.sort"].exists, "Sorts are their own family now")
     }
 
-    func testCategoryRailScrollsFromAChipWithoutOpeningRadial() {
+    func testLeftSidebarResearchGroupsScrollAndReturnToAll() {
         let app = launchWorkspace()
-        let category = app.buttons["workspace.category.color"]
-        let originalX = category.frame.midX
-        let start = category.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -150, dy: 0)))
-        XCTAssertLessThan(category.frame.midX, originalX - 50)
-        XCTAssertFalse(app.descendants(matching: .any)["radial.menu.effects"].exists)
-        let rail = app.scrollViews["workspace.categories"]
-        let lidar = app.buttons["workspace.category.lidar"]
-        for _ in 0 ..< 15 where !lidar.isHittable {
-            rail.swipeLeft()
+        app.buttons["workspace.categories.all"].tap()
+        let sidebar = app.scrollViews["workspace.browser.categories"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 5))
+        for category in ["experimental", "developer"] {
+            let group = app.buttons["workspace.browser.category.\(category)"]
+            for _ in 0 ..< 4 {
+                if group.exists && group.isHittable { break }
+                sidebar.swipeUp()
+            }
+            XCTAssertTrue(group.exists, category)
+            XCTAssertTrue(group.isHittable, category)
+            group.tap()
+            XCTAssertTrue(app.scrollViews["workspace.effects.\(category)"].waitForExistence(timeout: 5))
+            XCTAssertEqual(group.value as? String, "selected")
         }
-        XCTAssertTrue(lidar.isHittable)
-        capture("Scrolled to LiDAR")
-        for _ in 0 ..< 15 where !category.isHittable {
-            rail.swipeRight()
+        capture("Direct left-side research groups")
+        let all = app.buttons["workspace.browser.category.all"]
+        for _ in 0 ..< 4 {
+            if all.exists && all.isHittable { break }
+            sidebar.swipeDown()
         }
-        XCTAssertTrue(category.isHittable)
+        XCTAssertTrue(all.isHittable)
+        all.tap()
+        XCTAssertTrue(app.scrollViews["workspace.effects.all"].waitForExistence(timeout: 5))
+    }
+
+    func testQuickShelvesRemainReachableWithoutCategoryParade() {
+        let app = launchWorkspace()
+        for shelf in ["active", "favorites", "recents"] {
+            let shortcut = app.buttons["workspace.category.\(shelf)"]
+            XCTAssertTrue(shortcut.isHittable)
+            shortcut.tap()
+            XCTAssertTrue(app.buttons["workspace.browser.category.\(shelf)"].waitForExistence(timeout: 5))
+            app.buttons["workspace.browser.close"].tap()
+        }
+        XCTAssertTrue(app.buttons["workspace.capture.modes"].isHittable)
+        capture("Quiet dock quick shelves")
+    }
+
+    func testMagneticEntryAndSleekCodecSelection() {
+        XCUIDevice.shared.orientation = .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = XCUIApplication()
+        app.launch()
+        let enter = app.buttons["access.enter"]
+        XCTAssertTrue(enter.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(enter.frame.height, 44)
+        capture("Magnetic Open GreyVision entry")
+        enter.tap()
+        let codec = app.buttons["boot.codec"]
+        XCTAssertTrue(codec.waitForExistence(timeout: 20))
+        codec.tap()
+        let choices = app.scrollViews["boot.choices.codec"]
+        XCTAssertTrue(choices.waitForExistence(timeout: 5))
+        let h264 = app.buttons["boot.codec.h.264"]
+        XCTAssertTrue(h264.isHittable)
+        capture("Digital decay codec console portrait")
+        h264.tap()
+        XCTAssertTrue(choices.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(codec.label.contains("H.264"))
+        codec.tap()
+        let hevc = app.buttons["boot.codec.hevc"]
+        XCTAssertTrue(hevc.waitForExistence(timeout: 5))
+        hevc.tap()
+        XCTAssertTrue(choices.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(codec.label.contains("HEVC"))
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
+        wait(for: [landscape], timeout: 5)
+        codec.tap()
+        XCTAssertTrue(choices.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertTrue(h264.isHittable)
+        capture("Digital decay codec console landscape")
     }
 
     func testGIFSplashReachesFormatSetupAndWorkspace() {

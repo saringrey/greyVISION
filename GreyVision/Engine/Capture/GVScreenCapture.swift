@@ -1,57 +1,52 @@
-import Photos
 import UIKit
 
-/// Saves interface-inclusive captures to Photos.
+/// Writes a captured frame into the take library, and then into Photos.
 ///
-/// The Metal render path can only ever produce the clean image — camera plus
-/// effects, no chrome. Anything that must show the instrument itself has to
-/// come from the window or the screen, which is what this handles.
+/// The order is the whole point. The JPEG lands in the archive first, so a
+/// denied permission, a full library or an interrupted import costs the
+/// operator a status line rather than the photograph — the same recovery the
+/// recorder has had all along, for the case that used to delete the file.
+///
+/// One caller today: the renderer's still path. It is not inline in the
+/// renderer because the Photos authorisation dance and the filing have nothing
+/// to do with Metal.
+///
+/// The encoding is fixed rather than a parameter. JPEG because the source is a
+/// camera frame at several megapixels, and a PNG of one is tens of megabytes
+/// for no benefit anyone can see.
 enum GVScreenCapture {
-    static func save(_ image: UIImage, message: @escaping @Sendable (String) -> Void) {
-        guard let png = image.pngData() else {
-            message("SCREENSHOT // ENCODE FAILED")
-            return
-        }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("greyvision-ui-\(UUID().uuidString).png")
-        do {
-            try png.write(to: url)
-        } catch {
-            message("SCREENSHOT // WRITE FAILED")
-            return
-        }
-        requestAddAccess { granted in
-            guard granted else {
-                try? FileManager.default.removeItem(at: url)
-                message("SCREENSHOT // PHOTOS ACCESS DENIED")
-                return
-            }
-            PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: url)
-            } completionHandler: { success, error in
-                try? FileManager.default.removeItem(at: url)
-                if success {
-                    message("PHOTO // SAVED TO CAMERA ROLL")
-                } else {
-                    message("SCREENSHOT // SAVE FAILED")
-                    GVLog.recording.error(
-                        "UI screenshot save failed: \(error?.localizedDescription ?? "unknown")"
-                    )
-                }
-            }
-        }
-    }
+    static let quality: CGFloat = 0.95
 
-    private static func requestAddAccess(_ completion: @escaping @Sendable (Bool) -> Void) {
-        switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
-        case .authorized, .limited:
-            completion(true)
-        case .notDetermined:
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-                completion(status == .authorized || status == .limited)
+    static func save(
+        _ image: UIImage,
+        source: GVTake.Source = .camera,
+        message: @escaping @Sendable (String) -> Void
+    ) {
+        guard let data = image.jpegData(compressionQuality: quality) else {
+            message("PHOTO // ENCODE FAILED")
+            return
+        }
+        let url: URL
+        do {
+            url = try GVTakeArchive.shared.makeStillURL()
+            try data.write(to: url, options: .atomic)
+        } catch {
+            message("PHOTO // WRITE FAILED")
+            return
+        }
+        message("PHOTO // FILING TAKE")
+        Task {
+            do {
+                let take = try await GVTakeArchive.shared.completeRecording(
+                    at: url,
+                    source: source,
+                    exporter: GVSystemPhotosExporter()
+                )
+                message(take.completionMessage)
+            } catch {
+                GVLog.recording.error("Still could not be filed: \(error.localizedDescription)")
+                message("PHOTO // SAVE FAILED")
             }
-        default:
-            completion(false)
         }
     }
 }

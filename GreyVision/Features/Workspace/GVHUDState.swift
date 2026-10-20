@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Which telemetry field the operator is currently driving.
 ///
@@ -91,10 +92,14 @@ final class GVHUDState: ObservableObject {
         return revealUntil > .now
     }
 
+    /// Read imperatively: this is an `ObservableObject`, not a `View`, so there
+    /// is no environment to pull the preference from.
+    private var reduceMotion: Bool { UIAccessibility.isReduceMotionEnabled }
+
     /// Selecting the field already selected clears it, so a second tap on ISO
     /// puts the rail back to idle rather than requiring a tap elsewhere.
     func select(_ field: GVTelemetryField) {
-        withAnimation(GVMotion.scan) {
+        withAnimation(GVMotion.resolved(GVMotion.scan, reduceMotion: reduceMotion)) {
             activeField = activeField == field ? nil : field
         }
         scheduleIdle()
@@ -103,7 +108,7 @@ final class GVHUDState: ObservableObject {
     func clearField() {
         dismissTask?.cancel()
         dismissTask = nil
-        withAnimation(GVMotion.collapse) {
+        withAnimation(GVMotion.resolved(GVMotion.collapse, reduceMotion: reduceMotion)) {
             activeField = nil
             isAdjusting = false
         }

@@ -92,8 +92,8 @@ final class GVPhoneLink: @unchecked Sendable {
         connection?.cancel()
     }
 
-    func start(passcode: String, bitrate: Int) {
-        queue.async { [weak self] in self?.startOnQueue(passcode: passcode, bitrate: bitrate) }
+    func start(pairingCode: String, bitrate: Int) {
+        queue.async { [weak self] in self?.startOnQueue(pairingCode: pairingCode, bitrate: bitrate) }
     }
 
     func setBitrate(_ bitrate: Int) {
@@ -120,7 +120,7 @@ final class GVPhoneLink: @unchecked Sendable {
 
     // MARK: - Queue
 
-    private func startOnQueue(passcode: String, bitrate: Int) {
+    private func startOnQueue(pairingCode: String, bitrate: Int) {
         stopOnQueue()
         desiredBitrate = bitrate
         requestedServiceName = ""
@@ -130,25 +130,34 @@ final class GVPhoneLink: @unchecked Sendable {
         healthWindowBytes = 0
         onHealth?(GVLinkHealth(decoderStatus: "SEARCHING"))
         publishLinkState(.searching)
-        passcodeForSearch = passcode
+        passcodeForSearch = pairingCode
         // Two phases. The first browse is LAN-only, which is the common case
         // and costs nothing: no AWDL interface, no peer-to-peer radio held
         // awake on a laptop that is otherwise idle. Only if that finds nothing
         // do we pay for the fallback, which is exactly the "no shared
         // network" situation that needs it.
-        startBrowser(passcode: passcode, includePeerToPeer: false)
+        startBrowser(pairingCode: pairingCode, includePeerToPeer: false)
         status("Looking for a GreyVision device on the local network…")
     }
 
-    private func startBrowser(passcode: String, includePeerToPeer: Bool) {
+    private func startBrowser(pairingCode: String, includePeerToPeer: Bool) {
         browser?.cancel()
         browseIncludesPeerToPeer = includePeerToPeer
-        let parameters = Self.makeParameters(passcode: passcode, includePeerToPeer: includePeerToPeer)
+        // A malformed code is refused outright rather than being searched with
+        // a fallback key. Browsing with the wrong key would find the phone and
+        // then fail the handshake, which reads as a network fault rather than
+        // as the pairing mistake it is.
+        guard let secret = GVBroadcastKeyMaterial.secret(forCode: pairingCode) else {
+            publishLinkState(.failed(reason: "PAIRING CODE REJECTED"))
+            status("That pairing code is not one this app can use. Read it again from the iPhone.", error: true)
+            return
+        }
+        let parameters = GVBroadcastKeyMaterial.parameters(secret: secret, includePeerToPeer: includePeerToPeer)
         let browser = NWBrowser(for: .bonjour(type: GVBroadcastProtocol.serviceType, domain: nil), using: parameters)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self, !self.didConnect else { return }
             guard let result = results.first(where: { self.matchesRequestedService($0.endpoint) }) else { return }
-            self.connect(to: result.endpoint, passcode: passcode, using: parameters)
+            self.connect(to: result.endpoint, using: parameters)
         }
         browser.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
@@ -171,14 +180,14 @@ final class GVPhoneLink: @unchecked Sendable {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, !self.didConnect, self.browser != nil else { return }
                 self.status("No device on this network — looking for a direct link…")
-                self.startBrowser(passcode: passcode, includePeerToPeer: true)
+                self.startBrowser(pairingCode: pairingCode, includePeerToPeer: true)
             }
             fallbackWork = work
             queue.asyncAfter(deadline: .now() + Self.peerToPeerFallbackDelay, execute: work)
         }
     }
 
-    private func connect(to endpoint: NWEndpoint, passcode _: String, using parameters: NWParameters) {
+    private func connect(to endpoint: NWEndpoint, using parameters: NWParameters) {
         didConnect = true
         // The search is over; a pending peer-to-peer escalation would only
         // replace a working link with a second browser.
@@ -372,31 +381,12 @@ final class GVPhoneLink: @unchecked Sendable {
 
     // MARK: - TLS-PSK
 
-    private static func makeParameters(passcode _: String, includePeerToPeer: Bool) -> NWParameters {
-        let tls = NWProtocolTLS.Options()
-        // Identical KDF to the phone so the two sides agree on key material.
-        // Pairing is automatic for this personal local-network workflow.
-        let salt = SymmetricKey(data: SHA256.hash(data: Data(GVBroadcastProtocol.serviceType.utf8)))
-        let derived = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: Data(GVBroadcastProtocol.automaticPairingSecret.utf8)),
-            salt: salt.withUnsafeBytes { Data($0) },
-            info: Data("greyVISION.link.v1".utf8),
-            outputByteCount: 32
-        )
-        let pskData = derived.withUnsafeBytes { DispatchData(bytes: $0) }
-        let identity = Data("greyVISION".utf8).withUnsafeBytes { DispatchData(bytes: $0) }
-        sec_protocol_options_add_pre_shared_key(tls.securityProtocolOptions, pskData as __DispatchData, identity as __DispatchData)
-        sec_protocol_options_append_tls_ciphersuite(tls.securityProtocolOptions, tls_ciphersuite_t.AES_128_GCM_SHA256)
-        sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
-        let tcp = NWProtocolTCP.Options()
-        tcp.noDelay = true
-        tcp.enableKeepalive = true
-        tcp.keepaliveIdle = 30
-        tcp.keepaliveInterval = 10
-        let parameters = NWParameters(tls: tls, tcp: tcp)
-        parameters.includePeerToPeer = includePeerToPeer
-        return parameters
-    }
+    // `makeParameters` used to sit here and ignore its `passcode` argument,
+    // deriving the key from a literal compiled into this binary. It is now
+    // `GVBroadcastKeyMaterial.parameters(secret:includePeerToPeer:)`, which
+    // this app compiles from the iOS tree exactly as it already does for
+    // `GVBroadcastProtocol.swift`. The two sides cannot derive different keys
+    // now, and neither of them can be derived by anyone reading the binary.
 
     private func matchesRequestedService(_ endpoint: NWEndpoint) -> Bool {
         guard !requestedServiceName.isEmpty else { return true }

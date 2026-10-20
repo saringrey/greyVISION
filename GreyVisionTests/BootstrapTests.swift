@@ -12,6 +12,29 @@ import Metal
 import XCTest
 
 final class BootstrapTests: XCTestCase {
+    func testMagneticButtonAttractionIsBoundedSymmetricAndReducedMotionSafe() {
+        let size = CGSize(width: 288, height: 90)
+        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: 144, y: 45), in: size), .zero)
+        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: 216, y: 45), in: size).width, 6)
+        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: 144, y: 67.5), in: size).height, 4)
+        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: 288, y: 45), in: size), .zero)
+        for x in stride(from: CGFloat(0), through: 288, by: 5) {
+            for y in stride(from: CGFloat(0), through: 90, by: 5) {
+                let point = CGPoint(x: x, y: y)
+                let offset = GVButtonMagnetism.offset(at: point, in: size)
+                XCTAssertLessThanOrEqual(abs(offset.width), 6)
+                XCTAssertLessThanOrEqual(abs(offset.height), 4)
+                let reflected = GVButtonMagnetism.offset(at: CGPoint(x: 288 - x, y: 90 - y), in: size)
+                XCTAssertEqual(offset.width, -reflected.width, accuracy: 0.0001)
+                XCTAssertEqual(offset.height, -reflected.height, accuracy: 0.0001)
+                XCTAssertEqual(GVButtonMagnetism.offset(at: point, in: size, reduceMotion: true), .zero)
+            }
+        }
+        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: -1, y: 45), in: size), .zero)
+        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: CGFloat.nan, y: 45), in: size), .zero)
+        XCTAssertEqual(GVButtonMagnetism.offset(at: .zero, in: .zero), .zero)
+    }
+
     func testSplashHighlightsChangeCharacterAndStayBounded() {
         let letters = Array(GVSplashLettering.text)
         for row in 0 ..< 18 {

@@ -10,6 +10,10 @@ struct GVPresetsDrawer: View {
     @EnvironmentObject private var store: GVPresetStore
     @Binding var setup: CaptureSetupDraft
     @ObservedObject var editor: EffectEditingSession
+    /// Vertical budget handed down by the workspace. The plate sits in the
+    /// same bottom group as the capture pair, so an ideal-height drawer would
+    /// push its own header off the top of the screen.
+    let maximumHeight: CGFloat
     let onClose: () -> Void
 
     @State private var newName = ""
@@ -24,6 +28,13 @@ struct GVPresetsDrawer: View {
     @State private var previewID: UUID?
     @State private var previewTask: Task<Void, Never>?
     @SwiftUI.GestureState private var isPreviewHeld = false
+    /// Starred-only view of the collection. A filter rather than a separate
+    /// list, so the row order the operator set by dragging stays intact.
+    @State private var showsStarredOnly = false
+
+    private var visiblePresets: [GVPreset] {
+        showsStarredOnly ? store.presets.filter { store.starredIDs.contains($0.id) } : store.presets
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -60,10 +71,21 @@ struct GVPresetsDrawer: View {
 
     private var header: some View {
         HStack(spacing: 5) {
-            Text("Presets · \(store.presets.count)")
+            Text("Recipes · \(store.presets.count)")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(GVTheme.bone)
             Spacer(minLength: 6)
+            GVDeckChip(
+                label: "",
+                symbol: showsStarredOnly ? "star.fill" : "star",
+                active: showsStarredOnly,
+                id: "preset.filter.starred"
+            ) {
+                withAnimation(GVMotion.resolved(GVMotion.deck, reduceMotion: reduceMotion)) {
+                    showsStarredOnly.toggle()
+                }
+            }
+            .accessibilityLabel(showsStarredOnly ? "Show all recipes" : "Show starred recipes")
             GVDeckChip(label: "", symbol: "square.and.arrow.down", id: "preset.import") {
                 importPresented = true
             }
@@ -101,9 +123,26 @@ struct GVPresetsDrawer: View {
     }
 
     private var list: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 5) {
-                ForEach(store.presets) { preset in
+        GVDeckList(maxHeight: max(84, maximumHeight - 145)) {
+            VStack(spacing: 5) {
+                if let error = store.storageError {
+                    Text(error)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(GVTheme.warn)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .gvGlassChip(radius: 8, active: false, tint: GVTheme.warn)
+                        .accessibilityIdentifier("preset.storage-error")
+                }
+                if visiblePresets.isEmpty {
+                    Text(showsStarredOnly ? "Nothing starred yet · tap the star to keep a look here" : "No recipes saved")
+                        .font(.system(size: 11))
+                        .foregroundStyle(GVTheme.ash)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 18)
+                }
+                ForEach(visiblePresets) { preset in
                     if renamingID == preset.id {
                         renameRow(preset)
                     } else {
@@ -113,7 +152,6 @@ struct GVPresetsDrawer: View {
             }
             .padding(.vertical, 2)
         }
-        .frame(maxHeight: 236)
         .mask(
             LinearGradient(
                 stops: [
@@ -130,6 +168,21 @@ struct GVPresetsDrawer: View {
 
     private func recipeRow(_ preset: GVPreset) -> some View {
         HStack(spacing: 7) {
+            // STAR TO COLLECTION — the mark itself is the control, so the row
+            // does not need a fifth 44pt button to hold the looks worth keeping.
+            Button {
+                store.toggleStar(preset.id)
+            } label: {
+                Image(systemName: store.starredIDs.contains(preset.id) ? "star.fill" : "star")
+                    .font(.system(size: GVMetrics.textSmall, weight: .bold))
+                    .foregroundStyle(store.starredIDs.contains(preset.id) ? GVTheme.acid : GVTheme.bone.opacity(0.55))
+                    .frame(width: 24, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(GVPressStyle())
+            .accessibilityLabel(store.starredIDs.contains(preset.id) ? "Unstar \(preset.name)" : "Star \(preset.name)")
+            .accessibilityIdentifier("preset.star.\(preset.id)")
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(preset.name)
                     .font(.system(size: 13, weight: .medium))

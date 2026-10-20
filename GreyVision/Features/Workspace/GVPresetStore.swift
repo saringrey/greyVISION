@@ -35,33 +35,63 @@ struct GVPreset: Identifiable, Codable, Equatable {
 @MainActor
 final class GVPresetStore: ObservableObject {
     @Published private(set) var presets: [GVPreset] = []
+    @Published private(set) var starredIDs: Set<UUID> = []
+    @Published private(set) var storageError: String?
 
-    static let shared = GVPresetStore()
+    static let shared = GVPresetStore(directory: FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Presets", isDirectory: true))
 
-    private static var directory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent("Presets", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
+    private struct Collections: Codable {
+        var catalogVersion = 0
+        var starredIDs: Set<UUID> = []
     }
 
-    private static var presetsURL: URL { directory.appendingPathComponent("recipes.json") }
-    private static var sessionURL: URL { directory.appendingPathComponent("last-session.json") }
+    private let directory: URL
+    private var collections = Collections()
+    private var isReadOnly = false
+    private var presetsURL: URL { directory.appendingPathComponent("recipes.json") }
+    private var collectionsURL: URL { directory.appendingPathComponent("collections.json") }
 
-    private init() {
-        // Last-session recovery is intentionally unsupported: every launch
-        // starts from the clean instrument state. Remove legacy recovery data
-        // so an older build cannot leave a composition behind.
-        try? FileManager.default.removeItem(at: Self.sessionURL)
-        loadFromDisk()
-        if presets.isEmpty {
-            seedFactoryRecipes()
+    init(directory: URL) {
+        self.directory = directory
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // Launch remains clean; only explicitly named recipes are restored.
+            let legacySession = directory.appendingPathComponent("last-session.json")
+            if FileManager.default.fileExists(atPath: legacySession.path) {
+                try FileManager.default.removeItem(at: legacySession)
+            }
+            if FileManager.default.fileExists(atPath: presetsURL.path) {
+                presets = try JSONDecoder().decode([GVPreset].self, from: Data(contentsOf: presetsURL))
+            } else {
+                seedFactoryRecipes()
+            }
+            if FileManager.default.fileExists(atPath: collectionsURL.path) {
+                collections = try JSONDecoder().decode(Collections.self, from: Data(contentsOf: collectionsURL))
+            }
+            starredIDs = collections.starredIDs.intersection(presets.map(\.id))
+            if collections.catalogVersion < 1 {
+                if !presets.isEmpty { appendCuratedRecipes() }
+                collections.catalogVersion = 1
+                persist()
+            }
+        } catch {
+            isReadOnly = true
+            storageError = "Your recipe library could not be opened. Original files have been kept. \(error.localizedDescription)"
         }
+    }
+
+    func toggleStar(_ id: UUID) {
+        guard !isReadOnly, presets.contains(where: { $0.id == id }) else { return }
+        if starredIDs.contains(id) { starredIDs.remove(id) } else { starredIDs.insert(id) }
+        persist()
     }
 
     // MARK: - CRUD
 
     func save(name: String, from setup: CaptureSetupDraft, rgb: RGBSplitEffectParameters, stack: CameraEffectStackParameters) {
+        guard !isReadOnly else { return }
         var trimmed = name.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty { trimmed = "RECIPE \(presets.count + 1)" }
         // Saving under an existing name overwrites it — renaming by re-save.
@@ -88,7 +118,7 @@ final class GVPresetStore: ObservableObject {
     }
 
     func rename(_ id: UUID, to newName: String) {
-        guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
+        guard !isReadOnly, let index = presets.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
         presets[index].name = trimmed.uppercased()
@@ -96,7 +126,7 @@ final class GVPresetStore: ObservableObject {
     }
 
     func duplicate(_ id: UUID) {
-        guard let index = presets.firstIndex(where: { $0.id == id }) else { return }
+        guard !isReadOnly, let index = presets.firstIndex(where: { $0.id == id }) else { return }
         var copy = presets[index]
         copy.id = UUID()
         copy.name = (copy.name + " COPY").prefix(28).uppercased()
@@ -107,11 +137,14 @@ final class GVPresetStore: ObservableObject {
     }
 
     func delete(_ id: UUID) {
+        guard !isReadOnly else { return }
         presets.removeAll { $0.id == id }
+        starredIDs.remove(id)
         persist()
     }
 
     func move(fromOffsets: IndexSet, toOffset: Int) {
+        guard !isReadOnly else { return }
         presets.move(fromOffsets: fromOffsets, toOffset: toOffset)
         persist()
     }
@@ -137,7 +170,7 @@ final class GVPresetStore: ObservableObject {
 
     func exportURL(_ preset: GVPreset) -> URL? {
         let slug = Self.filesystemSafeSlug(preset.name)
-        let url = Self.directory.appendingPathComponent("\(slug).gvrecipe.json")
+        let url = directory.appendingPathComponent("\(slug).gvrecipe.json")
         let data: Data
         do {
             data = try JSONEncoder().encode(preset)
@@ -168,6 +201,7 @@ final class GVPresetStore: ObservableObject {
     }
 
     func importPreset(from url: URL) -> String? {
+        guard !isReadOnly else { return storageError }
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -194,36 +228,48 @@ final class GVPresetStore: ObservableObject {
     // MARK: - Disk
 
     private func persist() {
-        let data: Data
+        guard !isReadOnly else { return }
         do {
-            data = try JSONEncoder().encode(presets)
+            collections.starredIDs = starredIDs
+            try JSONEncoder().encode(presets).write(to: presetsURL, options: .atomic)
+            try JSONEncoder().encode(collections).write(to: collectionsURL, options: .atomic)
+            storageError = nil
         } catch {
-            GVLog.app.error("Recipe persist encode failed: \(error.localizedDescription, privacy: .public)")
-            return
-        }
-        do {
-            try data.write(to: Self.presetsURL, options: .atomic)
-        } catch {
-            GVLog.app.error("Recipe persist write failed: \(error.localizedDescription, privacy: .public)")
+            storageError = "Recipe changes could not be saved. \(error.localizedDescription)"
+            GVLog.app.error("Recipe persist failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func loadFromDisk() {
-        let data: Data
-        do {
-            data = try Data(contentsOf: Self.presetsURL)
-        } catch {
-            // No saved file yet is not an error; anything else is logged but
-            // never clobbers the in-memory (factory-seeded) presets.
-            if (error as NSError).code != NSFileReadNoSuchFileError {
-                GVLog.app.error("Recipe load read failed: \(error.localizedDescription, privacy: .public)")
+    private func appendCuratedRecipes() {
+        let names = ["SILVER LIGHT", "CHROMA STUDY", "AFTERIMAGE", "SOFT SIGNAL"]
+        for (index, name) in names.enumerated() {
+            let id = UUID(uuidString: "A6DC1000-441B-4864-8FCA-00000000000\(index)")!
+            guard !presets.contains(where: { $0.id == id }) else { continue }
+            var preset = GVPreset(
+                id: id, name: name, isFactory: true,
+                codecRaw: CaptureSetupDraft.VideoCodec.hevc.rawValue,
+                frameRate: 30, resolutionRaw: CaptureSetupDraft.Resolution.ultraHD.rawValue,
+                rgbSplit: .init(), stack: .init()
+            )
+            preset.stack.setEnabled(true, for: .grain)
+            preset.stack[.grain].primary = 0.16
+            switch index {
+            case 0:
+                preset.stack.setEnabled(true, for: .vignette)
+                preset.stack[.vignette].primary = 0.28
+            case 1:
+                preset.rgbSplit.isEnabled = true
+                preset.rgbSplit.amount = 0.006
+            case 2:
+                preset.stack.setEnabled(true, for: .echo)
+                preset.stack[.echo].primary = 0.25
+                preset.stack[.echo].blend = 0.4
+            default:
+                preset.stack.setEnabled(true, for: .vhs)
+                preset.stack[.vhs].primary = 0.22
+                preset.stack[.vhs].blend = 0.45
             }
-            return
-        }
-        do {
-            presets = try JSONDecoder().decode([GVPreset].self, from: data)
-        } catch {
-            GVLog.app.error("Recipe load decode failed — keeping in-memory presets: \(error.localizedDescription, privacy: .public)")
+            presets.append(preset)
         }
     }
 
@@ -277,6 +323,5 @@ final class GVPresetStore: ObservableObject {
                 preset.stack[.pixelate].blend = 0.7
             }
         ]
-        persist()
     }
 }

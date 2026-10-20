@@ -166,7 +166,7 @@ struct GVTelemetryStrip: View {
                 .padding(.vertical, GVMetrics.stepRelated)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(GVPressStyle())
         .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: isActive)
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.45).onEnded { _ in

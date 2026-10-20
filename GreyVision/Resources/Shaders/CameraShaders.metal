@@ -4512,6 +4512,28 @@ fragment half4 gvCameraPreviewFragment(
     return color;
 }
 
+// MARK: - Still capture
+
+/// Resolves the effect stack's output into an 8-bit sRGB photograph.
+///
+/// The preview shader cannot be reused for this. It letterboxes the chain to
+/// the drawable's aspect and composites scanlines into the result, and a
+/// photograph wants neither: the whole sensor frame, clean.
+///
+/// The chain output is `rgba16Float`, and a blit cannot convert between pixel
+/// formats, so the conversion has to happen through a pass. This is that pass —
+/// it is deliberately a straight 1:1 copy so the photograph is exactly the
+/// frame the operator composed, at whatever resolution the chain ran.
+///
+/// The target attachment is `bgra8Unorm_srgb`, so the encode from linear to
+/// sRGB is performed by the hardware on write.
+fragment half4 gvCameraStillFragment(
+    GVCameraRaster input [[stage_in]],
+    texture2d<half, access::sample> sourceTexture [[texture(0)]]
+) {
+    return sourceTexture.sample(gvCameraLinearSampler, input.uv);
+}
+
 // MARK: - AR objects
 
 struct GVARBackgroundUniforms {

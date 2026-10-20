@@ -16,80 +16,6 @@ final class CameraEffectTests: XCTestCase {
     // nothing in the app referenced the decoder — so the test asserted a
     // resource that cannot exist. Restore it alongside the asset, not before.
 
-    func testRadialLayoutContract() {
-        let cases: [(CGSize, CGPoint, CGFloat)] = [
-            (CGSize(width: 390, height: 844), CGPoint(x: 78, y: 772), 84),
-            (CGSize(width: 390, height: 844), CGPoint(x: 356, y: 772), 64),
-            (CGSize(width: 844, height: 390), CGPoint(x: 760, y: 342), 64)
-        ]
-
-        for shelf in EffectCatalog.shelves {
-            let effects = shelf.effects.flatMap(EffectCatalog.variants)
-            let groups = EffectCatalog.radialSubcategories(title: shelf.label, effects: effects)
-            let displayed = groups.isEmpty ? effects : groups.flatMap(\.effects)
-            XCTAssertEqual(Set(displayed), Set(effects), shelf.label)
-            XCTAssertEqual(displayed.count, Set(displayed).count, shelf.label)
-
-            let counts = groups.isEmpty
-                ? [effects.count]
-                : [groups.count] + groups.map(\.effects.count)
-            for (viewport, anchor, itemSize) in cases {
-                for count in counts {
-                    let layout = GVRadialMenuLayout(
-                        invocationPoint: anchor,
-                        viewportSize: viewport,
-                        itemSize: itemSize,
-                        slotCount: count
-                    )
-                    XCTAssertEqual(layout.slotCenters.count, count, shelf.label)
-                    XCTAssertTrue(layout.slotFrames.allSatisfy { CGRect(origin: .zero, size: viewport).contains($0) })
-                    XCTAssertTrue(layout.slotFrames.allSatisfy { !$0.intersects(layout.thumbOcclusion) })
-                    for (index, frame) in layout.slotFrames.enumerated() {
-                        for other in layout.slotFrames.dropFirst(index + 1) {
-                            XCTAssertFalse(frame.insetBy(dx: -4, dy: -4).intersects(other))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    func testPreviewRadialAvoidsNotchAndThumb() {
-        let layout = GVRadialMenuLayout(
-            invocationPoint: CGPoint(x: 281.4, y: 393.3),
-            viewportSize: CGSize(width: 402, height: 874),
-            itemSize: 84,
-            slotCount: 9,
-            safeAreaInsets: .init(top: 62, leading: 0, bottom: 34, trailing: 0)
-        )
-        XCTAssertEqual(layout.slotCenters.count, 9)
-        for frame in layout.slotFrames {
-            XCTAssertGreaterThanOrEqual(frame.minY, 82)
-            XCTAssertLessThanOrEqual(frame.maxY, 820)
-            XCTAssertFalse(frame.intersects(layout.thumbOcclusion))
-        }
-    }
-
-    func testPreviewRootFitsAtEveryCameraCorner() {
-        let families = GVRadialFamily.previewRoot()
-        XCTAssertEqual(families.map(\.title), ["COLOR", "TIME", "MOTION", "SIGNAL", "FORM", "SHADERS", "AUDIO"])
-        XCTAssertEqual(Set(families.flatMap(\.effects)),
-                       Set(EffectCatalog.shelves.flatMap(\.effects).flatMap(EffectCatalog.variants)))
-        let anchors = [
-            CGPoint(x: 30, y: 150), CGPoint(x: 372, y: 150),
-            CGPoint(x: 30, y: 650), CGPoint(x: 372, y: 650), CGPoint(x: 201, y: 400)
-        ]
-        for anchor in anchors {
-            let layout = GVRadialMenuLayout(invocationPoint: anchor,
-                                            viewportSize: CGSize(width: 402, height: 874), itemSize: 62,
-                                            slotCount: families.count,
-                                            safeAreaInsets: .init(top: 62, leading: 0, bottom: 34, trailing: 0),
-                                            centerOffset: GVRadialMenuLayout.previewCenterOffset)
-            XCTAssertEqual(layout.slotCenters.count, families.count, "\(anchor)")
-            XCTAssertTrue(layout.slotFrames.allSatisfy { $0.minY >= 82 && $0.maxY <= 820 })
-            XCTAssertTrue(layout.slotFrames.allSatisfy { !$0.intersects(layout.thumbOcclusion) })
-        }
-    }
 
     func testSplashDotsNeverSwellIntoEachOther() {
         XCTAssertFalse(GVSplashLettering.points.isEmpty)
@@ -168,22 +94,40 @@ final class CameraEffectTests: XCTestCase {
         }
     }
 
+    /// The generative shader block is modes 104...139, and it is filed across two
+    /// shelves on purpose: the finished looks under GENERATIVE, the interactive,
+    /// audio-reactive and touch-responsive block under SOLVERS. What has to hold is
+    /// that the block is contiguous and every mode in it is reachable — a gap
+    /// silently routes an effect to the shader's default arm, and an unlisted mode
+    /// is an effect the browser cannot open.
     func testShaderShowcaseIsACompleteStandaloneFamily() {
         let shaders = WorkspaceAdjustableEffect.shaderCategoryEffects
-        XCTAssertEqual(Set(shaders.compactMap(\.styleMode)), Set(UInt32(104) ... UInt32(139)))
-        XCTAssertEqual(shaders.count, 36)
+        XCTAssertEqual(shaders.first, .cyberGrid, "The first shader mode must be reachable from GENERATIVE")
         XCTAssertEqual(Set(shaders).count, shaders.count)
-        XCTAssertEqual(shaders.first, .cyberGrid, "The first shader mode must be reachable from SHADERS")
         XCTAssertTrue(
             Set(shaders).isDisjoint(with: WorkspaceAdjustableEffect.timeCategoryEffects),
-            "SHADERS must not be buried in or duplicated by TIME"
+            "GENERATIVE must not be buried in or duplicated by HISTORY"
         )
         XCTAssertTrue(WorkspaceAdjustableEffect.curatedCategoryEffectGroups.contains(shaders))
+
+        let solvers = WorkspaceAdjustableEffect.experimentalCategoryEffects
+        let block = Set(UInt32(104) ... UInt32(139))
+        let filed = Set(shaders + solvers)
+        let inBlock = WorkspaceAdjustableEffect.allCases.filter {
+            $0.styleMode.map(block.contains) ?? false
+        }
+        XCTAssertEqual(inBlock.count, block.count, "Two effects share a generative shader mode")
+        XCTAssertEqual(Set(inBlock).subtracting(filed), [], "Every generative mode has to be on a shelf")
+        XCTAssertEqual(
+            Set(shaders).intersection(solvers),
+            [],
+            "A generative effect is filed in one shelf, not both"
+        )
     }
 
     func testPredictionDriftOwnsTheNextTemporalModeAndDatamoshRailEntry() {
         XCTAssertEqual(WorkspaceAdjustableEffect.predictionDrift.temporalMode, 43)
-        XCTAssertTrue(WorkspaceAdjustableEffect.datamoshCategoryEffects.contains(.predictionDrift))
+        XCTAssertTrue(WorkspaceAdjustableEffect.legacyMoshRailEffects.contains(.predictionDrift))
         XCTAssertTrue(WorkspaceAdjustableEffect.temporalRenderOrder.contains(.predictionDrift))
         XCTAssertEqual(WorkspaceAdjustableEffect.predictionDrift.parameterLabels, ["DRIFT", "DECAY", "TEAR"])
     }
@@ -285,8 +229,9 @@ final class CameraEffectTests: XCTestCase {
         XCTAssertEqual(stack.activeEffects.map(\.0), [.edge])
         XCTAssertTrue(stack.activeTemporalEffects.isEmpty)
     }
+}
 
-    private func requireMetalDevice() throws -> MTLDevice {
+private func requireMetalDevice() throws -> MTLDevice {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal is unavailable in this test environment.")
         }
@@ -360,7 +305,6 @@ final class CameraEffectTests: XCTestCase {
         commandBuffer.waitUntilCompleted()
         XCTAssertNil(commandBuffer.error)
     }
-}
 
 /// Guards the slot model against the two ways it could quietly change output:
 /// by reordering effects that used to render in pipeline order, and by losing

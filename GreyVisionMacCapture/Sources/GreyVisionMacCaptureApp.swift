@@ -170,7 +170,7 @@ final class CaptureSession: ObservableObject {
 final class CaptureReceiver: ObservableObject {
     @Published var linkPeer = ""
     @Published var frame: NSImage?
-    @Published var status = "Arm Mac Cam on the iPhone; this Mac pairs automatically."
+    @Published var status = "Read the pairing code off the iPhone, paste it below, then arm Mac Cam."
     @Published var isRunning = false
     @Published var isError = false
     @Published var hasReceivedVideoFormat = false
@@ -180,6 +180,29 @@ final class CaptureReceiver: ObservableObject {
     @Published var health = GVLinkHealth()
     @Published var isLocallyRecording = false
     @Published var lastRecordingURL: URL?
+    /// The code shown on the iPhone. This Mac will only complete a handshake
+    /// with a phone that holds the same one — see `GVBroadcastKeyMaterial`.
+    /// Persisted because re-pairing on every launch would make the app
+    /// unusable rather than merely inconvenient.
+    @Published var pairingCode: String {
+        didSet {
+            let normalized = GVBroadcastKeyMaterial.normalizeCode(pairingCode)
+            if normalized != pairingCode { pairingCode = normalized }
+            UserDefaults.standard.set(normalized, forKey: Self.pairingCodeKey)
+            // A running link was authenticated under whatever was in the box a
+            // moment ago, so it has to be restarted against the new code.
+            if isRunning && normalized != oldValue { start() }
+        }
+    }
+    private static let pairingCodeKey = "greyvision.broadcast.pairingCode"
+
+    init() {
+        // Read straight from defaults rather than through `didSet`, so the
+        // stored value is not rewritten (and the link not restarted) on launch.
+        self.pairingCode = GVBroadcastKeyMaterial.normalizeCode(
+            UserDefaults.standard.string(forKey: Self.pairingCodeKey) ?? ""
+        )
+    }
     private let localRecorder = GVLocalRecorder()
     private var wantsLocalRecording = false
 
@@ -199,7 +222,7 @@ final class CaptureReceiver: ObservableObject {
         isError = false
         hasReceivedVideoFormat = false
         link?.start(
-            passcode: GVBroadcastProtocol.automaticPairingSecret,
+            pairingCode: pairingCode,
             bitrate: quality.bitrate
         )
     }
@@ -658,10 +681,14 @@ struct CaptureView: View {
             Image(systemName: "viewfinder")
                 .font(.system(size: 30, weight: .ultraLight))
             if session.source == .link {
-                Text("ARM MAC CAM ON IPHONE")
+                Text(receiver.pairingCode.isEmpty
+                    ? "PASTE THE PAIRING CODE FROM THE IPHONE"
+                    : "ARM MAC CAM ON IPHONE")
                     .gvCaptureMono(12, weight: .semibold)
                     .tracking(1.6)
-                Text("Automatic local pairing — waiting for the iPhone.")
+                Text(receiver.pairingCode.isEmpty
+                    ? "Long-press Mac Camera in the iOS app to read its code. This Mac will not accept a stream from any phone that does not hold the same one."
+                    : "Waiting for the iPhone to advertise with that code.")
                     .font(.system(size: 12, weight: .regular))
                     .foregroundStyle(.white.opacity(0.45))
             } else {
@@ -682,6 +709,9 @@ struct CaptureView: View {
         VStack(spacing: 12) {
             HStack(spacing: 12) {
                 GVIdentityField(label: "DEVICE", value: receiver.linkPeer.isEmpty ? "AUTO DISCOVERY" : receiver.linkPeer, width: 210)
+
+                GVPairingField(text: $receiver.pairingCode, width: 210)
+
                 Picker("Quality", selection: $receiver.quality) {
                     ForEach(CaptureQuality.allCases) { quality in
                         Text(quality.label).tag(quality)
@@ -949,6 +979,56 @@ private struct GVIdentityField: View {
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(.white.opacity(0.18), lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 4))
         }
+    }
+}
+
+/// The pairing-code box.
+///
+/// Deliberately a sibling of `GVIdentityField` rather than a `TextField`
+/// overlaid on one: that view's label is a caption above the box, not text
+/// inside it, so an overlay has to guess at a leading inset and ends up
+/// covering the caption. This one owns the whole thing.
+private struct GVPairingField: View {
+    @Binding var text: String
+    let width: CGFloat
+
+    private var isSet: Bool { GVBroadcastKeyMaterial.isValidCode(text) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Text("PAIRING CODE")
+                    .gvCaptureMono(9, weight: .bold)
+                    .tracking(1.1)
+                    .foregroundStyle(.white.opacity(0.45))
+                if isSet {
+                    Circle()
+                        .fill(.green.opacity(0.85))
+                        .frame(width: 4, height: 4)
+                }
+            }
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(isSet ? .white.opacity(0.72) : .white.opacity(0.28))
+                    .frame(width: 5, height: 5)
+                TextField("", text: $text)
+                    .textFieldStyle(.plain)
+                    .gvCaptureMono(11, weight: .medium)
+                    .foregroundStyle(isSet ? .white.opacity(0.92) : .white.opacity(0.45))
+                    .lineLimit(1)
+                    .accessibilityIdentifier("mac.pairing.field")
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 11)
+            .frame(width: width, alignment: .leading)
+            .background(.white.opacity(0.06))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(.white.opacity(0.18), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .help(isSet
+            ? "Type the code shown on the iPhone. This Mac only accepts a stream from a phone holding the same one."
+            : "Type the \(GVBroadcastKeyMaterial.codeLength)-character code shown on the iPhone. Long-press Mac Camera there to read it.")
     }
 }
 

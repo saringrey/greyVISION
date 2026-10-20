@@ -134,7 +134,7 @@ struct BootView: View {
                 compactHeight: compactHeight
             )
             .opacity(isInterfaceVisible ? 1 : 0)
-            .animation(.easeOut(duration: 0.9), value: isInterfaceVisible)
+            .animation(GVMotion.resolved(.easeOut(duration: 0.9), reduceMotion: reduceMotion), value: isInterfaceVisible)
 
             // The workspace tubes, carried onto the splash so the two
             // screens are lit the same way. Held back until the interface
@@ -158,7 +158,7 @@ struct BootView: View {
             wakeLayer
                 .ignoresSafeArea()
                 .opacity(sequence.phase >= .wake ? 1 : 0)
-                .animation(.easeInOut(duration: 0.6), value: sequence.phase)
+                .animation(GVMotion.resolved(.easeInOut(duration: 0.6), reduceMotion: reduceMotion), value: sequence.phase)
 
             GVDualScanner(isActive: sequence.phase >= .discovery)
                 .ignoresSafeArea()
@@ -357,7 +357,7 @@ struct BootView: View {
                     )
                     .frame(width: logoWidth * 1.5, height: logoHeight * 1.5)
                     .allowsHitTesting(false)
-                    .animation(.easeOut(duration: 0.9), value: sequence.phase)
+                    .animation(GVMotion.resolved(.easeOut(duration: 0.9), reduceMotion: reduceMotion), value: sequence.phase)
                 }
             }
         }
@@ -368,7 +368,7 @@ struct BootView: View {
     /// Dramatic phosphor spark and bloom. A separate property so the generic
     /// TimelineView closure is type-checked outside the (very large) body.
     private var openingField: some View {
-        TimelineView(.animation(minimumInterval: 1 / 60, paused: false)) { timeline in
+        TimelineView(.animation(minimumInterval: 1 / 60, paused: reduceMotion)) { timeline in
             BootOpeningField(
                 sequence: sequence,
                 elapsed: timeline.date.timeIntervalSince(sequence.phaseStart)
@@ -614,6 +614,7 @@ private struct SplashCaptureDock: View {
     /// Leading visible card of the open format rail. Every submenu opens from
     /// its first option so the beginning of the list is never clipped.
     @State private var optionScrollID: String?
+    @State private var selectionTask: Task<Void, Never>?
 
     /// The basics only. The enum still spells every codec it ever did for
     /// draft decoding, but the chooser offers five.
@@ -666,6 +667,7 @@ private struct SplashCaptureDock: View {
         .frame(maxWidth: 560)
         .zIndex(2)
         .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: activeSection)
+        .onDisappear { selectionTask?.cancel() }
     }
 
     /// Every option in a section, built once.
@@ -771,8 +773,10 @@ private struct SplashCaptureDock: View {
                 withAnimation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion)) { option.apply() }
                 // The rail stays open just long enough for the choice to be
                 // seen landing on the card before it collapses.
-                Task { @MainActor in
+                selectionTask?.cancel()
+                selectionTask = Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(230))
+                    guard !Task.isCancelled else { return }
                     withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
                         activeSection = nil
                     }
@@ -784,6 +788,7 @@ private struct SplashCaptureDock: View {
     private func dockButton(_ section: SplashDockSection, value: String) -> some View {
         let isActive = activeSection == section
         return Button {
+            selectionTask?.cancel()
             if isActive {
                 activeSection = nil
             } else {
@@ -792,22 +797,13 @@ private struct SplashCaptureDock: View {
             }
         } label: {
             VStack(spacing: GVMetrics.gapTight) {
-                GVTerminalText(
-                    text: section.label,
-                    size: 9.5,
-                    weight: .bold,
-                    tracking: 1.6,
-                    baseColor: isActive ? GVTheme.violet : GVTheme.bone.opacity(0.76),
-                    intensity: 0.55
-                )
-                GVTerminalText(
-                    text: value,
-                    size: 15,
-                    weight: .medium,
-                    tracking: 0.7,
-                    baseColor: GVTheme.bone,
-                    intensity: 0.2
-                )
+                Text(section.label)
+                    .font(.system(.caption2, design: .monospaced))
+                    .tracking(0.8)
+                    .foregroundStyle(GVTheme.bone.opacity(isActive ? 1 : 0.65))
+                Text(value)
+                    .font(.system(.subheadline, design: .monospaced).weight(.medium))
+                    .foregroundStyle(GVTheme.bone)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
                 // A lit rule under the value, so the dock says which section
@@ -816,7 +812,6 @@ private struct SplashCaptureDock: View {
                 Rectangle()
                     .fill(isActive ? GVTheme.violet : GVTheme.bone.opacity(0.16))
                     .frame(width: 22, height: 0.75)
-                    .shadow(color: GVTheme.violet.opacity(isActive ? 0.7 : 0), radius: 3)
             }
             .frame(maxWidth: .infinity)
             .frame(height: rowHeight)
@@ -840,19 +835,13 @@ private struct SplashCaptureDock: View {
     private var launchButton: some View {
         Button(action: onLaunch) {
             VStack(spacing: GVMetrics.gapTight) {
-                GVTerminalText(
-                    text: "ARM",
-                    size: 9.5,
-                    weight: .bold,
-                    tracking: 1.6,
-                    baseColor: isReady ? GVTheme.bone : GVTheme.bone.opacity(0.5),
-                    intensity: 0.95
-                )
+                Text("ARM")
+                    .font(.system(.caption2, design: .monospaced))
+                    .tracking(0.8)
+                    .foregroundStyle(GVTheme.bone.opacity(isReady ? 1 : 0.55))
                 Image(systemName: "arrow.right")
                     .font(.system(size: 20, weight: .regular))
                     .foregroundStyle(isReady ? GVTheme.bone : GVTheme.faint)
-                    .shadow(color: isReady ? GVTheme.bone.opacity(0.85) : .clear, radius: 6)
-                    .shadow(color: isReady ? GVTheme.bone.opacity(0.45) : .clear, radius: 12)
             }
             .frame(maxWidth: .infinity)
             .frame(height: rowHeight)
@@ -886,10 +875,10 @@ struct GVSplashButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(GVTheme.bone.opacity(active || pressed ? 0.85 : 0.28), lineWidth: 0.75)
+                    .strokeBorder(GVTheme.bone.opacity(active || pressed ? 0.55 : 0.18), lineWidth: 0.75)
             }
-            .brightness(pressed ? 0.14 : 0)
-            .scaleEffect(reduceMotion ? 1 : (pressed ? 0.95 : (active ? 1.02 : 1)))
+            .brightness(pressed ? 0.08 : 0)
+            .scaleEffect(reduceMotion ? 1 : (pressed ? 0.97 : 1))
             .animation(GVMotion.resolved(GVMotion.press, reduceMotion: reduceMotion), value: pressed)
             .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: active)
     }

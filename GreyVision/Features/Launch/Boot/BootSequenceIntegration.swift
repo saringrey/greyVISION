@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 /// Integration example showing how to use the new BootSequenceManager
 /// with the existing BootView implementation.
@@ -147,7 +148,7 @@ struct NewBootSequenceView: View {
             // Begin transition with haptic feedback
             transitionManager.beginTransition {
                 // Boot complete
-                print("✅ Boot sequence complete")
+                GVLog.app.notice("Boot sequence complete")
             }
         }
     }
@@ -223,7 +224,7 @@ private struct UseNewBootSequenceKey: EnvironmentKey {
 
 #Preview("New Boot Sequence") {
     NewBootSequenceView {
-        print("Boot complete!")
+        GVLog.app.notice("Boot complete!")
     }
 }
 

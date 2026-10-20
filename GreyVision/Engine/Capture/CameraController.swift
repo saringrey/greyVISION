@@ -60,6 +60,7 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
     /// path deliberately belongs to AVFoundation rather than the frame writer.
     func startNativeRAWRecording(
         codec: AVVideoCodecType,
+        outputURL: URL,
         onStarted: @escaping @Sendable (Bool) -> Void,
         onFinished: @escaping @Sendable (NativeCaptureResult) -> Void
     ) {
@@ -77,14 +78,12 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
             }
 
             movieOutput.setOutputSettings([AVVideoCodecKey: codec], for: connection)
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("greyvision-raw-\(UUID().uuidString).mov")
             let delegate = NativeMovieRecordingDelegate(
                 onStarted: onStarted,
                 onFinished: onFinished
             )
             nativeRecordingDelegate = delegate
-            movieOutput.startRecording(to: url, recordingDelegate: delegate)
+            movieOutput.startRecording(to: outputURL, recordingDelegate: delegate)
         }
     }
 

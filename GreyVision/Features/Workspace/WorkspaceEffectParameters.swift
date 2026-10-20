@@ -436,7 +436,11 @@ extension WorkspaceAdjustableEffect {
     static let defaultPlacementOrder: [WorkspaceAdjustableEffect] =
         metalRenderOrder + temporalRenderOrder + [.fluid, .reactionGarden]
 
-    static let datamoshCategoryEffects: [WorkspaceAdjustableEffect] = [
+    /// The historical "mosh rail": real moshes, the predictive moshes, the
+    /// sorts and the frame-history effects in one list. Retained because
+    /// tests assert that a temporal mode owns its rail entry, not because any
+    /// shelf draws it. The browseable shelves below are the accurate split.
+    static let legacyMoshRailEffects: [WorkspaceAdjustableEffect] = [
         .datamosh,
         .liquidMosh,
         .heavyMosh,
@@ -645,23 +649,16 @@ extension WorkspaceAdjustableEffect {
         .dctBlocks
     ]
 
+    /// The generative shaders that behave like a finished look: they run one
+    /// pass and frame in. The interactive, audio-reactive and touch-responsive
+    /// block below lives in EXPERIMENTAL instead, because it is a different
+    /// kind of thing to reach for — a toy, not a grade.
     static let shaderCategoryEffects: [WorkspaceAdjustableEffect] = [
         .cyberGrid,
         .astralPlasma,
         .quantumRaymarch,
         .liquidChroma,
         .holoAurora,
-        .neuralFlow,
-        .voxelStorm,
-        .fractalZoom,
-        .particleLife,
-        .waveformTunnel,
-        .spectralFlower,
-        .glitchWeave,
-        .hologramMatrix,
-        .singularityLens,
-        .causticReactor,
-        .eventHorizon,
         .prismPortal,
         .neonOrbit,
         .chromeRipple,
@@ -690,13 +687,50 @@ extension WorkspaceAdjustableEffect {
         self == .worldFeedback || self == .timeGraffiti
     }
 
+    /// Work in progress: the generative block that reacts to touch, the live
+    /// spectrum and its own clock, plus the two whole-frame solvers. These are
+    /// the effects that are still being tuned, so they sit in a shelf of
+    /// their own rather than being filed under FORM or MOTION by the primitive
+    /// they happen to be built from.
+    static let experimentalCategoryEffects: [WorkspaceAdjustableEffect] = [
+        .neuralFlow,
+        .voxelStorm,
+        .fractalZoom,
+        .particleLife,
+        .waveformTunnel,
+        .spectralFlower,
+        .glitchWeave,
+        .hologramMatrix,
+        .singularityLens,
+        .causticReactor,
+        .eventHorizon,
+        .fluid,
+        .reactionGarden
+    ]
+
+    /// Research surface. The SARIN experiments that treat time and motion as
+    /// material, the four predictive moshes that borrow from what the buffer
+    /// is about to hold, and the finger-painted corruption brush. All of it
+    /// reads deep internal state, which is why it was never folded into a
+    /// shipping family.
+    static let developerCategoryEffects: [WorkspaceAdjustableEffect] = sarinCategoryEffects + [
+        .predictionDrift,
+        .vectorCodebook,
+        .motionTransplant,
+        .bitplaneLatch,
+        .moshBrush
+    ]
+
     /// Anything that reads the live spectrum must be able to turn the
     /// microphone on, otherwise the effect renders against a silent uniform.
     var requiresAudioAnalysis: Bool {
         // The spectrum scopes and shader family read the live FFT, and need
-        // the microphone armed to react dynamically.
+        // the microphone armed to react dynamically. EXPERIMENTAL is included
+        // because the interactive generative block reacts to the spectrum as
+        // well as to touch.
         WorkspaceAdjustableEffect.audioCategoryEffects.contains(self)
             || WorkspaceAdjustableEffect.shaderCategoryEffects.contains(self)
+            || WorkspaceAdjustableEffect.experimentalCategoryEffects.contains(self)
             || [.spectrumBars, .radialSpectrum, .lissajous].contains(self)
     }
 
@@ -707,16 +741,54 @@ extension WorkspaceAdjustableEffect {
         self == .spectrumBars || self == .radialSpectrum
     }
 
-    // MARK: - Consolidated categories (10 effect families)
+    // MARK: - Consolidated categories (13 effect families)
 
-    /// All frame-history work: mosh/sort/smear plus the sarin
-    /// motion-as-material experiments, which read the same flow field and
-    /// frame ring.
-    static let timeCategoryEffects: [WorkspaceAdjustableEffect] = datamoshCategoryEffects + sarinCategoryEffects
+    /// Real codec moshing: the effects that decode a previous frame, drop its
+    /// reference data, and render the damaged result. Split out of the old
+    /// TIME shelf because these genuinely run VideoToolbox, and an operator
+    /// hunting for "the mosh one" was scrolling past sorts to find them.
+    ///
+    /// `opticalFlowLiquid` is a variant of `liquidMosh` and canonicalises to
+    /// it, so it lives here rather than in HISTORY — otherwise the History
+    /// shelf would render a tile captioned "Liquid Mosh".
+    static let datamoshCategoryEffects: [WorkspaceAdjustableEffect] = [
+        .datamosh,
+        .liquidMosh,
+        .opticalFlowLiquid,
+        .heavyMosh
+    ]
 
-    /// Merged motion: temporal feedback + vector flow + the fluid solve.
-    static let motionCategoryEffects: [WorkspaceAdjustableEffect] = feedbackCategoryEffects + flowCategoryEffects + [.fluid]
-    /// Pixel-integrity group: primitive rebuilds + transport failure + decay.
+    /// Pixel and line sorting. Every one of these reorders pixels by some
+    /// measured quantity — luma, radius, history or edge — which is what makes
+    /// them a family rather than part of the moshes.
+    static let sortCategoryEffects: [WorkspaceAdjustableEffect] = [
+        .sort,
+        .depthSort,
+        .objectSort,
+        .radialSort,
+        .temporalPixelSort,
+        .pointCloudSmear,
+        .freezeBrush,
+        .sortBrush
+    ]
+
+    /// Frame history without a codec and without sorting: hold, drag, extrude
+    /// and tunnel the previous frames. These are what TIME used to mean once
+    /// the moshes and sorts were taken out of it.
+    static let timeCategoryEffects: [WorkspaceAdjustableEffect] = [
+        .depthFeedback,
+        .feedbackTunnel,
+        .lumaExtrusion,
+        .rollingTime,
+        .frameHoldSmear,
+        .pixelGravity,
+        .pixelShift
+    ]
+
+    /// Temporal feedback plus vector flow. The fluid solve moved to
+    /// EXPERIMENTAL with the rest of the whole-frame solvers.
+    static let motionCategoryEffects: [WorkspaceAdjustableEffect] = feedbackCategoryEffects + flowCategoryEffects
+    /// Primitive rebuilds, transport failure and material dissolution.
     static let decayCategoryEffects: [WorkspaceAdjustableEffect] = blockCategoryEffects + damageCategoryEffects + [
         .pixelMelt,
         .corrode,
@@ -727,11 +799,14 @@ extension WorkspaceAdjustableEffect {
     /// Decorative glitch + analog tape + the reassigned data bend. Color
     /// grades moved to COLOR; optics moved to OPTICS.
     static let signalCategoryEffects: [WorkspaceAdjustableEffect] = glitchCategoryEffects + analogCategoryEffects + [.dataBend]
-    /// Merged form: spatial geometry + field warps + the reassigned garden.
-    static let formCategoryEffects: [WorkspaceAdjustableEffect] = geometryCategoryEffects + fieldCategoryEffects + [.reactionGarden]
+    /// Merged form: spatial geometry + field warps. The reaction garden moved
+    /// to EXPERIMENTAL.
+    static let formCategoryEffects: [WorkspaceAdjustableEffect] = geometryCategoryEffects + fieldCategoryEffects
 
     static let curatedCategoryEffectGroups: [[WorkspaceAdjustableEffect]] = [
         colorCategoryEffects,
+        datamoshCategoryEffects,
+        sortCategoryEffects,
         timeCategoryEffects,
         motionCategoryEffects,
         decayCategoryEffects,
@@ -741,22 +816,28 @@ extension WorkspaceAdjustableEffect {
         shaderCategoryEffects,
         audioCategoryEffects,
         scopeCategoryEffects,
+        experimentalCategoryEffects,
+        developerCategoryEffects,
     ]
 
     /// The curated family this effect fans out with, plus a rail title for the
     /// radial ring. Nil only for effects that belong to no family rail.
     var curatedFamily: (title: String, effects: [WorkspaceAdjustableEffect])? {
         let families: [(title: String, effects: [WorkspaceAdjustableEffect])] = [
-            (title: "COLOR", effects: WorkspaceAdjustableEffect.colorCategoryEffects),
-            (title: "TIME", effects: WorkspaceAdjustableEffect.timeCategoryEffects),
+            (title: "TONAL", effects: WorkspaceAdjustableEffect.colorCategoryEffects),
+            (title: "DATAMOSH", effects: WorkspaceAdjustableEffect.datamoshCategoryEffects),
+            (title: "SORT", effects: WorkspaceAdjustableEffect.sortCategoryEffects),
+            (title: "HISTORY", effects: WorkspaceAdjustableEffect.timeCategoryEffects),
             (title: "MOTION", effects: WorkspaceAdjustableEffect.motionCategoryEffects),
             (title: "DECAY", effects: WorkspaceAdjustableEffect.decayCategoryEffects),
-            (title: "SIGNAL", effects: WorkspaceAdjustableEffect.signalCategoryEffects),
-            (title: "OPTICS", effects: WorkspaceAdjustableEffect.opticsCategoryEffects),
-            (title: "FORM", effects: WorkspaceAdjustableEffect.formCategoryEffects),
-            (title: "SHADERS", effects: WorkspaceAdjustableEffect.shaderCategoryEffects),
-            (title: "AUDIO", effects: WorkspaceAdjustableEffect.audioCategoryEffects),
-            (title: "SCOPE", effects: WorkspaceAdjustableEffect.scopeCategoryEffects),
+            (title: "ANALOG", effects: WorkspaceAdjustableEffect.signalCategoryEffects),
+            (title: "LENS", effects: WorkspaceAdjustableEffect.opticsCategoryEffects),
+            (title: "GEOMETRY", effects: WorkspaceAdjustableEffect.formCategoryEffects),
+            (title: "GENERATIVE", effects: WorkspaceAdjustableEffect.shaderCategoryEffects),
+            (title: "SPECTRUM", effects: WorkspaceAdjustableEffect.audioCategoryEffects),
+            (title: "INSTRUMENTS", effects: WorkspaceAdjustableEffect.scopeCategoryEffects),
+            (title: "SOLVERS", effects: WorkspaceAdjustableEffect.experimentalCategoryEffects),
+            (title: "RESEARCH", effects: WorkspaceAdjustableEffect.developerCategoryEffects),
         ]
         return families.first { $0.effects.contains(self) }
     }
@@ -2150,92 +2231,5 @@ struct RGBSplitEffectParameters: Codable, Equatable, Sendable {
             angleDegrees: angleDegrees.truncatingRemainder(dividingBy: 360),
             mix: min(max(mix, 0), 1)
         )
-    }
-}
-
-// swiftlint:enable file_length
-
-// MARK: - Radial menu subcategories
-
-//
-// The radial ring used to fan out every effect in a family at once (SHADERS
-// alone was 35 same-size slots). Instead the ring now shows small
-// subcategory entries first; hovering one auto-expands into that group's
-// variants. Pure grouping metadata — no effect is reclassified anywhere.
-
-/// One subcategory entry shown on the radial category ring.
-struct GVRadialSubcategory {
-    let title: String
-    let hue: GVTheme.RadialHue
-    let glyph: GVEffectGlyphKind
-    let effects: [WorkspaceAdjustableEffect]
-}
-
-extension WorkspaceAdjustableEffect {
-    /// The radial subcategories for a curated family. Effects missing from
-    /// every group here still appear via a fallback "ALL" subcategory.
-    static func curatedRadialSubcategories(for familyTitle: String) -> [GVRadialSubcategory]? {
-        switch familyTitle {
-        case "TIME":
-            return [
-                GVRadialSubcategory(title: "MOSH", hue: .magenta, glyph: .datamosh, effects: [.datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .moshBrush, .vectorCodebook, .motionTransplant, .bitplaneLatch]),
-                GVRadialSubcategory(title: "SORT", hue: .cyan, glyph: .pixelSort, effects: [.sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort, .sortBrush]),
-                GVRadialSubcategory(title: "SMEAR", hue: .amber, glyph: .echo, effects: [.pointCloudSmear, .depthFeedback, .lumaExtrusion, .opticalFlowLiquid, .pixelGravity, .pixelShift]),
-                GVRadialSubcategory(title: "TIME", hue: .rose, glyph: .frame, effects: [.rollingTime, .frameHoldSmear, .freezeBrush, .feedbackTunnel]),
-                GVRadialSubcategory(title: "SARIN", hue: .moss, glyph: .echo, effects: sarinCategoryEffects),
-            ]
-        case "MOTION":
-            return [
-                GVRadialSubcategory(title: "FEEDBACK", hue: .teal, glyph: .feedback, effects: feedbackCategoryEffects),
-                GVRadialSubcategory(title: "FLOW", hue: .sky, glyph: .flow, effects: flowCategoryEffects),
-                GVRadialSubcategory(title: "FLUID", hue: .cyan, glyph: .flow, effects: [.fluid]),
-            ]
-        case "DECAY":
-            return [
-                GVRadialSubcategory(title: "REBUILD", hue: .lime, glyph: .block, effects: blockCategoryEffects),
-                GVRadialSubcategory(title: "DAMAGE", hue: .rose, glyph: .glitch, effects: damageCategoryEffects),
-                GVRadialSubcategory(title: "DECAY", hue: .ember, glyph: .frame, effects: [.pixelMelt, .corrode, .burnThrough, .ashDrift, .bitRot]),
-            ]
-        case "SIGNAL":
-            return [
-                GVRadialSubcategory(title: "GLITCH", hue: .magenta, glyph: .glitch, effects: glitchCategoryEffects + [.dataBend]),
-                GVRadialSubcategory(title: "ANALOG", hue: .sand, glyph: .frame, effects: analogCategoryEffects),
-            ]
-        case "OPTICS":
-            return [
-                GVRadialSubcategory(title: "LENS", hue: .azure, glyph: .frame, effects: [.fisheye, .barrelWarp, .lensWarp, .tiltShift, .bokeh, .softFocus, .vignette]),
-                GVRadialSubcategory(title: "LIGHT", hue: .amber, glyph: .glitch, effects: [.anamorphicFlare, .lightLeak, .starFilter, .prismStreak, .spectralDiffraction, .chromaticAberration]),
-                GVRadialSubcategory(title: "GLASS", hue: .sky, glyph: .flow, effects: [.lensDirt, .frostedGlass, .hologram]),
-            ]
-        case "FORM":
-            return [
-                GVRadialSubcategory(title: "GEOMETRY", hue: .plum, glyph: .frame, effects: geometryCategoryEffects),
-                GVRadialSubcategory(title: "FIELD", hue: .teal, glyph: .flow, effects: fieldCategoryEffects + [.reactionGarden]),
-            ]
-        case "SHADERS":
-            // Six groups of exactly six, because the ring holds six wedges and
-            // anything larger spills into MORE pages. The previous four groups
-            // of eight to ten meant reaching `causticReactor` cost a hold, a
-            // push into SHADERS, then a walk through four MORE pages before
-            // the effect itself. Six-by-six fits the ring exactly, so every
-            // shader is two gestures from the preview.
-            return [
-                GVRadialSubcategory(title: "PLASMA", hue: .plum, glyph: .flow, effects: [.astralPlasma, .plasmaRipple, .liquidChroma, .auroraGlass, .nebulaDrift, .opalWave]),
-                GVRadialSubcategory(title: "QUANTUM", hue: .magenta, glyph: .echo, effects: [.quantumRaymarch, .quantumBloom, .fractalZoom, .fractalBurst, .singularityLens, .singularityWeave]),
-                GVRadialSubcategory(title: "VOLUME", hue: .cyan, glyph: .block, effects: [.cyberGrid, .voxelStorm, .cosmicKnot, .chromeRipple, .neuralFlow, .chromascrape]),
-                GVRadialSubcategory(title: "PARTICLE", hue: .lime, glyph: .trails, effects: [.particleLife, .pixelConfetti, .ionStorm, .vortexPulse, .waveformTunnel, .spectralFlower]),
-                GVRadialSubcategory(title: "NEON", hue: .amber, glyph: .glitch, effects: [.neonOrbit, .laserGarden, .prismPortal, .solarFlare, .spectralNova, .hyperBloom]),
-                GVRadialSubcategory(title: "GATEWAY", hue: .rose, glyph: .feedback, effects: [.holoAurora, .hologramMatrix, .causticReactor, .eventHorizon, .glitchWeave, .candyMesh]),
-            ]
-        case "AUDIO":
-            return [
-                GVRadialSubcategory(title: "VISUALIZE", hue: .teal, glyph: .audio, effects: [.audioSpectral, .audioWaveform, .audioBandSlice, .audioBloom, .audioKick]),
-                GVRadialSubcategory(title: "WARP", hue: .sky, glyph: .flow, effects: [.audioScanBend, .audioTunnel, .audioKaleido, .audioDisplace, .audioStretch]),
-                GVRadialSubcategory(title: "TEXTURE", hue: .amber, glyph: .block, effects: [.audioMacroblock, .audioFracture, .audioGrain, .audioPosterize, .audioRepair]),
-                GVRadialSubcategory(title: "TINT", hue: .magenta, glyph: .glitch, effects: [.audioChromaPulse, .spectralTint]),
-            ]
-        default:
-            return nil
-        }
     }
 }

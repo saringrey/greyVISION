@@ -316,15 +316,3 @@ struct AnyShape: Shape {
         pathBuilder(rect)
     }
 }
-
-/// Kept for focused callers that need only a dark veil above native glass.
-struct GVBlackGlassVeil: View {
-    let radius: CGFloat
-    var opacity: Double = 0.12
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .fill(Color.black.opacity(opacity))
-            .allowsHitTesting(false)
-    }
-}
