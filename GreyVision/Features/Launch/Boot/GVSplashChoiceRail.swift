@@ -28,25 +28,13 @@ struct GVSplashOption: Identifiable {
     let id: String
     let identifier: String
     let label: String
-    let spec: String
-    let note: String
-    let meter: Int
-    let chips: [GVSplashSpecChip]
     let enabled: Bool
     let apply: () -> Void
 }
 
-struct GVSplashSpecChip: Identifiable {
-    let caption: String
-    let value: String
-    var meter: Int = 0
-    var id: String { caption }
-}
-
 /// A compact signal console, not a second settings screen. The choices and
-/// their availability are unchanged; all readouts come from the format model.
+/// their availability come from the format model; the cards carry only names.
 struct GVSplashChoiceRail: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var isSelecting = false
     @State private var selectionTask: Task<Void, Never>?
@@ -59,13 +47,11 @@ struct GVSplashChoiceRail: View {
 
     private let surface = Color(white: 0.065)
     private var compact: Bool { verticalSizeClass == .compact }
-    private var selected: GVSplashOption? { options.first { $0.id == selectedID } ?? options.first }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             optionScroller
-            if let selected { readout(for: selected) }
         }
         .background(surface)
         .clipShape(GVChamferedPlate(cut: 14))
@@ -116,9 +102,8 @@ struct GVSplashChoiceRail: View {
 
     private func card(_ option: GVSplashOption) -> some View {
         let selected = option.id == selectedID
-        let width: CGFloat = section == .codec ? 156 : 128
-        let height: CGFloat = compact ? 72 : (section == .codec ? 100 : 82)
         let borderOpacity: Double = selected ? 0.5 : 0.10
+        let hint = option.enabled ? "Selects this format." : "Unavailable on this device."
         return Button {
             guard option.enabled else { return }
             selectionTask?.cancel()
@@ -131,34 +116,24 @@ struct GVSplashChoiceRail: View {
                 isSelecting = false
             }
         } label: {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 8) {
-                    Text(cardTitle(option))
-                        .font(.system(.subheadline, design: .monospaced).weight(.medium))
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.85)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .layoutPriority(1)
-                    Image(systemName: !option.enabled ? "lock" : (selected ? "checkmark" : "plus"))
-                        .font(.caption)
-                        .opacity(selected ? 1 : 0.60)
-                }
-                Spacer(minLength: 0)
-                Text(option.spec)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(GVTheme.bone.opacity(0.70))
-                    .lineLimit(2)
+            HStack(spacing: 6) {
+                Text(option.label)
+                    .font(.system(.subheadline, design: .monospaced).weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Image(systemName: !option.enabled ? "lock" : (selected ? "checkmark" : "plus"))
+                    .font(.caption2)
+                    .opacity(selected ? 1 : 0.60)
             }
             .foregroundStyle(GVTheme.bone)
-            .padding(12)
-            .frame(width: width, height: height)
+            .padding(.horizontal, 14)
+            .frame(minWidth: 96, minHeight: compact ? 52 : 64)
             .background(Color.white.opacity(selected ? 0.10 : 0.025), in: RoundedRectangle(cornerRadius: 12))
             .overlay {
                 RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(GVTheme.bone.opacity(borderOpacity), lineWidth: 0.75)
             }
-            .gvDecay(selected && isSelecting, seed: Double(option.meter))
+            .gvDecay(selected && isSelecting)
             .contentShape(Rectangle())
         }
         .buttonStyle(GVPressStyle())
@@ -166,84 +141,9 @@ struct GVSplashChoiceRail: View {
         .opacity(option.enabled ? 1 : 0.55)
         .accessibilityValue(selected ? "selected" : "not selected")
         .accessibilityLabel(option.label)
-        .accessibilityHint(option.enabled ? option.note : "Unavailable. \(option.note)")
+        .accessibilityHint(hint)
         .accessibilityIdentifier(option.identifier)
         .id(option.id)
-    }
-
-    private func cardTitle(_ option: GVSplashOption) -> String {
-        guard section == .codec else { return option.label }
-        return option.label.replacingOccurrences(of: "PRORES ", with: "ProRes\n")
-    }
-
-    private func readout(for option: GVSplashOption) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(option.label)
-                    .font(.system(.caption, design: .monospaced).weight(.medium))
-                    .foregroundStyle(GVTheme.bone)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text("SELECTED")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(GVTheme.bone.opacity(0.65))
-            }
-            Text(option.note)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(GVTheme.bone.opacity(0.72))
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("boot.format.note")
-            if section == .codec, !compact {
-                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
-                          alignment: .leading, spacing: 12) {
-                    ForEach(option.chips) { chip in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(chip.caption)
-                                .font(.system(.caption2, design: .monospaced))
-                                .foregroundStyle(GVTheme.bone.opacity(0.62))
-                            Text(chip.value)
-                                .font(.system(.caption2, design: .monospaced).weight(.medium))
-                                .foregroundStyle(GVTheme.bone)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-                .accessibilityElement(children: .combine)
-            }
-            if !compact { GVSplashTickRule(height: 5) }
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 14)
-        .padding(.bottom, 14)
-        .background(Color.black.opacity(0.25))
-        .contentTransition(.opacity)
-        .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: option.id)
-    }
-}
-
-/// Registration ticks on the format instrument; static and low contrast.
-struct GVSplashTickRule: View {
-    var height: CGFloat = 6
-    var spacing: CGFloat = 7
-    var color: Color = .white
-
-    var body: some View {
-        Canvas { context, size in
-            var path = Path()
-            var index = 0
-            var x: CGFloat = 0
-            while x <= size.width {
-                let tick = index.isMultiple(of: 5) ? height : height * 0.45
-                path.move(to: CGPoint(x: x, y: size.height - tick))
-                path.addLine(to: CGPoint(x: x, y: size.height))
-                x += spacing
-                index += 1
-            }
-            context.stroke(path, with: .color(color.opacity(0.16)), lineWidth: 0.75)
-        }
-        .frame(height: height)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 

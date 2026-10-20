@@ -672,10 +672,12 @@ private struct SplashCaptureDock: View {
 
     /// Every option in a section, built once.
     ///
-    /// The cards, the footer readout, the scroll anchor and the accessibility
-    /// identifiers all read off this list, so the rail cannot describe a format
-    /// the chooser does not offer — which is what three hand-kept card groups
-    /// kept doing at the edges.
+    /// The cards, the scroll anchor and the accessibility identifiers all read
+    /// off this list, so the rail cannot describe a format the chooser does not
+    /// offer — which is what three hand-kept card groups kept doing at the edges.
+    ///
+    /// Identifiers keep deriving from `rawValue` rather than the displayed
+    /// label, because the UI tests address the cards by those strings.
     private func options(for section: SplashDockSection) -> [GVSplashOption] {
         switch section {
         case .codec:
@@ -683,20 +685,7 @@ private struct SplashCaptureDock: View {
                 GVSplashOption(
                     id: "codec-\(codec.rawValue)",
                     identifier: "boot.codec.\(optionSlug(codec.rawValue))",
-                    label: codec.rawValue,
-                    spec: "\(codec.chromaLabel) · \(codec.bitDepthLabel)",
-                    note: codec.availabilityNote,
-                    meter: codec.fidelityClass,
-                    chips: [
-                        GVSplashSpecChip(caption: "CHROMA", value: codec.chromaLabel),
-                        GVSplashSpecChip(caption: "DEPTH", value: codec.bitDepthLabel),
-                        GVSplashSpecChip(caption: "TIER", value: codec.tierLabel),
-                        GVSplashSpecChip(
-                            caption: "FIDELITY",
-                            value: codec.fidelityLabel,
-                            meter: codec.fidelityClass
-                        )
-                    ],
+                    label: codec.compactLabel,
                     enabled: codec.isOperatingSystemAvailable,
                     apply: { setup.videoCodec = codec }
                 )
@@ -707,17 +696,6 @@ private struct SplashCaptureDock: View {
                     id: "fps-\(frameRate.rawValue)",
                     identifier: "boot.fps.\(optionSlug(frameRate.label))",
                     label: frameRate.label,
-                    spec: frameRate.cadenceLabel,
-                    note: frameRate.availabilityNote,
-                    meter: frameRate.motionClass,
-                    chips: [
-                        GVSplashSpecChip(caption: "CADENCE", value: frameRate.label),
-                        GVSplashSpecChip(
-                            caption: "MOTION",
-                            value: frameRate.cadenceLabel,
-                            meter: frameRate.motionClass
-                        )
-                    ],
                     enabled: true,
                     apply: { setup.frameRate = frameRate }
                 )
@@ -728,17 +706,6 @@ private struct SplashCaptureDock: View {
                     id: "res-\(resolution.rawValue)",
                     identifier: "boot.res.\(optionSlug(resolution.rawValue))",
                     label: resolution.rawValue,
-                    spec: resolution.pixelLabel,
-                    note: resolution.availabilityNote,
-                    meter: resolution.detailClass,
-                    chips: [
-                        GVSplashSpecChip(caption: "PIXELS", value: resolution.pixelLabel),
-                        GVSplashSpecChip(
-                            caption: "DETAIL",
-                            value: resolution.detailLabel,
-                            meter: resolution.detailClass
-                        )
-                    ],
                     enabled: true,
                     apply: { setup.resolution = resolution }
                 )
@@ -746,8 +713,8 @@ private struct SplashCaptureDock: View {
         }
     }
 
-    /// Scroll anchor of the option currently in force, so the rail's inverted
-    /// plate and its footer readout always describe the same thing.
+    /// Scroll anchor of the option currently in force, so the rail always
+    /// opens on the format that is actually selected.
     private func selectedID(for section: SplashDockSection) -> String {
         switch section {
         case .codec: "codec-\(setup.videoCodec.rawValue)"
@@ -767,8 +734,8 @@ private struct SplashCaptureDock: View {
             selectedID: selectedID(for: section),
             scrollID: $optionScrollID,
             onSelect: { option in
-                // Animated, so the footer readout crossfades to the format the
-                // operator just chose instead of snapping while the rail is
+                // Animated, so the checkmark and border crossfade onto the card
+                // the operator just chose instead of snapping while the rail is
                 // still open.
                 withAnimation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion)) { option.apply() }
                 // The rail stays open just long enough for the choice to be
