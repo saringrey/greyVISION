@@ -35,7 +35,6 @@ struct GVSplashOption: Identifiable {
 /// A compact signal console, not a second settings screen. The choices and
 /// their availability come from the format model; the cards carry only names.
 struct GVSplashChoiceRail: View {
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var isSelecting = false
     @State private var selectionTask: Task<Void, Never>?
 
@@ -45,19 +44,16 @@ struct GVSplashChoiceRail: View {
     @Binding var scrollID: String?
     let onSelect: (GVSplashOption) -> Void
 
-    private let surface = Color(white: 0.065)
-    private var compact: Bool { verticalSizeClass == .compact }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             optionScroller
         }
-        .background(surface)
+        .background { GVSplashPlate(active: true) }
         .clipShape(GVChamferedPlate(cut: 14))
         .overlay {
             GVChamferedPlate(cut: 14)
-                .strokeBorder(GVTheme.bone.opacity(0.18), lineWidth: 0.75)
+                .strokeBorder(GVSplashPalette.border, lineWidth: 0.75)
                 .allowsHitTesting(false)
         }
         .overlay { GVSplashRegistration(color: GVTheme.bone.opacity(0.35), inset: 8) }
@@ -78,8 +74,8 @@ struct GVSplashChoiceRail: View {
                 .foregroundStyle(GVTheme.bone.opacity(0.62))
         }
         .padding(.horizontal, 18)
-        .padding(.top, 16)
-        .padding(.bottom, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .overlay(alignment: .bottom) {
             Rectangle().fill(GVTheme.bone.opacity(0.09)).frame(height: 1)
         }
@@ -90,7 +86,7 @@ struct GVSplashChoiceRail: View {
             HStack(spacing: 10) {
                 ForEach(options) { option in card(option) }
             }
-            .padding(.vertical, 14)
+            .padding(.vertical, 10)
             .scrollTargetLayout()
         }
         .scrollPosition(id: $scrollID, anchor: .leading)
@@ -102,7 +98,6 @@ struct GVSplashChoiceRail: View {
 
     private func card(_ option: GVSplashOption) -> some View {
         let selected = option.id == selectedID
-        let borderOpacity: Double = selected ? 0.5 : 0.10
         let hint = option.enabled ? "Selects this format." : "Unavailable on this device."
         return Button {
             guard option.enabled else { return }
@@ -118,21 +113,22 @@ struct GVSplashChoiceRail: View {
         } label: {
             HStack(spacing: 6) {
                 Text(option.label)
-                    .font(.system(.subheadline, design: .monospaced).weight(.medium))
+                    .font(.system(.caption, design: .monospaced).weight(.medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                Image(systemName: !option.enabled ? "lock" : (selected ? "checkmark" : "plus"))
+                Image(systemName: !option.enabled ? "lock" : (selected ? "checkmark.circle.fill" : "circle"))
                     .font(.caption2)
+                    .foregroundStyle(selected ? GVSplashPalette.cyan : GVTheme.bone)
                     .opacity(selected ? 1 : 0.60)
+                    .accessibilityHidden(true)
             }
             .foregroundStyle(GVTheme.bone)
-            .padding(.horizontal, 14)
-            .frame(minWidth: 96, minHeight: compact ? 52 : 64)
-            .background(Color.white.opacity(selected ? 0.10 : 0.025), in: RoundedRectangle(cornerRadius: 12))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(GVTheme.bone.opacity(borderOpacity), lineWidth: 0.75)
-            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(minWidth: 80, minHeight: 44)
+            .background { GVSplashPlate(active: selected) }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .modifier(GVSplashBorder(active: selected))
             .gvDecay(selected && isSelecting)
             .contentShape(Rectangle())
         }
@@ -140,6 +136,7 @@ struct GVSplashChoiceRail: View {
         .disabled(!option.enabled)
         .opacity(option.enabled ? 1 : 0.55)
         .accessibilityValue(selected ? "selected" : "not selected")
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel(option.label)
         .accessibilityHint(hint)
         .accessibilityIdentifier(option.identifier)

@@ -51,22 +51,6 @@ final class ArchitectureModuleTests: XCTestCase {
         XCTAssertEqual(transition.state.runtimeStatus, .running)
     }
 
-    func testTimelineCanRestartAfterStoppingWithoutAnotherSelection() {
-        let editor = EffectEditingSession()
-        let player = GVTimelinePlayer()
-        player.attach(editor: editor)
-        player.selectForScrub(.empty)
-        player.toggle()
-        XCTAssertTrue(player.isPlaying)
-        player.toggle()
-        XCTAssertFalse(player.isPlaying)
-
-        player.toggle()
-
-        XCTAssertTrue(player.isPlaying)
-        player.stop()
-    }
-
     func testEffectEditingSessionOwnsExclusiveAndAddSelection() throws {
         let editor = EffectEditingSession()
 
@@ -141,7 +125,9 @@ final class ArchitectureModuleTests: XCTestCase {
         let objects = ARObjectRuntime()
         transaction.start(cameraRuntime: camera, objectsRuntime: objects, sourceMode: .camera)
         transaction.stop(cameraRuntime: camera, objectsRuntime: objects, sourceMode: .camera)
-        for _ in 0..<10 { await Task.yield() }
+        for _ in 0 ..< 10 {
+            await Task.yield()
+        }
         XCTAssertFalse(camera.recordingMailbox.isStartPending)
         XCTAssertEqual(transaction.state, .idle)
     }

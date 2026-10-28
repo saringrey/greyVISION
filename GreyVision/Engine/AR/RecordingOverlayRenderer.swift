@@ -35,14 +35,17 @@ final class RecordingOverlayRenderer: @unchecked Sendable {
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue // BGRA
+        let halfFloat = CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_64RGBAHalf
+        let bitmapInfo = halfFloat
+            ? CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder16Little.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
+            : CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return }
 
         guard let context = CGContext(
             data: baseAddress,
             width: width,
             height: height,
-            bitsPerComponent: 8,
+            bitsPerComponent: halfFloat ? 16 : 8,
             bytesPerRow: bytesPerRow,
             space: colorSpace,
             bitmapInfo: bitmapInfo

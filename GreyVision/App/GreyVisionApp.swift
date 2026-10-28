@@ -4,6 +4,13 @@ import SwiftUI
 struct GreyVisionApp: App {
     @StateObject private var appModel = AppModel()
 
+    init() {
+        #if DEBUG
+        GVEffectKernelProbe.runIfRequested()
+        GVLogExport.runIfRequested()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             AppRootView()

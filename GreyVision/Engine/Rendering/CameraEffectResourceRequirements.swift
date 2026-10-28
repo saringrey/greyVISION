@@ -64,7 +64,7 @@ extension WorkspaceAdjustableEffect {
         var requirements: CameraEffectResourceRequirements = []
         switch self {
         case .predictionDrift, .vectorCodebook,
-             .motionTransplant, .bitplaneLatch, .opticalFlowLiquid, .causalSmear,
+             .motionTransplant, .bitplaneLatch, .causalSmear,
              .realityCavitation, .timeFracture, .antiCamera, .memoryBurnIn,
              .spectralDepth, .vectorNecromancy:
             requirements.insert(.opticalFlow)

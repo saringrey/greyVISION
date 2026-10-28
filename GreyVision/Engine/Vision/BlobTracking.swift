@@ -42,367 +42,218 @@ enum EsotericLabelGenerator {
     }
 }
 
-// MARK: - Model
+// MARK: - Tracker
 
-/// A connected color field detected on the live frame. `rect` is normalized to
-/// the delivered (interface-oriented) image, so it maps to the preview with a
-/// plain aspect-fill crop.
-struct TrackedBlob: Identifiable, Equatable, Sendable {
-    let id: UInt64
-    var rect: CGRect
-    var color: SIMD3<Float>
-    var area: Float
-    var label: String
-
-    static let maxTracked = 12
-}
-
-struct BlobTrackingParameters: Equatable, Sendable {
-    /// Analysis cell size as a fraction of the frame edge (0.02...0.12).
-    var blockSize = 0.05
-    /// Target hue in 0...1 (red is 0).
-    var hue = 0.0
-    /// Color distance tolerance 0...1. Lower is stricter.
-    var tolerance = 0.30
-    /// Minimum blob area as a fraction of the frame.
-    var minArea = 0.004
-
-    static let defaults = BlobTrackingParameters()
-
-    var sanitized: BlobTrackingParameters {
-        BlobTrackingParameters(
-            blockSize: min(max(blockSize, 0.02), 0.12),
-            hue: min(max(hue, 0), 1),
-            tolerance: min(max(tolerance, 0.01), 1),
-            minArea: min(max(minArea, 0.0005), 0.25)
-        )
-    }
-}
-
-struct BlobAnalysisResult: Sendable {
-    let blobs: [TrackedBlob]
-    let status: String
-    let sourceSize: CGSize
-}
-
-// MARK: - Analyzer
-
-/// CPU color-field analyzer. Consumes the latest delivered frame on its own
-/// queue at a low cadence (~8 Hz) and never blocks the capture delegate: it
-/// only retains the newest sample buffer until the next analysis tick.
+/// The analysis pipeline: analysis frame in, tracked subjects out.
+///
+/// Frames arrive from `GVTrackingFeed`, already throttled to the analysis
+/// rate, and are processed one at a time on a private serial queue — a frame
+/// that arrives while a pass is running replaces the waiting one rather than
+/// queueing behind it. The detector is chosen by mode, and switching mode
+/// resets identity, because a face and a red field are not the same subject.
 final class BlobTracker: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.saringrey.greyvision.blob", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "com.saringrey.greyvision.tracking", qos: .userInitiated)
     private let lock = NSLock()
-    private var latestFrame: CapturedFrame?
-    private var latestTimestamp = -Double.infinity
     private var parameters = BlobTrackingParameters.defaults
-    private var isRunning = false
+    private var pending: GVTrackingFrame?
+    private var draining = false
     private var resultHandler: (@Sendable (BlobAnalysisResult) -> Void)?
-    private let seed: UInt64 = 0xB10B_5EED_2026
+
+    // Queue-confined.
+    private let field = GVFieldDetector()
+    private let vision = GVVisionDetector()
+    private let associator = GVTrackAssociator()
+    private var lastMode: GVTrackingMode?
+    private var passTimes: [Double] = []
 
     func setParameters(_ parameters: BlobTrackingParameters) {
-        lock.withLock {
-            self.parameters = parameters.sanitized
-        }
-    }
-
-    func submit(_ frame: CapturedFrame) {
-        let timestamp = CMTimeGetSeconds(frame.presentationTime)
-        lock.withLock {
-            guard timestamp > latestTimestamp else { return }
-            latestTimestamp = timestamp
-            latestFrame = frame
-        }
+        lock.withLock { self.parameters = parameters.sanitized }
     }
 
     func start(resultHandler: @escaping @Sendable (BlobAnalysisResult) -> Void) {
         lock.withLock {
-            guard !isRunning else { return }
-            isRunning = true
-            latestFrame = nil
-            latestTimestamp = -Double.infinity
             self.resultHandler = resultHandler
+            pending = nil
         }
-        queue.async { [weak self] in
-            self?.loop()
+        queue.async { [self] in
+            associator.reset()
+            field.reset()
+            lastMode = nil
+            passTimes = []
         }
     }
 
     func stop() {
         lock.withLock {
-            isRunning = false
-            latestFrame = nil
             resultHandler = nil
+            pending = nil
         }
     }
 
-    private func loop() {
+    func submit(_ frame: GVTrackingFrame) {
+        let shouldDrain = lock.withLock { () -> Bool in
+            guard resultHandler != nil else { return false }
+            pending = frame
+            guard !draining else { return false }
+            draining = true
+            return true
+        }
+        guard shouldDrain else { return }
+        queue.async { [self] in drain() }
+    }
+
+    private func drain() {
         while true {
-            let running = lock.withLock { isRunning }
-            guard running else { return }
-            let frame = lock.withLock { latestFrame }
-            if let frame {
-                let result = analyze(frame)
-                let handler = lock.withLock { resultHandler }
-                handler?(result)
-            }
-            Thread.sleep(forTimeInterval: 0.12)
-        }
-    }
-
-    // swiftlint:disable:next cyclomatic_complexity function_body_length
-    private func analyze(_ frame: CapturedFrame) -> BlobAnalysisResult {
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) else {
-            return BlobAnalysisResult(blobs: [], status: "BLOB TRACKING // NO FRAME", sourceSize: .zero)
-        }
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        guard width > 0, height > 0,
-              CVPixelBufferGetPlaneCount(pixelBuffer) >= 2
-        else {
-            return BlobAnalysisResult(blobs: [], status: "BLOB TRACKING // BAD FORMAT", sourceSize: .zero)
-        }
-        let sourceSize = CGSize(width: width, height: height)
-
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-        guard let yBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
-              let uvBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
-        else {
-            return BlobAnalysisResult(blobs: [], status: "BLOB TRACKING // NO PLANES", sourceSize: sourceSize)
-        }
-        let yBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
-        let uvBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
-        let parameters = lock.withLock { self.parameters }
-
-        let columns = min(max(Int(Float(width) * Float(parameters.blockSize)), 6), 96)
-        let rows = min(max(Int(Float(height) * Float(parameters.blockSize)), 6), 96)
-        let cellWidth = Float(width) / Float(columns)
-        let cellHeight = Float(height) / Float(rows)
-        let targetHue = Float(parameters.hue)
-        let tolerance = Float(parameters.tolerance)
-
-        var active = [Bool](repeating: false, count: columns * rows)
-        var cellColors = [SIMD3<Float>](repeating: .zero, count: columns * rows)
-        let sampleFractions: [Float] = [0.25, 0.5, 0.75]
-
-        for row in 0 ..< rows {
-            for col in 0 ..< columns {
-                var sum = SIMD3<Float>.zero
-                var samples = 0
-                for fractionY in sampleFractions {
-                    for fractionX in sampleFractions {
-                        let px = min(width - 1, Int(Float(col) * cellWidth + cellWidth * fractionX))
-                        let py = min(height - 1, Int(Float(row) * cellHeight + cellHeight * fractionY))
-                        let yValue = yBase.advanced(by: py * yBytesPerRow + px)
-                            .assumingMemoryBound(to: UInt8.self).pointee
-                        let uvIndex = (py / 2) * uvBytesPerRow + (px / 2) * 2
-                        let cb = uvBase.advanced(by: uvIndex)
-                            .assumingMemoryBound(to: UInt8.self).pointee
-                        let cr = uvBase.advanced(by: uvIndex + 1)
-                            .assumingMemoryBound(to: UInt8.self).pointee
-                        let y = Float(yValue) / 255.0
-                        let blueDifference = Float(cb) / 255.0 - 0.5
-                        let redDifference = Float(cr) / 255.0 - 0.5
-                        // BT.601. The delivered buffers are interface-rotated,
-                        // so colors land exactly where the preview shows them.
-                        sum += SIMD3<Float>(
-                            min(max(y + 1.402 * redDifference, 0), 1),
-                            min(max(y - 0.344136 * blueDifference - 0.714136 * redDifference, 0), 1),
-                            min(max(y + 1.772 * blueDifference, 0), 1)
-                        )
-                        samples += 1
-                    }
+            let next = lock.withLock { () -> (GVTrackingFrame, BlobTrackingParameters, (@Sendable (BlobAnalysisResult) -> Void))? in
+                guard let frame = pending, let handler = resultHandler else {
+                    draining = false
+                    return nil
                 }
-                let color = sum / Float(max(samples, 1))
-                let index = row * columns + col
-                cellColors[index] = color
-                let hsv = Self.rgbToHSV(color)
-                let hueDelta = min(abs(hsv.x - targetHue), 1 - abs(hsv.x - targetHue))
-                let distance = hueDelta * 0.72 + abs(hsv.y - 0.72) * 0.28
-                active[index] = distance < tolerance
+                pending = nil
+                return (frame, parameters, handler)
             }
+            guard let (frame, parameters, handler) = next else { return }
+            handler(analyze(frame, parameters: parameters))
         }
-
-        // Connected components (4-neighborhood flood fill).
-        var labels = [Int](repeating: -1, count: columns * rows)
-        var nextLabel = 0
-        var sizes: [Int] = []
-        var colorSums: [SIMD3<Float>] = []
-        var minColumns: [Int] = []
-        var maxColumns: [Int] = []
-        var minRows: [Int] = []
-        var maxRows: [Int] = []
-
-        for row in 0 ..< rows {
-            for col in 0 ..< columns {
-                let start = row * columns + col
-                guard active[start], labels[start] == -1 else { continue }
-                var stack = [start]
-                labels[start] = nextLabel
-                var count = 0
-                var colorSum = SIMD3<Float>.zero
-                var minColumn = col
-                var maxColumn = col
-                var minRow = row
-                var maxRow = row
-                while let current = stack.popLast() {
-                    let currentColumn = current % columns
-                    let currentRow = current / columns
-                    count += 1
-                    colorSum += cellColors[current]
-                    minColumn = min(minColumn, currentColumn)
-                    maxColumn = max(maxColumn, currentColumn)
-                    minRow = min(minRow, currentRow)
-                    maxRow = max(maxRow, currentRow)
-                    let neighbors = [
-                        (currentRow - 1, currentColumn),
-                        (currentRow + 1, currentColumn),
-                        (currentRow, currentColumn - 1),
-                        (currentRow, currentColumn + 1)
-                    ]
-                    for (neighborRow, neighborColumn) in neighbors {
-                        guard neighborRow >= 0, neighborRow < rows,
-                              neighborColumn >= 0, neighborColumn < columns
-                        else { continue }
-                        let neighbor = neighborRow * columns + neighborColumn
-                        if active[neighbor], labels[neighbor] == -1 {
-                            labels[neighbor] = nextLabel
-                            stack.append(neighbor)
-                        }
-                    }
-                }
-                sizes.append(count)
-                colorSums.append(colorSum)
-                minColumns.append(minColumn)
-                maxColumns.append(maxColumn)
-                minRows.append(minRow)
-                maxRows.append(maxRow)
-                nextLabel += 1
-            }
-        }
-
-        let minimumCells = Float(columns * rows) * Float(parameters.minArea)
-        var blobs: [TrackedBlob] = []
-        for label in 0 ..< nextLabel {
-            guard Float(sizes[label]) >= minimumCells else { continue }
-            let rect = CGRect(
-                x: CGFloat(minColumns[label]) / CGFloat(columns),
-                y: CGFloat(minRows[label]) / CGFloat(rows),
-                width: CGFloat(maxColumns[label] - minColumns[label] + 1) / CGFloat(columns),
-                height: CGFloat(maxRows[label] - minRows[label] + 1) / CGFloat(rows)
-            )
-            let color = colorSums[label] / Float(max(sizes[label], 1))
-            let id = Self.blobID(rect: rect)
-            blobs.append(TrackedBlob(
-                id: id,
-                rect: rect,
-                color: color,
-                area: Float(sizes[label]) / Float(columns * rows),
-                label: EsotericLabelGenerator.label(for: seed, index: Int(id % 1024))
-            ))
-        }
-        blobs.sort { $0.area > $1.area }
-        blobs = Array(blobs.prefix(TrackedBlob.maxTracked))
-        let status = blobs.isEmpty
-            ? "BLOB TRACKING // \(columns)×\(rows) CELLS // NO FIELD"
-            : "BLOB TRACKING // \(blobs.count) FIELD\(blobs.count == 1 ? "" : "S") // \(columns)×\(rows) CELLS"
-        return BlobAnalysisResult(blobs: blobs, status: status, sourceSize: sourceSize)
     }
 
-    /// Position-quantized identity so a blob keeps its designation while it
-    /// stays in the same cell region.
-    private static func blobID(rect: CGRect) -> UInt64 {
-        let cellX = UInt64(Int(rect.midX * 64) & 0xFF)
-        let cellY = UInt64(Int(rect.midY * 64) & 0xFF)
-        let width = UInt64(Int(rect.width * 64) & 0xFF)
-        let height = UInt64(Int(rect.height * 64) & 0xFF)
-        return cellX | (cellY << 8) | (width << 16) | (height << 24)
-    }
-
-    private static func rgbToHSV(_ color: SIMD3<Float>) -> SIMD3<Float> {
-        let maximum = max(color.x, max(color.y, color.z))
-        let minimum = min(color.x, min(color.y, color.z))
-        let delta = maximum - minimum
-        var hue: Float = 0
-        if delta > 0.0001 {
-            if maximum == color.x {
-                hue = ((color.y - color.z) / delta).truncatingRemainder(dividingBy: 6)
-            } else if maximum == color.y {
-                hue = (color.z - color.x) / delta + 2
-            } else {
-                hue = (color.x - color.y) / delta + 4
-            }
-            hue /= 6
-            if hue < 0 {
-                hue += 1
-            }
+    private func analyze(_ frame: GVTrackingFrame, parameters: BlobTrackingParameters) -> BlobAnalysisResult {
+        if lastMode != parameters.mode {
+            associator.reset()
+            field.reset()
+            lastMode = parameters.mode
         }
-        let saturation = maximum > 0.0001 ? delta / maximum : 0
-        return SIMD3<Float>(hue, saturation, maximum)
+        let detections: [GVTrackingDetection]
+        var mask: GVTrackingMask?
+        var problem: String?
+        if parameters.mode.usesVision {
+            let output = vision.detect(frame, parameters: parameters)
+            detections = output.detections
+            problem = output.error
+        } else {
+            let output = field.detect(frame, parameters: parameters)
+            detections = output.detections
+            mask = output.mask
+        }
+        let blobs = associator.update(detections, at: frame.timestamp, parameters: parameters)
+
+        passTimes.append(frame.timestamp)
+        passTimes.removeAll { frame.timestamp - $0 > 1 }
+        let rate = Double(passTimes.count)
+
+        let noun = parameters.mode.noun
+        let status = if let problem {
+            "\(parameters.mode.label.uppercased()) // \(problem)"
+        } else if blobs.isEmpty {
+            "\(parameters.mode.label.uppercased()) // SEARCHING // \(Int(rate)) HZ"
+        } else {
+            "\(parameters.mode.label.uppercased()) // \(blobs.count) \(noun)\(blobs.count == 1 ? "" : "S") // \(Int(rate)) HZ"
+        }
+        return BlobAnalysisResult(
+            blobs: blobs,
+            status: status,
+            sourceSize: CGSize(width: frame.width, height: frame.height),
+            timestamp: frame.timestamp,
+            mask: mask,
+            passRate: rate,
+            region: frame.region
+        )
     }
 }
 
 // MARK: - Runtime
 
+/// The tracking suite's state for the interface: parameters, the latest
+/// tracked subjects, and the feed the renderer fills.
 @MainActor
 final class BlobTrackingRuntime: ObservableObject {
-    @Published var parameters = BlobTrackingParameters.defaults
+    @Published private(set) var parameters: BlobTrackingParameters
     @Published private(set) var isEnabled = false
     @Published private(set) var blobs: [TrackedBlob] = []
-    @Published private(set) var status = "BLOB TRACKING // OFFLINE"
+    @Published private(set) var status = "TRACKING // OFFLINE"
     @Published private(set) var sourceSize = CGSize.zero
+    @Published private(set) var resultTimestamp: Double = 0
+    @Published private(set) var mask: GVTrackingMask?
+    @Published private(set) var passRate: Double = 0
+    /// The analysed region within the full working frame. Subjects are in
+    /// this region's coordinates; effects sampling the full frame map back.
+    @Published private(set) var region = CGRect(x: 0, y: 0, width: 1, height: 1)
+
+    /// Handed to the renderer, which fills it while tracking is enabled.
+    nonisolated let feed = GVTrackingFeed()
 
     private let tracker = BlobTracker()
-    private var frameHandlerAttached = false
+    private let defaults: UserDefaults
+    private static let storageKey = "gv.tracking.parameters.v2"
     private var lastBlobCount = 0
     private var lastBlobHapticTime: TimeInterval = 0
 
-    func setParameters(_ parameters: BlobTrackingParameters) {
-        self.parameters = parameters
-        tracker.setParameters(parameters)
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        parameters = defaults.data(forKey: Self.storageKey)
+            .flatMap { try? JSONDecoder().decode(BlobTrackingParameters.self, from: $0) }?
+            .sanitized ?? .defaults
     }
 
-    func start(using camera: CameraRuntime) {
+    func setParameters(_ parameters: BlobTrackingParameters) {
+        let sanitized = parameters.sanitized
+        guard sanitized != self.parameters else { return }
+        self.parameters = sanitized
+        tracker.setParameters(sanitized)
+        feed.setRate(sanitized.rate)
+        if let data = try? JSONEncoder().encode(sanitized) {
+            defaults.set(data, forKey: Self.storageKey)
+        }
+    }
+
+    /// Applies a preset and starts tracking if it is not already running.
+    func apply(_ preset: GVTrackingPreset) {
+        setParameters(preset.parameters)
+        start()
+    }
+
+    func start() {
         guard !isEnabled else { return }
         isEnabled = true
-        status = "BLOB TRACKING // ANALYZING"
+        status = "\(parameters.mode.label.uppercased()) // ANALYZING"
         tracker.setParameters(parameters)
         tracker.start { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self, isEnabled else { return }
                 blobs = result.blobs
                 status = result.status
-                if result.sourceSize.width > 0, result.sourceSize.height > 0 {
-                    sourceSize = result.sourceSize
-                }
+                sourceSize = result.sourceSize
+                resultTimestamp = result.timestamp
+                mask = result.mask
+                passRate = result.passRate
+                region = result.region
+                feed.publish(GVTrackingSnapshot(
+                    parameters: parameters, blobs: result.blobs, mask: result.mask,
+                    region: result.region, passRate: result.passRate, timestamp: result.timestamp
+                ))
                 pulseFieldHaptic(count: result.blobs.count)
             }
         }
-        camera.setFrameHandler { [weak tracker] frame in
-            tracker?.submit(frame)
+        feed.attach(rate: parameters.rate) { [tracker] frame in
+            tracker.submit(frame)
         }
-        frameHandlerAttached = true
-        GVLog.analysis.notice("Blob field tracking started")
+        GVLog.analysis.notice("Tracking started: \(self.parameters.mode.rawValue, privacy: .public)")
     }
 
-    func stop(using camera: CameraRuntime) {
+    func stop() {
         guard isEnabled else { return }
         isEnabled = false
+        feed.detach()
         tracker.stop()
-        if frameHandlerAttached {
-            camera.setFrameHandler(nil)
-            frameHandlerAttached = false
-        }
         blobs = []
-        status = "BLOB TRACKING // OFFLINE"
+        mask = nil
+        status = "TRACKING // OFFLINE"
         lastBlobCount = 0
-        GVLog.analysis.notice("Blob field tracking stopped")
+        GVLog.analysis.notice("Tracking stopped")
     }
 
-    /// A single selection tick when the tracked field count changes. The
-    /// analyser runs at ~8 Hz, so the count is gated to at most one tick per
-    /// second to keep the haptic from stuttering on a jittery field.
+    /// A single selection tick when the tracked count changes, gated to one
+    /// per second so a jittery field does not stutter the haptic.
     private func pulseFieldHaptic(count: Int) {
         let now = CACurrentMediaTime()
         guard count != lastBlobCount, now - lastBlobHapticTime > 1 else {

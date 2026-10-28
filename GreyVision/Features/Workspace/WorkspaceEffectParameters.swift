@@ -8,18 +8,12 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case heavyMosh
     case predictionDrift
     case sort
-    case depthSort
-    case objectSort
     case radialSort
     case temporalPixelSort
     case pointCloudSmear
-    case depthFeedback
     case freezeBrush
     case sortBrush
     case feedbackTunnel
-    case lumaExtrusion
-    case opticalFlowLiquid
-    case rollingTime
     case frameHoldSmear
     case pixelGravity
     case pixelShift
@@ -30,7 +24,6 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case vectorWarp
     case audioSpectral
     case audioScanBend
-    case audioChromaPulse
     case audioWaveform
     case audioBandSlice
     case audioBloom
@@ -72,7 +65,6 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case vignette
     case grain
     case thermal
-    case halftone
     case threshold
     case invert
     case solarize
@@ -80,36 +72,27 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case monochrome
     case sharpen
     case emboss
-    case wave
     case crt
     case water
     case touchWarp
     case hatch
     case phosphor
-    case voronoi
     case hologram
-    case chromaticAberration
     case anamorphicFlare
-    case bokeh
     case tiltShift
     case fisheye
     case lensDirt
     case lightLeak
     case starFilter
-    case barrelWarp
     case softFocus
     case halation
     case vhsTracking
     case super8
     case chromaBleed
-    case tapeWarp
     case dropout
     case colorBarTear
-    case interlace
     case degauss
-    case printThrough
     case polarWarp
-    case twirl
     case hexTile
     case shatter
     case kaleido6
@@ -119,17 +102,13 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case lensArray
     case fold
     case flowField
-    case curlWarp
-    case worleyCracks
     case plasma
     case contourLines
-    case topography
     case gradientMap
     case falseColor
     case edgeGlow
     case reactionBands
     case pixelMelt
-    case corrode
     case burnThrough
     case ashDrift
     case bitRot
@@ -138,10 +117,7 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case audioStretch
     case audioRepair
     case audioTunnel
-    case audioKaleido
-    case audioGrain
     case audioDisplace
-    case audioPosterize
     case spectralTint
     // Three complete style kernels that had no Swift case at all. Modes 7, 8
     // and 15 were implemented in the shader and unreachable from the app, and
@@ -155,9 +131,7 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case kuwahara
     case asciiMosaic
     case frostedGlass
-    case dctBlocks
     case domainWarp
-    case blueNoiseDither
     // SCOPE. Measurement instruments, not filters. Three read the live FFT and
     // three read the frame itself; all six draw a reading over the image the
     // way a broadcast monitor does.
@@ -175,20 +149,15 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case fluid
     // SHADERS. Colorful, interactive, audio-reactive GPU generative shaders.
     case cyberGrid
-    case astralPlasma
     case quantumRaymarch
     case liquidChroma
     case holoAurora
     // NEW INTERACTIVE SHADERS - generative, audio-reactive, touch-responsive
     case neuralFlow
-    case voxelStorm
-    case fractalZoom
-    case particleLife
     case waveformTunnel
     case spectralFlower
     case glitchWeave
     case hologramMatrix
-    case singularityLens
     case causticReactor
     case eventHorizon
     // FULL COLOR. Fast, tactile component-inspired generative shaders.
@@ -209,7 +178,6 @@ enum WorkspaceAdjustableEffect: String, CaseIterable, Identifiable, Codable, Sen
     case singularityWeave
     case fractalBurst
     case vortexPulse
-    case spectralNova
     case ionStorm
     case opalWave
     case cmykPress
@@ -228,11 +196,9 @@ extension WorkspaceAdjustableEffect {
     static let metalRenderOrder: [WorkspaceAdjustableEffect] = [
         .rgbSplit,
         .ripple,
-        .wave,
         .pixelate,
         .posterize,
         .dither,
-        .halftone,
         .edge,
         .sharpen,
         .emboss,
@@ -252,37 +218,28 @@ extension WorkspaceAdjustableEffect {
         .vectorWarp,
         .audioSpectral,
         .audioScanBend,
-        .audioChromaPulse,
         .audioWaveform,
         .audioBandSlice,
         .water,
         .touchWarp,
         .hatch,
         .phosphor,
-        .voronoi,
         .hologram,
-        .chromaticAberration,
         .anamorphicFlare,
-        .bokeh,
         .tiltShift,
         .fisheye,
         .lensDirt,
         .lightLeak,
         .starFilter,
-        .barrelWarp,
         .softFocus,
         .halation,
         .vhsTracking,
         .super8,
         .chromaBleed,
-        .tapeWarp,
         .dropout,
         .colorBarTear,
-        .interlace,
         .degauss,
-        .printThrough,
         .polarWarp,
-        .twirl,
         .hexTile,
         .shatter,
         .kaleido6,
@@ -292,17 +249,13 @@ extension WorkspaceAdjustableEffect {
         .lensArray,
         .fold,
         .flowField,
-        .curlWarp,
-        .worleyCracks,
         .plasma,
         .contourLines,
-        .topography,
         .gradientMap,
         .falseColor,
         .edgeGlow,
         .reactionBands,
         .pixelMelt,
-        .corrode,
         .burnThrough,
         .ashDrift,
         .bitRot,
@@ -311,10 +264,7 @@ extension WorkspaceAdjustableEffect {
         .audioStretch,
         .audioRepair,
         .audioTunnel,
-        .audioKaleido,
-        .audioGrain,
         .audioDisplace,
-        .audioPosterize,
         .spectralTint,
         .kaleidoscope,
         .mirror,
@@ -322,9 +272,7 @@ extension WorkspaceAdjustableEffect {
         .kuwahara,
         .asciiMosaic,
         .frostedGlass,
-        .dctBlocks,
         .domainWarp,
-        .blueNoiseDither,
         // The scopes render last on purpose: an instrument measures what the
         // chain produced, so anything placed after one would be measuring a
         // frame the reading no longer describes.
@@ -335,19 +283,14 @@ extension WorkspaceAdjustableEffect {
         .waveformMonitor,
         .rgbParade,
         .cyberGrid,
-        .astralPlasma,
         .quantumRaymarch,
         .liquidChroma,
         .holoAurora,
         .neuralFlow,
-        .voxelStorm,
-        .fractalZoom,
-        .particleLife,
         .waveformTunnel,
         .spectralFlower,
         .glitchWeave,
         .hologramMatrix,
-        .singularityLens,
         .causticReactor,
         .eventHorizon,
         .prismPortal,
@@ -367,7 +310,6 @@ extension WorkspaceAdjustableEffect {
         .singularityWeave,
         .fractalBurst,
         .vortexPulse,
-        .spectralNova,
         .ionStorm,
         .opalWave,
         .cmykPress,
@@ -385,18 +327,12 @@ extension WorkspaceAdjustableEffect {
         .moshBrush,
         .timeMap,
         .sort,
-        .depthSort,
-        .objectSort,
         .radialSort,
         .temporalPixelSort,
         .pointCloudSmear,
-        .depthFeedback,
         .freezeBrush,
         .sortBrush,
         .feedbackTunnel,
-        .lumaExtrusion,
-        .opticalFlowLiquid,
-        .rollingTime,
         .frameHoldSmear,
         .pixelGravity,
         .pixelShift,
@@ -450,18 +386,12 @@ extension WorkspaceAdjustableEffect {
         .bitplaneLatch,
         .moshBrush,
         .sort,
-        .depthSort,
-        .objectSort,
         .radialSort,
         .temporalPixelSort,
         .pointCloudSmear,
-        .depthFeedback,
         .freezeBrush,
         .sortBrush,
         .feedbackTunnel,
-        .lumaExtrusion,
-        .opticalFlowLiquid,
-        .rollingTime,
         .frameHoldSmear,
         .pixelGravity,
         .pixelShift
@@ -471,7 +401,6 @@ extension WorkspaceAdjustableEffect {
         .pixelate,
         .posterize,
         .dither,
-        .halftone,
         .cmykPress,
         .threshold,
         .edge,
@@ -481,7 +410,6 @@ extension WorkspaceAdjustableEffect {
         // Same family as dither and halftone: every one of these rebuilds the
         // frame out of a repeated primitive.
         .asciiMosaic,
-        .blueNoiseDither,
         .kuwahara
     ]
 
@@ -496,7 +424,6 @@ extension WorkspaceAdjustableEffect {
 
     static let flowCategoryEffects: [WorkspaceAdjustableEffect] = [
         .ripple,
-        .wave,
         .water,
         .touchWarp,
         .vectorWarp
@@ -526,7 +453,6 @@ extension WorkspaceAdjustableEffect {
     static let audioCategoryEffects: [WorkspaceAdjustableEffect] = [
         .audioSpectral,
         .audioScanBend,
-        .audioChromaPulse,
         .audioWaveform,
         .audioBandSlice,
         .audioBloom,
@@ -536,10 +462,7 @@ extension WorkspaceAdjustableEffect {
         .audioStretch,
         .audioRepair,
         .audioTunnel,
-        .audioKaleido,
-        .audioGrain,
         .audioDisplace,
-        .audioPosterize,
         .spectralTint
     ]
 
@@ -557,16 +480,13 @@ extension WorkspaceAdjustableEffect {
     ]
 
     static let opticsCategoryEffects: [WorkspaceAdjustableEffect] = [
-        .chromaticAberration,
         .spectralDiffraction,
         .anamorphicFlare,
-        .bokeh,
         .tiltShift,
         .fisheye,
         .lensDirt,
         .lightLeak,
         .starFilter,
-        .barrelWarp,
         .softFocus,
         .vignette,
         .prismStreak,
@@ -580,18 +500,14 @@ extension WorkspaceAdjustableEffect {
         .vhsTracking,
         .super8,
         .chromaBleed,
-        .tapeWarp,
         .dropout,
         .colorBarTear,
-        .interlace,
         .degauss,
-        .printThrough,
         .phosphor
     ]
 
     static let geometryCategoryEffects: [WorkspaceAdjustableEffect] = [
         .polarWarp,
-        .twirl,
         .hexTile,
         .shatter,
         .kaleido6,
@@ -606,16 +522,12 @@ extension WorkspaceAdjustableEffect {
 
     static let fieldCategoryEffects: [WorkspaceAdjustableEffect] = [
         .flowField,
-        .curlWarp,
-        .worleyCracks,
         .plasma,
         .contourLines,
-        .topography,
         .gradientMap,
         .falseColor,
         .edgeGlow,
         .reactionBands,
-        .voronoi,
         .domainWarp
     ]
 
@@ -646,7 +558,6 @@ extension WorkspaceAdjustableEffect {
         .sensorSmear,
         // Compression failure rather than transport failure, but the same
         // chain and the same family of artefact.
-        .dctBlocks
     ]
 
     /// The generative shaders that behave like a finished look: they run one
@@ -655,7 +566,6 @@ extension WorkspaceAdjustableEffect {
     /// kind of thing to reach for — a toy, not a grade.
     static let shaderCategoryEffects: [WorkspaceAdjustableEffect] = [
         .cyberGrid,
-        .astralPlasma,
         .quantumRaymarch,
         .liquidChroma,
         .holoAurora,
@@ -676,7 +586,6 @@ extension WorkspaceAdjustableEffect {
         .singularityWeave,
         .fractalBurst,
         .vortexPulse,
-        .spectralNova,
         .ionStorm,
         .opalWave
     ]
@@ -694,14 +603,10 @@ extension WorkspaceAdjustableEffect {
     /// they happen to be built from.
     static let experimentalCategoryEffects: [WorkspaceAdjustableEffect] = [
         .neuralFlow,
-        .voxelStorm,
-        .fractalZoom,
-        .particleLife,
         .waveformTunnel,
         .spectralFlower,
         .glitchWeave,
         .hologramMatrix,
-        .singularityLens,
         .causticReactor,
         .eventHorizon,
         .fluid,
@@ -754,7 +659,6 @@ extension WorkspaceAdjustableEffect {
     static let datamoshCategoryEffects: [WorkspaceAdjustableEffect] = [
         .datamosh,
         .liquidMosh,
-        .opticalFlowLiquid,
         .heavyMosh
     ]
 
@@ -763,8 +667,6 @@ extension WorkspaceAdjustableEffect {
     /// them a family rather than part of the moshes.
     static let sortCategoryEffects: [WorkspaceAdjustableEffect] = [
         .sort,
-        .depthSort,
-        .objectSort,
         .radialSort,
         .temporalPixelSort,
         .pointCloudSmear,
@@ -776,10 +678,7 @@ extension WorkspaceAdjustableEffect {
     /// and tunnel the previous frames. These are what TIME used to mean once
     /// the moshes and sorts were taken out of it.
     static let timeCategoryEffects: [WorkspaceAdjustableEffect] = [
-        .depthFeedback,
         .feedbackTunnel,
-        .lumaExtrusion,
-        .rollingTime,
         .frameHoldSmear,
         .pixelGravity,
         .pixelShift
@@ -791,7 +690,6 @@ extension WorkspaceAdjustableEffect {
     /// Primitive rebuilds, transport failure and material dissolution.
     static let decayCategoryEffects: [WorkspaceAdjustableEffect] = blockCategoryEffects + damageCategoryEffects + [
         .pixelMelt,
-        .corrode,
         .burnThrough,
         .ashDrift,
         .bitRot
@@ -881,18 +779,12 @@ extension WorkspaceAdjustableEffect {
         case .rgbSplit: "RGB SPLIT"
         case .signalTear: "SIGNAL TEAR"
         case .hueShift: "HUE SHIFT"
-        case .depthSort: "LUMA SORT"
-        case .objectSort: "EDGE SORT"
         case .radialSort: "RADIAL SORT"
         case .temporalPixelSort: "TEMPORAL PIXEL SORT"
         case .pointCloudSmear: "LUMA POINT SMEAR"
-        case .depthFeedback: "LUMA FEEDBACK"
         case .freezeBrush: "FREEZE BRUSH"
         case .sortBrush: "SORT BRUSH"
         case .feedbackTunnel: "FEEDBACK TUNNEL"
-        case .lumaExtrusion: "LUMA EXTRUSION"
-        case .opticalFlowLiquid: "OPTICAL-FLOW LIQUID"
-        case .rollingTime: "ROLLING TIME"
         case .frameHoldSmear: "FRAME-HOLD SMEAR"
         case .pixelGravity: "PIXEL GRAVITY"
         case .pixelShift: "PIXEL SHIFT"
@@ -903,7 +795,6 @@ extension WorkspaceAdjustableEffect {
         case .vectorWarp: "VECTOR WARP"
         case .audioSpectral: "AUDIO SPECTRAL"
         case .audioScanBend: "AUDIO SCAN BEND"
-        case .audioChromaPulse: "AUDIO CHROMA"
         case .audioWaveform: "AUDIO WAVEFORM"
         case .audioBandSlice: "AUDIO BAND SLICE"
         case .audioBloom: "AUDIO BLOOM"
@@ -926,12 +817,9 @@ extension WorkspaceAdjustableEffect {
         case .touchWarp: "TOUCH WARP"
         case .hatch: "HATCH"
         case .phosphor: "PHOSPHOR"
-        case .voronoi: "VORONOI"
         case .hologram: "HOLOGRAM"
         case .asciiMosaic: "ASCII"
-        case .blueNoiseDither: "BLUE NOISE"
         case .frostedGlass: "FROSTED GLASS"
-        case .dctBlocks: "DCT RINGING"
         case .domainWarp: "DOMAIN WARP"
         case .lensWarp: "LENS WARP"
         case .spectrumBars: "SPECTRUM"
@@ -944,19 +832,14 @@ extension WorkspaceAdjustableEffect {
         case .timeMap: "TIME MAP"
         case .predictionDrift: "PREDICTION DRIFT"
         case .cyberGrid: "CYBER GRID"
-        case .astralPlasma: "ASTRAL PLASMA"
         case .quantumRaymarch: "RAYMARCH SDF"
         case .liquidChroma: "LIQUID CHROMA"
         case .holoAurora: "HOLO AURORA"
         case .neuralFlow: "NEURAL FLOW"
-        case .voxelStorm: "VOXEL STORM"
-        case .fractalZoom: "FRACTAL ZOOM"
-        case .particleLife: "PARTICLE LIFE"
         case .waveformTunnel: "WAVEFORM TUNNEL"
         case .spectralFlower: "SPECTRAL FLOWER"
         case .glitchWeave: "GLITCH WEAVE"
         case .hologramMatrix: "HOLO MATRIX"
-        case .singularityLens: "SINGULARITY LENS"
         case .causticReactor: "CAUSTIC REACTOR"
         case .eventHorizon: "EVENT HORIZON"
         case .prismPortal: "PRISM PORTAL"
@@ -976,10 +859,8 @@ extension WorkspaceAdjustableEffect {
         case .singularityWeave: "SINGULARITY WEAVE"
         case .fractalBurst: "FRACTAL BURST"
         case .vortexPulse: "VORTEX PULSE"
-        case .spectralNova: "SPECTRAL NOVA"
         case .ionStorm: "ION STORM"
         case .opalWave: "OPAL WAVE"
-        case .bokeh: "LUMA DIFFUSION"
         case .cmykPress: "CMYK PRESS"
         case .spectralDiffraction: "SPECTRAL DIFFRACTION"
         case .reactionGarden: "REACTION GARDEN"
@@ -1009,18 +890,12 @@ extension WorkspaceAdjustableEffect {
         case .heavyMosh: "RECURSIVE CODEC CASCADE"
         case .predictionDrift: "DIFFERENTIAL MOTION MEMORY"
         case .sort: "LUMA LINE SORT"
-        case .depthSort: "DEPTH-RANK SMEAR"
-        case .objectSort: "EDGE-BOUND SORT"
         case .radialSort: "CENTER OUT SORT"
         case .temporalPixelSort: "HISTORY PIXEL SORT"
         case .pointCloudSmear: "SPARSE CLOUD DRAG"
-        case .depthFeedback: "LUMA DEPTH LOOP"
         case .freezeBrush: "HELD REGION PAINT"
         case .sortBrush: "BRUSHED SORT FIELD"
         case .feedbackTunnel: "RECURSIVE TUNNEL"
-        case .lumaExtrusion: "BRIGHTNESS PULL"
-        case .opticalFlowLiquid: "MOTION LIQUID"
-        case .rollingTime: "BAND TIME OFFSET"
         case .frameHoldSmear: "HOLD FRAME DRAG"
         case .pixelGravity: "LUMA FALL FIELD"
         case .pixelShift: "BANDED FRAME OFFSET"
@@ -1031,7 +906,6 @@ extension WorkspaceAdjustableEffect {
         case .vectorWarp: "CURL FIELD DISPLACE"
         case .audioSpectral: "FFT BAND REFRACTION"
         case .audioScanBend: "BASS-BENT SCANLINES"
-        case .audioChromaPulse: "TRANSIENT RGB SPLIT"
         case .audioWaveform: "LIVE LEVEL TRACE"
         case .audioBandSlice: "BAND-KEYED SLICES"
         case .audioBloom: "ENERGY HALO"
@@ -1064,7 +938,6 @@ extension WorkspaceAdjustableEffect {
         case .vignette: "EDGE FALL-OFF"
         case .grain: "CHROMA NOISE"
         case .thermal: "HEAT PALETTE"
-        case .halftone: "DOT SCREEN"
         case .threshold: "LUMA CUT"
         case .invert: "CHANNEL NEGATIVE"
         case .solarize: "TONE REVERSAL"
@@ -1072,36 +945,27 @@ extension WorkspaceAdjustableEffect {
         case .monochrome: "TINTED LUMA"
         case .sharpen: "LAPLACIAN DETAIL"
         case .emboss: "RELIEF CONTOUR"
-        case .wave: "AXIS WARP"
         case .crt: "CURVE + GRILLE"
         case .water: "TOUCH-RIPPLED SURFACE"
         case .touchWarp: "FINGER GRAVITY LENS"
         case .hatch: "ENGRAVED CROSSHATCH"
         case .phosphor: "HOT BLOOM ACCUMULATION"
-        case .voronoi: "CELL FRACTURE FIELD"
         case .hologram: "INTERFERENCE PROJECTION"
-        case .chromaticAberration: "CHROMATIC ABERRATION"
         case .anamorphicFlare: "ANAMORPHIC FLARE"
-        case .bokeh: "BOKEH DEFOCUS"
         case .tiltShift: "TILT SHIFT"
         case .fisheye: "FISHEYE"
         case .lensDirt: "LENS DIRT"
         case .lightLeak: "LIGHT LEAK"
         case .starFilter: "STAR FILTER"
-        case .barrelWarp: "BARREL / PINCUSHION"
         case .softFocus: "SOFT FOCUS"
         case .halation: "HALATION"
         case .vhsTracking: "VHS TRACKING"
         case .super8: "SUPER 8"
         case .chromaBleed: "CHROMA BLEED"
-        case .tapeWarp: "TAPE WARP"
         case .dropout: "TAPE DROPOUT"
         case .colorBarTear: "COLOUR BAR TEAR"
-        case .interlace: "INTERLACE"
         case .degauss: "DEGAUSS"
-        case .printThrough: "PRINT THROUGH"
         case .polarWarp: "POLAR WARP"
-        case .twirl: "TWIRL"
         case .hexTile: "HEX TILE"
         case .shatter: "SHATTER"
         case .kaleido6: "KALEIDOSCOPE 6"
@@ -1111,17 +975,13 @@ extension WorkspaceAdjustableEffect {
         case .lensArray: "LENS ARRAY"
         case .fold: "FOLD"
         case .flowField: "FLOW FIELD"
-        case .curlWarp: "CURL WARP"
-        case .worleyCracks: "WORLEY CRACKS"
         case .plasma: "PLASMA FIELD"
         case .contourLines: "CONTOUR LINES"
-        case .topography: "LUMA TOPOGRAPHY"
         case .gradientMap: "GRADIENT MAP"
         case .falseColor: "FALSE COLOUR"
         case .edgeGlow: "EDGE GLOW"
         case .reactionBands: "REACTION BANDS"
         case .pixelMelt: "PIXEL MELT"
-        case .corrode: "CORRODE"
         case .burnThrough: "BURN THROUGH"
         case .ashDrift: "ASH DRIFT"
         case .bitRot: "BIT ROT"
@@ -1130,10 +990,7 @@ extension WorkspaceAdjustableEffect {
         case .audioStretch: "AUDIO STRETCH"
         case .audioRepair: "AUDIO DAMAGE / REPAIR"
         case .audioTunnel: "AUDIO TUNNEL"
-        case .audioKaleido: "AUDIO KALEIDOSCOPE"
-        case .audioGrain: "AUDIO GRAIN"
         case .audioDisplace: "AUDIO DISPLACE"
-        case .audioPosterize: "AUDIO POSTERIZE"
         case .spectralTint: "SPECTRAL TINT"
         case .fluid: "FLUID"
         case .kaleidoscope: "RADIAL SEGMENT FOLD"
@@ -1142,9 +999,7 @@ extension WorkspaceAdjustableEffect {
         case .kuwahara: "PAINTERLY EDGE-PRESERVE"
         case .asciiMosaic: "GLYPH DENSITY GRID"
         case .frostedGlass: "CELL REFRACTION"
-        case .dctBlocks: "CODEC BLOCK RINGING"
         case .domainWarp: "FBM WARPED BY FBM"
-        case .blueNoiseDither: "SCATTERED QUANTISE"
         case .spectrumBars: "16-BAND FFT BARS"
         case .radialSpectrum: "FFT WRAPPED TO A RING"
         case .lissajous: "AUDIO SCOPE TRACE"
@@ -1154,19 +1009,14 @@ extension WorkspaceAdjustableEffect {
         case .moshBrush: "FINGER-PAINTED MOTION"
         case .timeMap: "BRIGHTNESS PICKS THE MOMENT"
         case .cyberGrid: "QUANTUM LASER MATRIX"
-        case .astralPlasma: "WARPED COSMIC NEBULA"
         case .quantumRaymarch: "3D SDF HYPERCUBE CORRIDOR"
         case .liquidChroma: "NEON FLUID DISPERSION"
         case .holoAurora: "PRISMATIC WAVE INTERFERENCE"
         case .neuralFlow: "AI NEURAL VISUALIZATION"
-        case .voxelStorm: "3D VOXEL PARTICLE FIELD"
-        case .fractalZoom: "INFINITE FRACTAL DEEP ZOOM"
-        case .particleLife: "EMERGENT PARTICLE ECOSYSTEM"
         case .waveformTunnel: "AUDIO WAVEFORM CORRIDOR"
         case .spectralFlower: "REACTIVE SPECTRAL BLOOM"
         case .glitchWeave: "INTERACTIVE GLITCH TAPESTRY"
         case .hologramMatrix: "HOLOGRAPHIC FALLING CODE"
-        case .singularityLens: "GRAVITATIONAL CHROMA LENS"
         case .causticReactor: "AUDIO-CHARGED LIQUID LIGHT"
         case .eventHorizon: "RECURSIVE WARP COLLAPSE"
         case .prismPortal: "TOUCH-ANCHORED SPECTRUM GATE"
@@ -1186,7 +1036,6 @@ extension WorkspaceAdjustableEffect {
         case .singularityWeave: "WORMHOLE INTERFERENCE PATTERN"
         case .fractalBurst: "CATASTROPHIC FRACTAL EXPLOSION"
         case .vortexPulse: "GAMMA RAY VORTEX PULSE"
-        case .spectralNova: "WHITE DWARF SPECTRAL NOVA"
         case .ionStorm: "AUDIO-CHARGED FLOW REFRACTION"
         case .opalWave: "IRIDESCENT CAUSTIC REFRACTION"
         case .cmykPress: "FOUR ROTATED SUBTRACTIVE INK SCREENS"
@@ -1210,7 +1059,6 @@ extension WorkspaceAdjustableEffect {
         case .vignette: 9
         case .grain: 10
         case .thermal: 11
-        case .halftone: 12
         case .threshold: 13
         case .invert: 14
         case .solarize: 16
@@ -1218,44 +1066,34 @@ extension WorkspaceAdjustableEffect {
         case .monochrome: 18
         case .sharpen: 19
         case .emboss: 20
-        case .wave: 21
         case .crt: 22
         case .dataBend: 23
         case .prismStreak: 24
         case .vectorWarp: 25
         case .audioSpectral: 26
         case .audioScanBend: 27
-        case .audioChromaPulse: 28
         case .audioWaveform: 29
         case .audioBandSlice: 30
         case .water: 31
         case .touchWarp: 32
         case .hatch: 33
         case .phosphor: 34
-        case .voronoi: 35
         case .hologram: 36
-        case .chromaticAberration: 37
         case .anamorphicFlare: 38
-        case .bokeh: 39
         case .tiltShift: 40
         case .fisheye: 41
         case .lensDirt: 42
         case .lightLeak: 43
         case .starFilter: 44
-        case .barrelWarp: 45
         case .softFocus: 46
         case .halation: 47
         case .vhsTracking: 48
         case .super8: 49
         case .chromaBleed: 50
-        case .tapeWarp: 51
         case .dropout: 52
         case .colorBarTear: 53
-        case .interlace: 54
         case .degauss: 55
-        case .printThrough: 56
         case .polarWarp: 57
-        case .twirl: 58
         case .hexTile: 59
         case .shatter: 60
         case .kaleido6: 61
@@ -1265,17 +1103,13 @@ extension WorkspaceAdjustableEffect {
         case .lensArray: 65
         case .fold: 66
         case .flowField: 67
-        case .curlWarp: 68
-        case .worleyCracks: 69
         case .plasma: 70
         case .contourLines: 71
-        case .topography: 72
         case .gradientMap: 73
         case .falseColor: 74
         case .edgeGlow: 75
         case .reactionBands: 76
         case .pixelMelt: 77
-        case .corrode: 78
         case .burnThrough: 79
         case .ashDrift: 80
         case .bitRot: 81
@@ -1284,10 +1118,7 @@ extension WorkspaceAdjustableEffect {
         case .audioStretch: 84
         case .audioRepair: 85
         case .audioTunnel: 86
-        case .audioKaleido: 87
-        case .audioGrain: 88
         case .audioDisplace: 89
-        case .audioPosterize: 90
         case .spectralTint: 91
         case .kaleidoscope: 7
         case .mirror: 8
@@ -1295,9 +1126,7 @@ extension WorkspaceAdjustableEffect {
         case .kuwahara: 92
         case .asciiMosaic: 93
         case .frostedGlass: 94
-        case .dctBlocks: 95
         case .domainWarp: 96
-        case .blueNoiseDither: 97
         case .spectrumBars: 98
         case .radialSpectrum: 99
         case .lissajous: 100
@@ -1305,19 +1134,14 @@ extension WorkspaceAdjustableEffect {
         case .waveformMonitor: 102
         case .rgbParade: 103
         case .cyberGrid: 104
-        case .astralPlasma: 105
         case .quantumRaymarch: 106
         case .liquidChroma: 107
         case .holoAurora: 108
         case .neuralFlow: 109
-        case .voxelStorm: 110
-        case .fractalZoom: 111
-        case .particleLife: 112
         case .waveformTunnel: 113
         case .spectralFlower: 114
         case .glitchWeave: 115
         case .hologramMatrix: 116
-        case .singularityLens: 117
         case .causticReactor: 118
         case .eventHorizon: 119
         case .prismPortal: 120
@@ -1337,15 +1161,14 @@ extension WorkspaceAdjustableEffect {
         case .singularityWeave: 134
         case .fractalBurst: 135
         case .vortexPulse: 136
-        case .spectralNova: 137
         case .ionStorm: 138
         case .opalWave: 139
         case .cmykPress: 140
         case .spectralDiffraction: 141
         case .fluid, .reactionGarden, .vectorCodebook, .motionTransplant, .bitplaneLatch: nil
-        case .rgbSplit, .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .sort, .depthSort, .objectSort,
-             .radialSort, .temporalPixelSort, .pointCloudSmear, .depthFeedback, .freezeBrush,
-             .sortBrush, .feedbackTunnel, .lumaExtrusion, .opticalFlowLiquid, .rollingTime,
+        case .rgbSplit, .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .sort,
+             .radialSort, .temporalPixelSort, .pointCloudSmear, .freezeBrush,
+             .sortBrush, .feedbackTunnel,
              .frameHoldSmear, .pixelGravity, .pixelShift, .slitScan, .motionBloom,
              .audioBloom, .audioKick,
              .frameTear, .bufferUnderrun, .packetLoss, .chromaFailure, .sensorSmear,
@@ -1377,18 +1200,12 @@ extension WorkspaceAdjustableEffect {
         case .moshBrush: 41
         case .timeMap: 42
         case .sort: 5
-        case .depthSort: 6
-        case .objectSort: 7
         case .radialSort: 8
         case .temporalPixelSort: 9
         case .pointCloudSmear: 10
-        case .depthFeedback: 11
         case .freezeBrush: 12
         case .sortBrush: 13
         case .feedbackTunnel: 14
-        case .lumaExtrusion: 15
-        case .opticalFlowLiquid: 16
-        case .rollingTime: 17
         case .frameHoldSmear: 18
         case .pixelGravity: 19
         case .pixelShift: 20
@@ -1439,18 +1256,12 @@ extension WorkspaceAdjustableEffect {
         case .moshBrush: ["PUSH", "REACH", "BLOCK"]
         case .timeMap: ["DEPTH", "BIAS", "CONTRAST"]
         case .sort: ["SPAN", "BIAS", "MIX"]
-        case .depthSort: ["DEPTH", "GATE", "SMEAR"]
-        case .objectSort: ["EDGE", "GATE", "MIX"]
         case .radialSort: ["RADIUS", "SPIN", "MIX"]
         case .temporalPixelSort: ["HISTORY", "THRESH", "MIX"]
         case .pointCloudSmear: ["DENSITY", "DRIFT", "SMEAR"]
-        case .depthFeedback: ["DEPTH", "ZOOM", "DECAY"]
         case .freezeBrush: ["SIZE", "DRIFT", "HOLD"]
         case .sortBrush: ["SIZE", "SPAN", "MIX"]
         case .feedbackTunnel: ["PULL", "SPIN", "DECAY"]
-        case .lumaExtrusion: ["HEIGHT", "GATE", "MIX"]
-        case .opticalFlowLiquid: ["FLOW", "VISC", "MIX"]
-        case .rollingTime: ["ROLL", "BANDS", "MIX"]
         case .frameHoldSmear: ["HOLD", "ANGLE", "SMEAR"]
         case .pixelGravity: ["GRAVITY", "WEIGHT", "MIX"]
         case .pixelShift: ["OFFSET", "BANDS", "MIX"]
@@ -1461,7 +1272,6 @@ extension WorkspaceAdjustableEffect {
         case .vectorWarp: ["FIELD", "SCALE", "SPEED"]
         case .audioSpectral: ["REFRACT", "BANDS", "MIX"]
         case .audioScanBend: ["BEND", "LINES", "MIX"]
-        case .audioChromaPulse: ["SPLIT", "ATTACK", "MIX"]
         case .audioWaveform: ["HEIGHT", "TRACE", "MIX"]
         case .audioBandSlice: ["SHIFT", "SLICES", "MIX"]
         case .audioBloom: ["GAIN", "RADIUS", "MIX"]
@@ -1494,7 +1304,6 @@ extension WorkspaceAdjustableEffect {
         case .vignette: ["AMOUNT", "SOFTNESS", "ROUND"]
         case .grain: ["AMOUNT", "SIZE", "CHROMA"]
         case .thermal: ["SHIFT", "CONTRAST", "MIX"]
-        case .halftone: ["DOT SIZE", "ANGLE", "MIX"]
         case .threshold: ["LEVEL", "SOFTNESS", "MIX"]
         case .invert: ["AMOUNT", "CHANNEL", "MIX"]
         case .solarize: ["LEVEL", "SHIFT", "MIX"]
@@ -1502,36 +1311,27 @@ extension WorkspaceAdjustableEffect {
         case .monochrome: ["TINT", "CONTRAST", "MIX"]
         case .sharpen: ["AMOUNT", "RADIUS", "MIX"]
         case .emboss: ["DEPTH", "ANGLE", "MIX"]
-        case .wave: ["AMOUNT", "FREQUENCY", "SPEED"]
         case .crt: ["CURVE", "SCAN", "GRILLE"]
         case .water: ["RIPPLE", "FREQUENCY", "SPEED"]
         case .touchWarp: ["PULL", "RADIUS", "MIX"]
         case .hatch: ["SCALE", "GATE", "INK"]
         case .phosphor: ["GAIN", "THRESH", "MIX"]
-        case .voronoi: ["CELLS", "EDGE", "DRIFT"]
         case .hologram: ["FREQUENCY", "LINES", "DRIFT"]
-        case .chromaticAberration: ["SPREAD", "FALLOFF", "MIX"]
         case .anamorphicFlare: ["LENGTH", "GATE", "GAIN"]
-        case .bokeh: ["RADIUS", "FOCUS", "MIX"]
         case .tiltShift: ["BLUR", "BAND", "FALLOFF"]
         case .fisheye: ["CURVE", "CROP", "MIX"]
         case .lensDirt: ["AMOUNT", "SCALE", "MIX"]
         case .lightLeak: ["WIDTH", "DRIFT", "GAIN"]
         case .starFilter: ["REACH", "GATE", "GAIN"]
-        case .barrelWarp: ["CURVE", "SCALE", "MIX"]
         case .softFocus: ["RADIUS", "GATE", "GAIN"]
         case .halation: ["RADIUS", "GATE", "GAIN"]
         case .vhsTracking: ["ERROR", "DRIFT", "MIX"]
         case .super8: ["WEAVE", "GRAIN", "MIX"]
         case .chromaBleed: ["REACH", "BOOST", "MIX"]
-        case .tapeWarp: ["BEND", "RATE", "MIX"]
         case .dropout: ["DENSITY", "ROWS", "MIX"]
         case .colorBarTear: ["DENSITY", "ROWS", "MIX"]
-        case .interlace: ["OFFSET", "CONTRAST", "MIX"]
         case .degauss: ["AMOUNT", "RATE", "MIX"]
-        case .printThrough: ["OFFSET", "SKEW", "MIX"]
         case .polarWarp: ["CURVE", "REPEAT", "SPIN"]
-        case .twirl: ["ANGLE", "REACH", "DRIFT"]
         case .hexTile: ["SCALE", "BORDER", "MIX"]
         case .shatter: ["DRIFT", "CELLS", "MIX"]
         case .kaleido6: ["MIX", "ZOOM", "SPIN"]
@@ -1541,17 +1341,13 @@ extension WorkspaceAdjustableEffect {
         case .lensArray: ["CURVE", "PITCH", "MIX"]
         case .fold: ["FOLD", "ZOOM", "SPIN"]
         case .flowField: ["PUSH", "SCALE", "MIX"]
-        case .curlWarp: ["PUSH", "SCALE", "MIX"]
-        case .worleyCracks: ["WIDTH", "CELLS", "MIX"]
         case .plasma: ["AMOUNT", "SCALE", "MIX"]
         case .contourLines: ["WIDTH", "LEVELS", "MIX"]
-        case .topography: ["RELIEF", "SMOOTH", "MIX"]
         case .gradientMap: ["AMOUNT", "CURVE", "MIX"]
         case .falseColor: ["CONTRAST", "OFFSET", "MIX"]
         case .edgeGlow: ["GAIN", "WIDTH", "MIX"]
         case .reactionBands: ["SHARP", "SCALE", "MIX"]
         case .pixelMelt: ["SAG", "COLUMNS", "MIX"]
-        case .corrode: ["PITTING", "CELLS", "MIX"]
         case .burnThrough: ["SCALE", "RATE", "MIX"]
         case .ashDrift: ["MOTES", "WIND", "MIX"]
         case .bitRot: ["ROT", "BLOCKS", "MIX"]
@@ -1560,10 +1356,7 @@ extension WorkspaceAdjustableEffect {
         case .audioStretch: ["REACH", "DIRECTION", "MIX"]
         case .audioRepair: ["DAMAGE", "BLOCKS", "MIX"]
         case .audioTunnel: ["PULL", "SPIN", "MIX"]
-        case .audioKaleido: ["PUMP", "SEGMENTS", "MIX"]
-        case .audioGrain: ["NOISE", "BLEACH", "MIX"]
         case .audioDisplace: ["SHIFT", "SLICES", "MIX"]
-        case .audioPosterize: ["COLLAPSE", "LEVELS", "MIX"]
         case .spectralTint: ["GAIN", "SATURATION", "MIX"]
         case .fluid: ["DRAG", "PERSIST", "SWIRL"]
         case .kaleidoscope: ["SEGMENTS", "SPIN", "ZOOM"]
@@ -1572,9 +1365,7 @@ extension WorkspaceAdjustableEffect {
         case .kuwahara: ["RADIUS", "CONTRAST", "MIX"]
         case .asciiMosaic: ["CELL", "GAMMA", "COLOUR"]
         case .frostedGlass: ["ROUGH", "SCALE", "MIX"]
-        case .dctBlocks: ["QUALITY", "BLOCK", "MIX"]
         case .domainWarp: ["AMOUNT", "SCALE", "MIX"]
-        case .blueNoiseDither: ["LEVELS", "PIXEL", "MIX"]
         case .spectrumBars: ["SIZE", "BARS", "HUE"]
         case .radialSpectrum: ["SIZE", "INNER", "HUE"]
         case .lissajous: ["GAIN", "RATIO", "MIX"]
@@ -1582,19 +1373,14 @@ extension WorkspaceAdjustableEffect {
         case .waveformMonitor: ["GAIN", "HEIGHT", "MIX"]
         case .rgbParade: ["GAIN", "HEIGHT", "MIX"]
         case .cyberGrid: ["GRID", "COLOR", "MIX"]
-        case .astralPlasma: ["WARP", "GLOW", "MIX"]
         case .quantumRaymarch: ["MORPH", "GLOW", "MIX"]
         case .liquidChroma: ["DISPERSE", "SAT", "MIX"]
         case .holoAurora: ["PHASE", "GAIN", "MIX"]
         case .neuralFlow: ["DEPTH", "ACTIVITY", "MIX"]
-        case .voxelStorm: ["DENSITY", "CHAOS", "MIX"]
-        case .fractalZoom: ["ZOOM", "ITERATIONS", "MIX"]
-        case .particleLife: ["POPULATION", "ENERGY", "MIX"]
         case .waveformTunnel: ["DEPTH", "RESONANCE", "MIX"]
         case .spectralFlower: ["PETALS", "HARMONICS", "MIX"]
         case .glitchWeave: ["COMPLEXITY", "DISTORT", "MIX"]
         case .hologramMatrix: ["RAIN", "SCANLINE", "MIX"]
-        case .singularityLens: ["PULL", "CHROMA", "MIX"]
         case .causticReactor: ["ENERGY", "REFRACT", "MIX"]
         case .eventHorizon: ["DEPTH", "SPIN", "MIX"]
         case .prismPortal: ["RADIUS", "FACETS", "MIX"]
@@ -1614,7 +1400,6 @@ extension WorkspaceAdjustableEffect {
         case .singularityWeave: ["PULL", "CHROMA", "MIX"]
         case .fractalBurst: ["EXPAND", "SPIN", "MIX"]
         case .vortexPulse: ["SPEED", "ANGLE", "MIX"]
-        case .spectralNova: ["GAIN", "RESOLUTION", "MIX"]
         case .ionStorm: ["FIELD", "CHARGE", "MIX"]
         case .opalWave: ["CAUSTIC", "FLOW", "MIX"]
         case .cmykPress: ["SCREEN", "REGISTER", "INK"]
@@ -1637,18 +1422,12 @@ extension WorkspaceAdjustableEffect {
         case .heavyMosh: SIMD3(0.95, 0.18, 0.90)
         case .predictionDrift: SIMD3(0.72, 0.82, 0.38)
         case .sort: SIMD3(0.58, 0.48, 0.82)
-        case .depthSort: SIMD3(0.66, 0.38, 0.74)
-        case .objectSort: SIMD3(0.54, 0.42, 0.82)
         case .radialSort: SIMD3(0.62, 0.58, 0.78)
         case .temporalPixelSort: SIMD3(0.76, 0.28, 0.82)
         case .pointCloudSmear: SIMD3(0.48, 0.62, 0.72)
-        case .depthFeedback: SIMD3(0.64, 0.54, 0.70)
         case .freezeBrush: SIMD3(0.42, 0.36, 0.88)
         case .sortBrush: SIMD3(0.48, 0.60, 0.82)
         case .feedbackTunnel: SIMD3(0.72, 0.52, 0.74)
-        case .lumaExtrusion: SIMD3(0.66, 0.42, 0.78)
-        case .opticalFlowLiquid: SIMD3(0.58, 0.58, 0.84)
-        case .rollingTime: SIMD3(0.58, 0.62, 0.78)
         case .frameHoldSmear: SIMD3(0.82, 0.46, 0.76)
         case .pixelGravity: SIMD3(0.58, 0.60, 0.82)
         case .pixelShift: SIMD3(0.62, 0.46, 0.86)
@@ -1659,7 +1438,6 @@ extension WorkspaceAdjustableEffect {
         case .vectorWarp: SIMD3(0.48, 0.52, 0.56)
         case .audioSpectral: SIMD3(0.64, 0.58, 0.90)
         case .audioScanBend: SIMD3(0.58, 0.52, 0.88)
-        case .audioChromaPulse: SIMD3(0.52, 0.62, 0.92)
         case .audioWaveform: SIMD3(0.56, 0.48, 0.78)
         case .audioBandSlice: SIMD3(0.60, 0.50, 0.86)
         case .audioBloom: SIMD3(0.62, 0.44, 0.84)
@@ -1692,7 +1470,6 @@ extension WorkspaceAdjustableEffect {
         case .vignette: SIMD3(0.42, 0.46, 0.50)
         case .grain: SIMD3(0.20, 0.18, 0.25)
         case .thermal: SIMD3(0.50, 0.58, 1.00)
-        case .halftone: SIMD3(0.20, 0.12, 0.88)
         case .threshold: SIMD3(0.50, 0.08, 1.00)
         case .invert: SIMD3(1.00, 0.50, 1.00)
         case .solarize: SIMD3(0.54, 0.50, 1.00)
@@ -1700,36 +1477,27 @@ extension WorkspaceAdjustableEffect {
         case .monochrome: SIMD3(0.72, 0.54, 1.00)
         case .sharpen: SIMD3(0.34, 0.20, 0.78)
         case .emboss: SIMD3(0.35, 0.14, 0.82)
-        case .wave: SIMD3(0.22, 0.28, 0.68)
-        case .crt: SIMD3(0.22, 0.34, 0.30)
+        case .crt: SIMD3(0.30, 0.62, 0.55)
         case .water: SIMD3(0.26, 0.40, 0.52)
         case .touchWarp: SIMD3(0.62, 0.34, 0.86)
         case .hatch: SIMD3(0.34, 0.30, 0.78)
         case .phosphor: SIMD3(0.42, 0.36, 0.88)
-        case .voronoi: SIMD3(0.36, 0.34, 0.60)
         case .hologram: SIMD3(0.40, 0.38, 0.52)
-        case .chromaticAberration: SIMD3(0.46, 0.58, 0.85)
         case .anamorphicFlare: SIMD3(0.54, 0.62, 0.70)
-        case .bokeh: SIMD3(0.44, 0.52, 0.82)
         case .tiltShift: SIMD3(0.58, 0.50, 0.42)
         case .fisheye: SIMD3(0.52, 0.40, 0.88)
         case .lensDirt: SIMD3(0.48, 0.54, 0.72)
         case .lightLeak: SIMD3(0.56, 0.38, 0.68)
         case .starFilter: SIMD3(0.50, 0.66, 0.64)
-        case .barrelWarp: SIMD3(0.68, 0.52, 0.86)
         case .softFocus: SIMD3(0.52, 0.44, 0.62)
         case .halation: SIMD3(0.54, 0.50, 0.66)
         case .vhsTracking: SIMD3(0.52, 0.34, 0.84)
         case .super8: SIMD3(0.46, 0.42, 0.80)
         case .chromaBleed: SIMD3(0.56, 0.48, 0.82)
-        case .tapeWarp: SIMD3(0.44, 0.46, 0.84)
         case .dropout: SIMD3(0.38, 0.52, 0.86)
         case .colorBarTear: SIMD3(0.34, 0.48, 0.88)
-        case .interlace: SIMD3(0.42, 0.50, 0.78)
         case .degauss: SIMD3(0.52, 0.42, 0.84)
-        case .printThrough: SIMD3(0.40, 0.52, 0.72)
         case .polarWarp: SIMD3(0.52, 0.30, 0.50)
-        case .twirl: SIMD3(0.62, 0.46, 0.50)
         case .hexTile: SIMD3(0.42, 0.46, 0.86)
         case .shatter: SIMD3(0.44, 0.48, 0.84)
         case .kaleido6: SIMD3(0.82, 0.52, 0.54)
@@ -1739,17 +1507,13 @@ extension WorkspaceAdjustableEffect {
         case .lensArray: SIMD3(0.56, 0.44, 0.84)
         case .fold: SIMD3(0.48, 0.46, 0.50)
         case .flowField: SIMD3(0.50, 0.46, 0.84)
-        case .curlWarp: SIMD3(0.48, 0.44, 0.84)
-        case .worleyCracks: SIMD3(0.44, 0.50, 0.78)
         case .plasma: SIMD3(0.58, 0.44, 0.72)
         case .contourLines: SIMD3(0.40, 0.46, 0.80)
-        case .topography: SIMD3(0.54, 0.40, 0.82)
         case .gradientMap: SIMD3(0.78, 0.50, 0.84)
         case .falseColor: SIMD3(0.52, 0.50, 0.88)
         case .edgeGlow: SIMD3(0.54, 0.38, 0.82)
         case .reactionBands: SIMD3(0.48, 0.44, 0.76)
         case .pixelMelt: SIMD3(0.50, 0.54, 0.84)
-        case .corrode: SIMD3(0.46, 0.52, 0.80)
         case .burnThrough: SIMD3(0.48, 0.36, 0.86)
         case .ashDrift: SIMD3(0.52, 0.44, 0.78)
         case .bitRot: SIMD3(0.46, 0.52, 0.86)
@@ -1758,10 +1522,7 @@ extension WorkspaceAdjustableEffect {
         case .audioStretch: SIMD3(0.60, 0.40, 0.86)
         case .audioRepair: SIMD3(0.64, 0.52, 0.88)
         case .audioTunnel: SIMD3(0.56, 0.48, 0.86)
-        case .audioKaleido: SIMD3(0.52, 0.50, 0.86)
-        case .audioGrain: SIMD3(0.54, 0.40, 0.84)
         case .audioDisplace: SIMD3(0.58, 0.52, 0.86)
-        case .audioPosterize: SIMD3(0.60, 0.46, 0.86)
         case .spectralTint: SIMD3(0.56, 0.50, 0.88)
         case .moshBrush: SIMD3(0.55, 0.34, 0.42)
         case .timeMap: SIMD3(0.45, 0.50, 0.55)
@@ -1772,9 +1533,7 @@ extension WorkspaceAdjustableEffect {
         case .kuwahara: SIMD3(0.46, 0.42, 0.86)
         case .asciiMosaic: SIMD3(0.34, 0.52, 0.28)
         case .frostedGlass: SIMD3(0.42, 0.48, 0.80)
-        case .dctBlocks: SIMD3(0.58, 0.34, 0.88)
         case .domainWarp: SIMD3(0.40, 0.46, 0.82)
-        case .blueNoiseDither: SIMD3(0.52, 0.20, 0.86)
         // Scopes default to a strong mix: a measurement drawn at 40% is not a
         // reading, it is a ghost.
         case .spectrumBars: SIMD3(0.58, 0.45, 0.92)
@@ -1784,19 +1543,14 @@ extension WorkspaceAdjustableEffect {
         case .waveformMonitor: SIMD3(0.50, 0.42, 0.95)
         case .rgbParade: SIMD3(0.50, 0.42, 0.95)
         case .cyberGrid: SIMD3(0.50, 0.40, 0.90)
-        case .astralPlasma: SIMD3(0.60, 0.70, 0.88)
         case .quantumRaymarch: SIMD3(0.35, 0.75, 0.92)
         case .liquidChroma: SIMD3(0.55, 0.65, 0.85)
         case .holoAurora: SIMD3(0.45, 0.60, 0.88)
         case .neuralFlow: SIMD3(0.45, 0.55, 0.88)
-        case .voxelStorm: SIMD3(0.55, 0.60, 0.85)
-        case .fractalZoom: SIMD3(0.35, 0.45, 0.90)
-        case .particleLife: SIMD3(0.50, 0.65, 0.88)
         case .waveformTunnel: SIMD3(0.45, 0.55, 0.90)
         case .spectralFlower: SIMD3(0.55, 0.60, 0.88)
         case .glitchWeave: SIMD3(0.50, 0.55, 0.86)
         case .hologramMatrix: SIMD3(0.60, 0.50, 0.88)
-        case .singularityLens: SIMD3(0.58, 0.62, 0.90)
         case .causticReactor: SIMD3(0.64, 0.56, 0.88)
         case .eventHorizon: SIMD3(0.56, 0.54, 0.92)
         case .prismPortal: SIMD3(0.48, 0.60, 0.90)
@@ -1816,7 +1570,6 @@ extension WorkspaceAdjustableEffect {
         case .singularityWeave: SIMD3(0.50, 0.58, 0.88)
         case .fractalBurst: SIMD3(0.42, 0.66, 0.90)
         case .vortexPulse: SIMD3(0.56, 0.54, 0.88)
-        case .spectralNova: SIMD3(0.52, 0.60, 0.92)
         case .ionStorm: SIMD3(0.58, 0.64, 0.90)
         case .opalWave: SIMD3(0.54, 0.58, 0.88)
         case .cmykPress: SIMD3(0.48, 0.24, 0.78)
@@ -1841,18 +1594,18 @@ extension WorkspaceAdjustableEffect {
         case .cmykPress, .vectorCodebook, .motionTransplant, .bitplaneLatch: 1.5
         case .quantumRaymarch:
             2.6
-        case .astralPlasma, .liquidChroma, .cyberGrid, .holoAurora,
-             .neuralFlow, .voxelStorm, .fractalZoom, .particleLife,
+        case .liquidChroma, .cyberGrid, .holoAurora,
+             .neuralFlow,
              .waveformTunnel, .spectralFlower, .glitchWeave, .hologramMatrix,
-             .singularityLens, .causticReactor, .eventHorizon, .prismPortal,
+             .causticReactor, .eventHorizon, .prismPortal,
              .neonOrbit, .chromeRipple, .laserGarden, .hyperBloom, .pixelConfetti,
              .solarFlare, .candyMesh, .auroraGlass, .cosmicKnot,
              .nebulaDrift, .quantumBloom, .plasmaRipple, .chromascrape,
-             .singularityWeave, .fractalBurst, .vortexPulse, .spectralNova,
+             .singularityWeave, .fractalBurst, .vortexPulse,
              .ionStorm, .opalWave:
             1.6
-        case .phosphor, .voronoi, .hologram, .hatch, .water, .touchWarp, .crt, .dataBend,
-             .frostedGlass, .dctBlocks, .domainWarp:
+        case .phosphor, .hologram, .hatch, .water, .touchWarp, .crt, .dataBend,
+             .frostedGlass, .domainWarp:
             1.4
         // Sixty-four taps per pixel over the whole frame. It is the most
         // expensive style kernel in the set and the budget must know that
@@ -1865,9 +1618,9 @@ extension WorkspaceAdjustableEffect {
             1.8
         case .liquidMosh:
             2.4
-        case .datamosh, .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort,
-             .pointCloudSmear, .depthFeedback, .freezeBrush, .sortBrush, .feedbackTunnel,
-             .lumaExtrusion, .opticalFlowLiquid, .rollingTime, .frameHoldSmear, .pixelGravity,
+        case .datamosh, .sort, .radialSort, .temporalPixelSort,
+             .pointCloudSmear, .freezeBrush, .sortBrush, .feedbackTunnel,
+             .frameHoldSmear, .pixelGravity,
              .pixelShift, .slitScan, .motionBloom, .audioBloom, .audioKick, .prismStreak,
              .heavyMosh, .moshBrush, .timeMap,
              .vectorWarp, .feedback, .trails, .echo,
@@ -1891,9 +1644,9 @@ extension WorkspaceAdjustableEffect {
         case .datamosh, .liquidMosh, .heavyMosh,
              .moshBrush, .predictionDrift,
              .vectorCodebook, .motionTransplant, .bitplaneLatch, .reactionGarden,
-             .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort,
-             .pointCloudSmear, .depthFeedback, .freezeBrush, .sortBrush, .feedbackTunnel,
-             .lumaExtrusion, .opticalFlowLiquid, .rollingTime, .frameHoldSmear, .pixelGravity,
+             .sort, .radialSort, .temporalPixelSort,
+             .pointCloudSmear, .freezeBrush, .sortBrush, .feedbackTunnel,
+             .frameHoldSmear, .pixelGravity,
              .pixelShift:
             true
         default:

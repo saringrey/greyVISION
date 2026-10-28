@@ -9,7 +9,7 @@ final class FlagshipUITests: XCTestCase {
     func testFlagshipSearchControlsAndFamilyVariant() {
         let app = launchWorkspace()
         search("CMYK", in: app)
-        let press = app.buttons["workspace.action.cmyk-press"]
+        let press = app.buttons["workspace.effect.cmykPress"]
         XCTAssertTrue(press.waitForExistence(timeout: 5))
         press.tap()
         let deck = app.descendants(matching: .any)["workspace.parameters.cmykPress"]
@@ -19,7 +19,7 @@ final class FlagshipUITests: XCTestCase {
         XCTAssertTrue(screen.isHittable)
         capture("CMYK controls")
         search("KALEIDO6", in: app)
-        let kaleido = app.buttons["workspace.action.kaleido6"]
+        let kaleido = app.buttons["workspace.effect.kaleido6"]
         XCTAssertTrue(kaleido.waitForExistence(timeout: 5))
         kaleido.tap()
         let variant = app.buttons["workspace.effect.variant"]
@@ -35,20 +35,17 @@ final class FlagshipUITests: XCTestCase {
     func testCaptureChromeSurvivesBothLandscapeOrientations() {
         let app = launchWorkspace()
         defer { XCUIDevice.shared.orientation = .portrait }
-        for (orientation, name) in [(UIDeviceOrientation.portrait, "Portrait"), (.landscapeLeft, "Landscape left"), (.landscapeRight, "Landscape right")] {
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft, .landscapeRight] {
             XCUIDevice.shared.orientation = orientation
-            let record = app.buttons["workspace.record.toggle"]
-            XCTAssertTrue(record.waitForExistence(timeout: 5))
-            XCTAssertTrue(record.isHittable)
-            XCTAssertTrue(app.buttons["workspace.camera"].isHittable)
-            capture(name)
+            let controls = app.descendants(matching: .any)["workspace.capture.controls"]
+            XCTAssertTrue(controls.waitForExistence(timeout: 5))
+            for id in ["workspace.categories.all", "workspace.capture.photo", "workspace.record.toggle"] {
+                XCTAssertTrue(app.buttons[id].isHittable, id)
+            }
+            XCTAssertFalse(app.descendants(matching: .any)["workspace.bottom.dock"].exists)
+            XCTAssertLessThan(controls.frame.height, app.frame.height * 0.25)
+            capture("Three controls \(orientation.rawValue)")
         }
-        let chrome = app.buttons["workspace.chrome.toggle"]
-        chrome.tap()
-        XCTAssertEqual(chrome.label, "Show effects")
-        capture("Effects collapsed")
-        chrome.tap()
-        XCTAssertEqual(chrome.label, "Hide effects")
     }
 
     func testDatamoshControlsAndOpaqueFormatMenus() {
@@ -62,7 +59,7 @@ final class FlagshipUITests: XCTestCase {
             reading.tap()
         }
         search("DATAMOSH", in: app)
-        let mosh = app.buttons["workspace.action.datamosh"]
+        let mosh = app.buttons["workspace.effect.datamosh"]
         XCTAssertTrue(mosh.waitForExistence(timeout: 5))
         capture("Datamosh effect button")
         mosh.tap()
@@ -76,45 +73,33 @@ final class FlagshipUITests: XCTestCase {
         capture("Datamosh live controls")
     }
 
-    func testConsolidatedEffectsEntryAndLeftCategoryGroups() {
+    func testConsolidatedEffectsEntryAndCategoryRail() {
         let app = launchWorkspace()
-        let browse = app.buttons["workspace.categories.all"]
-        XCTAssertTrue(browse.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["workspace.category.color"].exists)
-        browse.tap()
-        XCTAssertTrue(app.scrollViews["workspace.effects.all"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["workspace.browser.families"].exists)
+        app.buttons["workspace.categories.all"].tap()
+        let rail = app.scrollViews["workspace.browser.categories"]
+        XCTAssertTrue(rail.waitForExistence(timeout: 5))
         let color = app.buttons["workspace.browser.category.color"]
-        XCTAssertTrue(color.waitForExistence(timeout: 5))
+        for _ in 0..<5 where !color.isHittable { rail.swipeLeft() }
         color.tap()
         XCTAssertTrue(app.scrollViews["workspace.effects.color"].waitForExistence(timeout: 5))
-        XCTAssertEqual(color.frame.minX, app.buttons["workspace.browser.category.all"].frame.minX, accuracy: 1)
-        capture("Aligned left-side groups")
+        capture("Image-led effect library")
     }
 
-    func testPreviewGallerySelectionAndAdjustInPortraitAndLandscape() {
+    func testPreviewGallerySelectionAutomaticallyShowsAdjustmentsInBothOrientations() {
         let app = launchWorkspace()
         defer { XCUIDevice.shared.orientation = .portrait }
-        app.buttons["workspace.categories.all"].tap()
-        let field = app.textFields["workspace.search.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        field.tap()
-        field.typeText("CMYK\n")
-        let tile = app.buttons["workspace.effect.cmykPress"]
-        XCTAssertTrue(tile.waitForExistence(timeout: 5))
-        tile.tap()
-        XCTAssertTrue(app.buttons["workspace.browser.adjust"].waitForExistence(timeout: 5))
-        capture("Quiet preview gallery portrait")
-        XCUIDevice.shared.orientation = .landscapeLeft
-        let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
-        wait(for: [landscape], timeout: 5)
-        // The system rotation animation finishes after the geometry changes.
-        Thread.sleep(forTimeInterval: 1)
-        XCTAssertTrue(app.buttons["workspace.browser.close"].isHittable)
-        XCTAssertTrue(app.buttons["workspace.browser.adjust"].isHittable)
-        capture("Quiet preview gallery landscape")
-        app.buttons["workspace.browser.adjust"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["workspace.parameters.cmykPress"].waitForExistence(timeout: 5))
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            search("CMYK", in: app)
+            let tile = app.buttons["workspace.effect.cmykPress"]
+            XCTAssertTrue(tile.waitForExistence(timeout: 5))
+            tile.tap()
+            XCTAssertTrue(app.descendants(matching: .any)["workspace.parameters.cmykPress"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.descendants(matching: .any)["workspace.browser"].exists)
+            XCTAssertTrue(app.buttons["workspace.capture.photo"].isHittable)
+            XCTAssertTrue(app.buttons["workspace.record.toggle"].isHittable)
+            capture("Live effect adjustments \(orientation.rawValue)")
+        }
     }
 
     func testPreviewHoldCancelsOrCommitsOnRelease() {
@@ -148,7 +133,7 @@ final class FlagshipUITests: XCTestCase {
                          "experimental", "developer", "spatial"] {
             let option = app.buttons["workspace.browser.category.\(category)"]
             let sidebar = app.scrollViews["workspace.browser.categories"]
-            for _ in 0 ..< 10 where !option.exists || !option.isHittable { sidebar.swipeUp() }
+            for _ in 0 ..< 10 where !option.exists || !option.isHittable { sidebar.swipeLeft() }
             XCTAssertTrue(option.waitForExistence(timeout: 5), category)
             XCTAssertTrue(option.isHittable, category)
             option.tap()
@@ -162,7 +147,9 @@ final class FlagshipUITests: XCTestCase {
             capture("Family \(category)")
         }
         // The datamosh shelf holds the codec effects and nothing else.
-        app.buttons["workspace.browser.category.datamosh"].tap()
+        let datamosh = app.buttons["workspace.browser.category.datamosh"]
+        for _ in 0..<10 where !datamosh.isHittable { app.scrollViews["workspace.browser.categories"].swipeRight() }
+        datamosh.tap()
         XCTAssertTrue(app.buttons["workspace.effect.datamosh"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["workspace.effect.sort"].exists, "Sorts are their own family now")
     }
@@ -176,7 +163,7 @@ final class FlagshipUITests: XCTestCase {
             let group = app.buttons["workspace.browser.category.\(category)"]
             for _ in 0 ..< 4 {
                 if group.exists && group.isHittable { break }
-                sidebar.swipeUp()
+                sidebar.swipeLeft()
             }
             XCTAssertTrue(group.exists, category)
             XCTAssertTrue(group.isHittable, category)
@@ -188,84 +175,98 @@ final class FlagshipUITests: XCTestCase {
         let all = app.buttons["workspace.browser.category.all"]
         for _ in 0 ..< 4 {
             if all.exists && all.isHittable { break }
-            sidebar.swipeDown()
+            sidebar.swipeRight()
         }
         XCTAssertTrue(all.isHittable)
         all.tap()
         XCTAssertTrue(app.scrollViews["workspace.effects.all"].waitForExistence(timeout: 5))
     }
 
-    func testQuickShelvesRemainReachableWithoutCategoryParade() {
+    func testQuickShelvesRemainInsideEffectsBrowser() {
         let app = launchWorkspace()
+        app.buttons["workspace.categories.all"].tap()
+        let rail = app.scrollViews["workspace.browser.categories"]
         for shelf in ["active", "favorites", "recents"] {
-            let shortcut = app.buttons["workspace.category.\(shelf)"]
-            XCTAssertTrue(shortcut.isHittable)
-            shortcut.tap()
-            XCTAssertTrue(app.buttons["workspace.browser.category.\(shelf)"].waitForExistence(timeout: 5))
-            app.buttons["workspace.browser.close"].tap()
+            let category = app.buttons["workspace.browser.category.\(shelf)"]
+            for _ in 0..<5 where !category.isHittable { rail.swipeLeft() }
+            XCTAssertTrue(category.isHittable)
+            category.tap()
+            XCTAssertEqual(category.value as? String, "selected")
         }
         XCTAssertTrue(app.buttons["workspace.capture.modes"].isHittable)
-        capture("Quiet dock quick shelves")
     }
 
-    func testMagneticEntryAndSleekCodecSelection() {
-        XCUIDevice.shared.orientation = .portrait
-        defer { XCUIDevice.shared.orientation = .portrait }
+    func testUnifiedLaunchOffersCodecBeforeEnteringCamera() {
         let app = XCUIApplication()
         app.launch()
-        let enter = app.buttons["access.enter"]
-        XCTAssertTrue(enter.waitForExistence(timeout: 10))
-        XCTAssertGreaterThanOrEqual(enter.frame.height, 44)
-        capture("Magnetic Open GreyVision entry")
-        enter.tap()
+        XCTAssertFalse(app.buttons["access.enter"].exists)
         let codec = app.buttons["boot.codec"]
-        XCTAssertTrue(codec.waitForExistence(timeout: 20))
+        XCTAssertTrue(codec.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["boot.launch"].isHittable)
         codec.tap()
-        let choices = app.scrollViews["boot.choices.codec"]
-        XCTAssertTrue(choices.waitForExistence(timeout: 5))
         let h264 = app.buttons["boot.codec.h.264"]
-        XCTAssertTrue(h264.isHittable)
-        capture("Digital decay codec console portrait")
+        XCTAssertTrue(h264.waitForExistence(timeout: 5))
         h264.tap()
-        XCTAssertTrue(choices.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["boot.choices.codec"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(codec.label.contains("H.264"))
-        codec.tap()
-        let hevc = app.buttons["boot.codec.hevc"]
-        XCTAssertTrue(hevc.waitForExistence(timeout: 5))
-        hevc.tap()
-        XCTAssertTrue(choices.waitForNonExistence(timeout: 5))
-        XCTAssertTrue(codec.label.contains("HEVC"))
-        XCUIDevice.shared.orientation = .landscapeLeft
-        let landscape = expectation(for: NSPredicate { _, _ in app.frame.width > app.frame.height }, evaluatedWith: app)
-        wait(for: [landscape], timeout: 5)
-        codec.tap()
-        XCTAssertTrue(choices.waitForExistence(timeout: 5))
-        Thread.sleep(forTimeInterval: 1)
-        XCTAssertTrue(h264.isHittable)
-        capture("Digital decay codec console landscape")
+        capture("Unified signal launch")
     }
 
-    func testGIFSplashReachesFormatSetupAndWorkspace() {
+    func testSilentASCIILaunchReachesWorkspaceWithoutSecondMenu() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launch()
+        let title = app.buttons["boot.social"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        XCTAssertEqual(title.label, "grey VISION")
+        XCTAssertTrue(app.buttons["boot.codec"].isHittable)
+        XCTAssertFalse(app.buttons["boot.audio"].exists)
+        app.buttons["boot.launch"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 10))
+    }
+
+    func testASCIISplashFitsPortraitAndLandscapeWithoutAudioControls() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launch()
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let title = app.buttons["boot.social"]
+            let launch = app.buttons["boot.launch"]
+            XCTAssertTrue(title.waitForExistence(timeout: 5))
+            XCTAssertTrue(launch.isHittable)
+            XCTAssertEqual(title.label, "grey VISION")
+            XCTAssertGreaterThan(title.frame.height, 100)
+            XCTAssertGreaterThanOrEqual(title.frame.minX, app.frame.minX)
+            XCTAssertLessThanOrEqual(title.frame.maxX, app.frame.maxX)
+            XCTAssertFalse(app.buttons["boot.audio"].exists)
+            capture("ASCII nebula splash \(orientation.rawValue)")
+        }
+    }
+
+    func testNebulaBackgroundDragPreservesFormatSelection() {
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
         app.launch()
-        let enter = app.buttons["access.enter"]
-        XCTAssertTrue(enter.waitForExistence(timeout: 10))
-        capture("GIF entry on white")
-        enter.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["boot.screen"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.descendants(matching: .any)["boot.telemetry"].exists)
-        XCTAssertFalse(app.descendants(matching: .any)["boot.capabilities"].exists)
-        capture("Restored greyvector format setup")
-        app.buttons["boot.codec"].tap()
-        XCTAssertTrue(app.scrollViews["boot.choices.codec"].waitForExistence(timeout: 5))
-        capture("Black codec options")
-        app.buttons["boot.codec"].tap()
-        let launch = app.buttons["boot.launch"]
-        let ready = expectation(for: NSPredicate(format: "enabled == true AND hittable == true"), evaluatedWith: launch)
-        wait(for: [ready], timeout: 25)
-        launch.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 10))
+        let codec = app.buttons["boot.codec"]
+        XCTAssertTrue(codec.waitForExistence(timeout: 10))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.58))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.62))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        codec.tap()
+        let panel = app.descendants(matching: .any)["boot.format.panel"]
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        capture("Blue codec submenu after nebula touch")
+        codec.tap()
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        app.buttons["boot.fps"].tap()
+        let fps30 = app.buttons["boot.fps.30-fps"]
+        XCTAssertTrue(fps30.waitForExistence(timeout: 5))
+        fps30.tap()
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["boot.fps"].label.contains("30"))
     }
 
     func testThinFormatSelectionsAndCameraTools() {
@@ -319,13 +320,13 @@ final class FlagshipUITests: XCTestCase {
         XCTAssertTrue(attribution.exists)
         XCTAssertGreaterThan(attribution.frame.minY, launch.frame.maxY)
         XCTAssertLessThan(attribution.frame.maxY, app.frame.maxY)
-        XCTAssertEqual(app.buttons["boot.social"].label, "Grey creator artwork")
+        XCTAssertEqual(app.buttons["boot.social"].label, "grey VISION")
         XCTAssertFalse(app.staticTexts["GV.CORE // CLEAN ROOM"].exists)
         XCTAssertFalse(app.staticTexts["VERSION 3.3"].exists)
         capture("Creator splash and bottom attribution")
-        app.buttons["boot.res"].tap()
+        app.buttons["boot.resolution"].tap()
         let openGate = app.buttons["boot.res.open-gate"]
-        let rail = app.scrollViews["boot.choices.res"]
+        let rail = app.scrollViews["boot.choices.resolution"]
         for _ in 0 ..< 4 where !openGate.isHittable {
             rail.swipeLeft()
         }
@@ -354,7 +355,7 @@ final class FlagshipUITests: XCTestCase {
     }
 
     private func search(_ term: String, in app: XCUIApplication) {
-        let toggle = app.buttons["workspace.search.toggle"]
+        let toggle = app.buttons["workspace.categories.all"]
         XCTAssertTrue(toggle.exists)
         let field = app.textFields["workspace.search.field"]
         if !field.exists { toggle.tap() }
@@ -363,7 +364,7 @@ final class FlagshipUITests: XCTestCase {
         if let previous = field.value as? String, previous != field.placeholderValue {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count))
         }
-        field.typeText(term)
+        field.typeText(term + "\n")
     }
 
     private func capture(_ name: String) {

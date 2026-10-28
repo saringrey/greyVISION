@@ -55,7 +55,7 @@ final class GVBroadcastControlBridge {
             publishState(force: true)
 
         case let .addEffect(effect):
-            guard let effect = WorkspaceAdjustableEffect(rawValue: effect), let editor else { break }
+            guard let effect = WorkspaceAdjustableEffect.resolving(effect), let editor else { break }
             // Same path as a dock tap, so ADD mode and exclusive selection
             // mean the same thing from either screen.
             editor.select(effect)

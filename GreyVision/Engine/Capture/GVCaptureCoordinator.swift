@@ -56,7 +56,6 @@ struct GVRecordingConfiguration: Sendable {
     let framesPerSecond: Int
     let targetSize: CGSize?
     let saveToPhotos: Bool
-    let burnHUD: Bool
     let watermark: String?
 }
 
@@ -120,9 +119,6 @@ enum GVRecordingTransactionError: LocalizedError, Sendable {
 final class GVRecordingTransaction: ObservableObject {
     @Published private(set) var state: GVRecordingTransactionState = .idle
     @Published var statusMessage: String?
-    /// Set by the workspace before a take begins. The renderer reads this once
-    /// at start so a take cannot change its burn-in policy midway through.
-    var burnHUD = false
 
     private var activeAdapter: (any GVRecordingAdapter)?
     private var activePath: GVRecordingPath?
@@ -209,8 +205,8 @@ final class GVRecordingTransaction: ObservableObject {
             // The take library is written first and Photos is attempted after,
             // so a refusal cannot destroy footage.
             saveToPhotos: true,
-            burnHUD: burnHUD,
-            watermark: burnHUD ? "grey//VISION" : nil
+            // Every take carries the HUD. There is no clean-record option.
+            watermark: "grey//VISION"
         )
         currentConfiguration = configuration
         let rawCapture = configuration.videoCodec.isProResRAW
@@ -270,15 +266,14 @@ final class GVRecordingTransaction: ObservableObject {
                     }
                     cameraRuntime.recordingMailbox.requestStart(
                         codecRawValue: codec.rawValue,
-                        fps: configuration.framesPerSecond,
-                        burnHUD: configuration.burnHUD
+                        fps: configuration.framesPerSecond
                     )
                 }
 
                 self.state = .recording(path: path, startedAt: self.recordingStartTime!)
                 self.statusMessage = rawCapture
                     ? "REC // SENSOR PRORES RAW"
-                    : "REC // \(path == .processedFrames ? "CLEAN RENDER" : "OBJECTS RENDER")"
+                    : "REC // \(path == .processedFrames ? "EFFECTS + HUD" : "AR OBJECTS + HUD")"
             } catch {
                 self.handleError(error, path: path)
             }
@@ -501,7 +496,7 @@ final class GVRecordingTransaction: ObservableObject {
             // Renderer has started the writer - update state if we're in preparing
             if case let .preparing(path) = state {
                 state = .recording(path: path, startedAt: Date())
-                statusMessage = "REC // \(path == .processedFrames ? "CLEAN RENDER" : "OBJECTS RENDER")"
+                statusMessage = "REC // \(path == .processedFrames ? "EFFECTS + HUD" : "AR OBJECTS + HUD")"
             }
         } else {
             // Renderer has stopped the writer

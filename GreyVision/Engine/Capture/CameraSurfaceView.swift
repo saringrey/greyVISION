@@ -34,6 +34,7 @@ struct CameraSurfaceView: View {
     var onOverlayGesturePhase: @MainActor @Sendable (Bool) -> Void = { _ in }
 
     @State private var metalFailed = false
+    @State private var focusReticlePoint: CGPoint? = nil
 
     var body: some View {
         Group {
@@ -101,28 +102,44 @@ struct CameraSurfaceView: View {
                     preferences.zebraEnabled ? 1 : 0,
                     0 // Reticle is preview chrome, not part of the processed image.
                 )
-                CameraMetalSurface(
-                    runtime: cameraRuntime,
-                    rgbSplitParameters: rgbSplitParameters,
-                    effectStack: effectStack,
-                    audioSnapshot: audioRuntime.snapshot,
-                    audioIntensity: audioRuntime.isEnabled ? Float(audioRuntime.intensity) : 0,
-                    blobFields: packedBlobFields(blobRuntime.blobs),
-                    scanlineParameters: ScanlineEffectParameters(),
-                    overlays: overlayVector,
-                    fracture: fracture,
-                    // Handed over only while the link is armed, so an idle
-                    // link costs the render loop nothing at all.
-                    broadcast: broadcastRuntime.isArmed ? broadcastRuntime.frameSink : nil,
-                    statsMailbox: statsMailbox,
-                    onPreviewTap: onPreviewTap,
-                    onFocus: onFocus,
-                    onSpectrumOverlayDrag: onSpectrumOverlayDrag,
-                    onSpectrumOverlayPinch: onSpectrumOverlayPinch,
-                    onOverlayGesturePhase: onOverlayGesturePhase,
-                    onFailure: { metalFailed = true },
-                    recordingTransaction: recordingTransaction
-                )
+                ZStack {
+                    CameraMetalSurface(
+                        runtime: cameraRuntime,
+                        rgbSplitParameters: rgbSplitParameters,
+                        effectStack: effectStack,
+                        audioMailbox: audioRuntime.snapshotMailbox,
+                        audioIntensity: audioRuntime.isEnabled ? Float(audioRuntime.intensity) : 0,
+                        blobFields: packedBlobFields(blobRuntime.blobs, region: blobRuntime.region),
+                        scanlineParameters: ScanlineEffectParameters(),
+                        overlays: overlayVector,
+                        fracture: fracture,
+                        broadcast: broadcastRuntime.isArmed ? broadcastRuntime.frameSink : nil,
+                        trackingFeed: blobRuntime.feed,
+                        statsMailbox: statsMailbox,
+                        onPreviewTap: onPreviewTap,
+                        onFocus: onFocus,
+                        onFocusReticle: { point in
+                            focusReticlePoint = point
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .seconds(1))
+                                focusReticlePoint = nil
+                            }
+                        },
+                        onSpectrumOverlayDrag: onSpectrumOverlayDrag,
+                        onSpectrumOverlayPinch: onSpectrumOverlayPinch,
+                        onOverlayGesturePhase: onOverlayGesturePhase,
+                        onFailure: { metalFailed = true },
+                        recordingTransaction: recordingTransaction
+                    )
+                    if let point = focusReticlePoint {
+                        Image(systemName: "scope")
+                            .font(.system(size: 44, weight: .light))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .shadow(color: .black.opacity(0.8), radius: 2)
+                            .position(x: point.x, y: point.y)
+                            .transition(.opacity)
+                    }
+                }
             }
         case .denied:
             statusSurface(
@@ -306,11 +323,16 @@ struct CameraSurfaceView: View {
 /// Packs up to four tracked blobs into the shader's blob field: xy = normalized
 /// center (top-left analysis space flipped to Metal's bottom-left UV), z = size
 /// factor, w = present. Empty slots stay zero so kernels ignore them.
-private func packedBlobFields(_ blobs: [TrackedBlob]) -> [SIMD4<Float>] {
+/// The four largest subjects, in the full working frame's coordinates.
+/// Tracking analyses only the preview's visible crop, so each centre is mapped
+/// back out of that region before it reaches the shaders.
+private func packedBlobFields(_ blobs: [TrackedBlob], region: CGRect) -> [SIMD4<Float>] {
     blobs.prefix(4).map { blob in
-        SIMD4<Float>(
-            Float(min(max(blob.rect.midX, 0), 1)),
-            Float(min(max(1 - blob.rect.midY, 0), 1)),
+        let x = region.minX + blob.rect.midX * region.width
+        let y = region.minY + blob.rect.midY * region.height
+        return SIMD4<Float>(
+            Float(min(max(x, 0), 1)),
+            Float(min(max(1 - y, 0), 1)),
             Float(min(max(sqrt(blob.area) * 2.2, 0.05), 1)),
             1
         )

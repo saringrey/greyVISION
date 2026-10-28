@@ -111,6 +111,12 @@ final class AudioReactiveRuntime: ObservableObject {
     }
 
     private let analyzer: AudioReactiveAnalyzer
+    #if DEBUG
+    /// Set by `beginAuditSignal`: the audit's synthetic signal owns the
+    /// runtime, and the workspace's arming policy may not start or stop it.
+    private(set) var auditSignalActive = false
+    #endif
+    private var startGeneration = 0
     private var humStreak = 0
     private var lastHumFrequency: Float = 0
     private var incantationCooldownUntil: TimeInterval = 0
@@ -177,9 +183,19 @@ final class AudioReactiveRuntime: ObservableObject {
     }
 
     func start() async {
+        #if DEBUG
+        guard !auditSignalActive else { return }
+        #endif
         guard state != .running, state != .requestingPermission else { return }
+        startGeneration += 1
+        let generation = startGeneration
         state = .requestingPermission
         let granted = await requestPermission()
+        guard generation == startGeneration else { return }
+        guard !Task.isCancelled else {
+            state = .idle
+            return
+        }
         guard granted else {
             state = .denied
             snapshotMailbox.clear()
@@ -199,6 +215,10 @@ final class AudioReactiveRuntime: ObservableObject {
     }
 
     func stop() {
+        #if DEBUG
+        guard !auditSignalActive else { return }
+        #endif
+        startGeneration += 1
         analyzer.stop()
         snapshotMailbox.clear()
         state = .idle
@@ -497,3 +517,45 @@ private final class AudioReactiveAnalyzer: @unchecked Sendable {
         min(max(value, 0), 1)
     }
 }
+
+#if DEBUG
+extension AudioReactiveRuntime {
+    /// Effect audits only: drives the runtime with a synthetic 120 BPM signal
+    /// instead of the microphone, so audio-reactive effects can be judged on
+    /// the simulator with a known, repeatable input. Stops the analyser so the
+    /// two sources never interleave.
+    func beginAuditSignal() {
+        analyzer.stop()
+        state = .running
+        auditSignalActive = true
+        let silent = ProcessInfo.processInfo.arguments.contains("--effect-audit-silent")
+        Task { @MainActor [weak self] in
+            let start = ProcessInfo.processInfo.systemUptime
+            while let self, self.state == .running, !Task.isCancelled {
+                // `--effect-audit-silent` keeps the runtime armed but feeds it
+                // silence: the quiet-room case audio effects must survive.
+                self.snapshotMailbox.publish(silent ? .zero : Self.auditSnapshot(at: ProcessInfo.processInfo.systemUptime - start))
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+        }
+    }
+
+    nonisolated static func auditSnapshot(at time: TimeInterval) -> AudioReactiveSnapshot {
+        let beat = time.truncatingRemainder(dividingBy: 0.5) / 0.5
+        let kick = Float(exp(-beat * 9))
+        let sway = Float(0.5 + 0.5 * sin(time * 1.7))
+        var spectrum = SIMD16<Float>()
+        for band in 0 ..< 16 {
+            let tilt = 1 - Float(band) / 18
+            let ripple = Float(0.5 + 0.5 * sin(time * 3.1 + Double(band) * 0.7))
+            spectrum[band] = min(max(tilt * (0.35 + 0.45 * ripple) + (band < 3 ? kick * 0.5 : 0), 0), 1)
+        }
+        return AudioReactiveSnapshot(
+            rms: 0.35 + 0.35 * kick + 0.1 * sway, bass: 0.25 + 0.7 * kick, mid: 0.3 + 0.4 * sway,
+            treble: 0.2 + 0.3 * Float(0.5 + 0.5 * sin(time * 5.3)), peak: 0.5 + 0.5 * kick,
+            dominantFrequency: 0, transient: kick > 0.6 ? kick : 0, sustain: sway, silence: 0,
+            spectrum: spectrum
+        )
+    }
+}
+#endif

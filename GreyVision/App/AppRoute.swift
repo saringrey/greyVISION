@@ -24,8 +24,11 @@ struct CaptureSetupDraft: Sendable, Equatable {
     enum VideoCodec: String, CaseIterable, Identifiable, Codable, Sendable {
         /// The curated picker list. The enum keeps every case it ever spelled
         /// for decoding old drafts, but the interface only offers the basics:
-        /// H.264, HEVC, ProRes 422 HQ, 4444 XQ and RAW HQ.
-        static let curated: [VideoCodec] = [.h264, .hevc, .proRes422HQ, .proRes4444XQ, .proResRAWHQ]
+        /// H.264, HEVC, ProRes 422 HQ and 4444 XQ.
+        ///
+        /// No RAW. A RAW take is the sensor's data, recorded around the effect
+        /// graph, so it can never carry the look — and every take must.
+        static let curated: [VideoCodec] = [.h264, .hevc, .proRes422HQ, .proRes4444XQ]
 
         case h264 = "H.264"
         case hevc = "HEVC"
@@ -367,7 +370,11 @@ struct CaptureSetupDraft: Sendable, Equatable {
     }
 
     var cameraPosition: CameraPosition = .rear
-    var videoCodec: VideoCodec = .hevc
+    /// Never RAW: a recipe or draft that names a RAW codec lands on 4444 XQ,
+    /// the highest-fidelity codec that records the effect stack.
+    var videoCodec: VideoCodec = .hevc {
+        didSet { if videoCodec.isProResRAW { videoCodec = .proRes4444XQ } }
+    }
     var resolution: Resolution = .ultraHD
     var frameRate: FrameRate = .realtime
     var qualityTier: QualityTier = .balanced

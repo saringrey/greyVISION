@@ -22,26 +22,27 @@ final class BootstrapUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testAccessGateShowsSingleEntryButton() {
+    func testLaunchCombinesEntryAndFormatSelection() {
         let app = XCUIApplication()
         app.launch()
 
-        let enter = app.buttons["access.enter"]
-        XCTAssertTrue(enter.waitForExistence(timeout: 5))
-        XCTAssertTrue(enter.isHittable)
-        XCTAssertEqual(enter.label, "Enter GreyVision")
-        enter.tap()
+        XCTAssertFalse(app.buttons["access.enter"].exists)
+        XCTAssertTrue(app.buttons["boot.codec"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["boot.launch"].isHittable)
         XCTAssertTrue(app.descendants(matching: .any)["boot.screen"].waitForExistence(timeout: 15))
     }
 
-    func testBootShowsBothScrollingTelemetryRegions() {
+    func testLaunchHasASCIIWordmarkWithoutAudioOrTelemetryClutter() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]
         app.launch()
 
         XCTAssertTrue(app.descendants(matching: .any)["boot.screen"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.descendants(matching: .any)["boot.telemetry"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.descendants(matching: .any)["boot.capabilities"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.buttons["boot.social"].label, "grey VISION")
+        XCTAssertFalse(app.buttons["boot.audio"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["boot.signal"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["boot.telemetry"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["boot.capabilities"].exists)
     }
 
     func testBootFormatDockWorkspaceStateMachine() {
@@ -180,12 +181,11 @@ final class BootstrapUITests: XCTestCase {
         XCTAssertTrue(app.buttons["workspace.capture.photo"].exists)
         XCTAssertFalse(app.buttons["workspace.clear-effects"].exists)
         XCTAssertFalse(app.buttons["workspace.menu"].exists)
-        // The three collections — recipes, takes, timelines — are rail items
-        // now, so they have to survive the landscape rotation. An operator
-        // framing a shot sideways still needs to reach the library.
+        // Recipes is a rail item, so it has to survive the landscape
+        // rotation. An operator framing a shot sideways still needs to reach it.
         XCTAssertTrue(app.buttons["workspace.recipes"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["workspace.takes"].exists)
-        XCTAssertTrue(app.buttons["workspace.timeline"].exists)
+        XCTAssertFalse(app.buttons["workspace.takes"].exists)
+        XCTAssertFalse(app.buttons["workspace.timeline"].exists)
         XCTAssertFalse(app.buttons["workspace.social"].exists)
         XCTAssertFalse(app.buttons["workspace.exit"].exists)
 

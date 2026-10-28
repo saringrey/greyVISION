@@ -1,24 +1,7 @@
 import SwiftUI
 
-/// Parameter deck for one effect.
-///
-/// One flat register: a compact header row (power, favourite, stack arming,
-/// render stack, random, close) over a short list of full-width
-/// tuner rows. An effect carries only a handful of parameters, so the old
-/// section tabs — ALL / CORE / SPACE / ADV — were navigation for furniture
-/// and are gone.
-///
-/// RANDOM is the one operation that earns a permanent chip on the header:
-/// re-roll the parameters to a fresh starting point, then keep tuning. The
-/// rest of what used to live behind TOOLS (reset, clipboard, A/B, fine
-/// mode) was six buttons competing for a thumb — most of it is reachable
-/// from the deck's own gestures (double-tap a parameter to reset, hold for
-/// fine), and the rest is in the stack strip.
-///
-/// STACK opens the render chain itself — see `WorkspaceEffectStackStrip`. The
-/// model underneath has always been an ordered list of identified slots; until
-/// that strip existed, none of the ordering or removal it supports could be
-/// reached from the app.
+/// Effect-specific dials with power and close immediately available.
+/// Secondary actions live in the tools menu so the preview keeps its space.
 struct WorkspaceEffectParameterDeck: View {
     let effect: WorkspaceAdjustableEffect
     @ObservedObject var editor: EffectEditingSession
@@ -38,7 +21,11 @@ struct WorkspaceEffectParameterDeck: View {
         VStack(spacing: GVMetrics.gap) {
             headerRow
             sliderRow
-            utilityFooter
+            if effect.isSpectrumOverlay {
+                Text("Drag preview to place · Pinch to resize")
+                    .font(.caption2)
+                    .foregroundStyle(GVTheme.ash)
+            }
 
             if showStack {
                 WorkspaceEffectStackStrip(
@@ -113,6 +100,7 @@ struct WorkspaceEffectParameterDeck: View {
             GVDeckChip(label: "", symbol: "power", accessibilityLabel: isEffectEnabled ? "Disable effect" : "Enable effect", active: isEffectEnabled, tint: .white, height: 27, id: "power") {
                 toggleEffectEnabled()
             }
+            toolsMenu
             GVDeckChip(label: "", symbol: "xmark", accessibilityLabel: "Close effect parameters", height: 27, id: "close") {
                 onClose()
             }
@@ -121,14 +109,20 @@ struct WorkspaceEffectParameterDeck: View {
 
     private var effectTitle: some View {
         HStack(spacing: 6) {
-            Text(effect.label)
-                .font(.system(size: 15, weight: .semibold))
+            Text(effect.label.uppercased())
+                .font(GVTheme.mono(13, .semibold))
+                .tracking(0.8)
                 .foregroundStyle(GVTheme.bone)
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
             if let position = renderPosition {
-                Text("· Effect \(position)")
-                    .font(.system(size: 12, weight: .regular))
+                Text("FX \(position)")
+                    .font(GVTheme.mono(10, .medium))
                     .foregroundStyle(GVTheme.ash)
+                    .padding(.horizontal, 6)
+                    .frame(height: 18)
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75))
+                    .accessibilityLabel("Effect \(position) in the chain")
             }
         }
     }
@@ -161,40 +155,40 @@ struct WorkspaceEffectParameterDeck: View {
         .padding(.horizontal, 2)
     }
 
-    private var utilityFooter: some View {
-        VStack(spacing: 3) {
-            if effect.isSpectrumOverlay {
-                Text("Drag preview to place · Pinch to resize")
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(GVTheme.ash)
-                    .accessibilityLabel("Drag preview to place spectrum overlay. Pinch preview to resize.")
+    private var toolsMenu: some View {
+        Menu {
+            Button(action: onFavoriteToggled) {
+                Label(isFavorite ? "Remove favorite" : "Save favorite", systemImage: isFavorite ? "star.fill" : "star")
             }
-            HStack(spacing: 6) {
-                GVDeckChip(
-                    label: "",
-                    symbol: isFavorite ? "star.fill" : "star",
-                    accessibilityLabel: isFavorite ? "Remove from favorites" : "Add to favorites",
-                    active: isFavorite,
-                    tint: .white,
-                    height: 27,
-                    id: "favorite"
-                ) { onFavoriteToggled() }
-                GVDeckChip(label: editor.isStackArmed ? "Add ✓" : "Add", active: editor.isStackArmed, tint: .white, height: 27, id: "addmode") {
-                    editor.setStackArmed(!editor.isStackArmed)
-                }
-                GVDeckChip(label: "Stack", symbol: "square.3.layers.3d", active: showStack, tint: .white, height: 27, id: "stack") {
-                    withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
-                        showStack.toggle()
-                    }
-                }
-                GVDeckChip(label: "Shuffle", symbol: "die.face.5", tint: .white, height: 27, id: "random") {
-                    randomize()
-                    toasts.show("\(effect.label) randomized")
-                }
-                Spacer(minLength: 0)
+            Button {
+                editor.setStackArmed(!editor.isStackArmed)
+            } label: {
+                Label(editor.isStackArmed ? "Replace effects" : "Add effects to stack", systemImage: "plus")
             }
+            Button {
+                withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
+                    showStack.toggle()
+                }
+            } label: {
+                Label(showStack ? "Hide render stack" : "Edit render stack", systemImage: "square.3.layers.3d")
+            }
+            Button {
+                randomize()
+                toasts.show("\(effect.label) randomized")
+            } label: { Label("Shuffle parameters", systemImage: "shuffle") }
+        } label: {
+            // Drawn as a deck chip so the header's three actions read as one set.
+            Image(systemName: "ellipsis")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(GVTheme.bone.opacity(0.78))
+                .frame(width: 31, height: 27)
+                .background(Capsule(style: .continuous).fill(Color.white.opacity(0.05)))
+                .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
-        .padding(.horizontal, 2)
+        .accessibilityLabel("Effect tools")
+        .accessibilityIdentifier("workspace.effect.tools")
     }
 
     // MARK: - Parameter model
@@ -425,8 +419,9 @@ struct GVParamRow: View {
 
             knob
 
-            Text(label.capitalized)
-                .font(.system(size: 11, weight: .regular))
+            Text(label.uppercased())
+                .font(GVTheme.mono(9.5, .medium))
+                .tracking(0.6)
                 .foregroundStyle(isDragging ? Color.white.opacity(0.9) : GVTheme.ash)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)

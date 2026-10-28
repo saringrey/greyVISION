@@ -20,6 +20,7 @@ enum CameraMetalShaderNames {
     static let flowAccumulate = "gvFlowAccumulate"
     static let flowClear = "gvFlowClear"
     static let historyTap = "gvCameraHistoryTap"
+    static let recordResolve = "gvCameraRecordResolve"
     static let compositeWatermark = "gvCameraCompositeWatermark"
     static let signalFracture = "gvCameraSignalFracture"
     static let moshClearState = "gvMoshClearState"
@@ -118,14 +119,12 @@ final class CameraRecordingMailbox: @unchecked Sendable {
 
     private var requestedCodecRawValue: String = AVVideoCodecType.h264.rawValue
     private var requestedFPS: Int = 30
-    private var requestedBurnHUD = false
 
-    func requestStart(codecRawValue: String, fps: Int, burnHUD: Bool = false) {
+    func requestStart(codecRawValue: String, fps: Int) {
         lock.withLock {
             startRequested = true
             requestedCodecRawValue = codecRawValue
             requestedFPS = fps
-            requestedBurnHUD = burnHUD
         }
     }
 
@@ -144,10 +143,10 @@ final class CameraRecordingMailbox: @unchecked Sendable {
         lock.withLock { startRequested }
     }
 
-    func consumeStartRequest() -> (Bool, String, Int, Bool) {
+    func consumeStartRequest() -> (Bool, String, Int) {
         lock.withLock {
             defer { startRequested = false }
-            return (startRequested, requestedCodecRawValue, requestedFPS, requestedBurnHUD)
+            return (startRequested, requestedCodecRawValue, requestedFPS)
         }
     }
 
@@ -317,7 +316,11 @@ struct CameraMetalSurface: UIViewRepresentable {
     @ObservedObject var runtime: CameraRuntime
     let rgbSplitParameters: RGBSplitEffectParameters
     let effectStack: CameraEffectStackParameters
-    let audioSnapshot: AudioReactiveSnapshot
+    /// Read by the renderer on every draw, not captured here: a snapshot
+    /// passed through `updateUIView` only refreshes when SwiftUI happens to
+    /// re-render the surface, which left audio-reactive effects holding one
+    /// stale frame of analysis between unrelated UI updates.
+    let audioMailbox: AudioReactiveSnapshotMailbox
     let audioIntensity: Float
     let blobFields: [SIMD4<Float>]
     let scanlineParameters: ScanlineEffectParameters
@@ -325,9 +328,12 @@ struct CameraMetalSurface: UIViewRepresentable {
     let fracture: SignalFractureController
     /// Live link to the Mac virtual camera, or nil when it is not armed.
     let broadcast: GVBroadcastEngine?
+    /// Filled with analysis frames while tracking runs; idle otherwise.
+    var trackingFeed: GVTrackingFeed?
     let statsMailbox: CameraRenderStatsMailbox
     let onPreviewTap: @MainActor @Sendable () -> Void
     let onFocus: @MainActor (CGPoint) -> Void
+    let onFocusReticle: @MainActor (CGPoint) -> Void
     let onSpectrumOverlayDrag: @MainActor @Sendable (SIMD2<Float>) -> Void
     let onSpectrumOverlayPinch: @MainActor @Sendable (CameraOverlayPinchEvent) -> Void
     /// True when a preview drag or pinch on a spectrum overlay starts, false
@@ -359,7 +365,6 @@ struct CameraMetalSurface: UIViewRepresentable {
                 }
             },
             screenshotMailbox: runtime.screenshotMailbox,
-            previewMailbox: runtime.previewMailbox,
             onScreenshotMessage: { [weak recordingTransaction, weak runtime] message in
                 Task { @MainActor [weak recordingTransaction, weak runtime] in
                     // Both, not one. The transaction owns the toast; the
@@ -375,6 +380,7 @@ struct CameraMetalSurface: UIViewRepresentable {
             },
             onPreviewTap: onPreviewTap,
             onFocus: onFocus,
+            onFocusReticle: onFocusReticle,
             onSpectrumOverlayDrag: onSpectrumOverlayDrag,
             onSpectrumOverlayPinch: onSpectrumOverlayPinch,
             onOverlayGesturePhase: onOverlayGesturePhase,
@@ -401,6 +407,7 @@ struct CameraMetalSurface: UIViewRepresentable {
 
     func updateUIView(_ view: CameraMetalView, context: Context) {
         context.coordinator.renderer?.setBroadcastEngine(broadcast)
+        context.coordinator.renderer?.setTrackingFeed(trackingFeed)
         context.coordinator.renderer?.setTemporalHoldActive(runtime.isFrameFrozen)
         context.coordinator.renderer?.update(
             rgbSplitParameters: rgbSplitParameters,
@@ -408,7 +415,7 @@ struct CameraMetalSurface: UIViewRepresentable {
             isSynthetic: runtime.snapshot.isSynthetic,
             sourceDimensions: runtime.snapshot.sourceDimensions ?? .fullHD,
             sourceIdentifier: runtime.snapshot.deviceID ?? "camera",
-            audioSnapshot: audioSnapshot,
+            audioMailbox: audioMailbox,
             audioIntensity: audioIntensity,
             blobFields: blobFields,
             scanlineParameters: scanlineParameters,
@@ -451,10 +458,10 @@ struct CameraMetalSurface: UIViewRepresentable {
         let onRecordingStateChange: @Sendable (Bool) -> Void
         let onRecordingMessage: @Sendable (String) -> Void
         let screenshotMailbox: CameraScreenshotMailbox
-        let previewMailbox: CameraPreviewMailbox
         let onScreenshotMessage: @Sendable (String) -> Void
         let onPreviewTap: @MainActor @Sendable () -> Void
         let onFocus: @MainActor (CGPoint) -> Void
+        let onFocusReticle: @MainActor (CGPoint) -> Void
         let onSpectrumOverlayDrag: @MainActor @Sendable (SIMD2<Float>) -> Void
         let onSpectrumOverlayPinch: @MainActor @Sendable (CameraOverlayPinchEvent) -> Void
         let onOverlayGesturePhase: @MainActor @Sendable (Bool) -> Void
@@ -469,10 +476,10 @@ struct CameraMetalSurface: UIViewRepresentable {
             onRecordingStateChange: @escaping @Sendable (Bool) -> Void,
             onRecordingMessage: @escaping @Sendable (String) -> Void,
             screenshotMailbox: CameraScreenshotMailbox,
-            previewMailbox: CameraPreviewMailbox,
             onScreenshotMessage: @escaping @Sendable (String) -> Void,
             onPreviewTap: @escaping @MainActor @Sendable () -> Void,
             onFocus: @escaping @MainActor (CGPoint) -> Void,
+            onFocusReticle: @escaping @MainActor (CGPoint) -> Void,
             onSpectrumOverlayDrag: @escaping @MainActor @Sendable (SIMD2<Float>) -> Void,
             onSpectrumOverlayPinch: @escaping @MainActor @Sendable (CameraOverlayPinchEvent) -> Void,
             onOverlayGesturePhase: @escaping @MainActor @Sendable (Bool) -> Void,
@@ -486,10 +493,10 @@ struct CameraMetalSurface: UIViewRepresentable {
             self.onRecordingStateChange = onRecordingStateChange
             self.onRecordingMessage = onRecordingMessage
             self.screenshotMailbox = screenshotMailbox
-            self.previewMailbox = previewMailbox
             self.onScreenshotMessage = onScreenshotMessage
             self.onPreviewTap = onPreviewTap
             self.onFocus = onFocus
+            self.onFocusReticle = onFocusReticle
             self.onSpectrumOverlayDrag = onSpectrumOverlayDrag
             self.onSpectrumOverlayPinch = onSpectrumOverlayPinch
             self.onOverlayGesturePhase = onOverlayGesturePhase
@@ -509,7 +516,6 @@ struct CameraMetalSurface: UIViewRepresentable {
                       onRecordingStateChange: onRecordingStateChange,
                       onRecordingMessage: onRecordingMessage,
                       screenshotMailbox: screenshotMailbox,
-                      previewMailbox: previewMailbox,
                       onScreenshotMessage: onScreenshotMessage
                   )
             else {
@@ -544,6 +550,7 @@ struct CameraMetalSurface: UIViewRepresentable {
                 }
                 onPreviewTap()
                 onFocus(devicePoint)
+                onFocusReticle(point)
             }
             view.onFracture = { [fracture] event in
                 switch event {
@@ -1044,7 +1051,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private let screenshotMailbox: CameraScreenshotMailbox
     /// The newest scrub-preview frame, published by the runtime on the main actor
     /// and read here once per draw.
-    private let previewMailbox: CameraPreviewMailbox
     private let onScreenshotMessage: @Sendable (String) -> Void
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -1068,6 +1074,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     )
     private let temporalEffectPipeline: MTLComputePipelineState
     private let historyTapPipeline: MTLComputePipelineState
+    private let recordResolvePipeline: MTLComputePipelineState
     private let moshClearStatePipeline: MTLComputePipelineState
     private let compositeWatermarkPipeline: MTLComputePipelineState
     private let flowLumaPipeline: MTLComputePipelineState
@@ -1157,15 +1164,34 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private var isSynthetic = false
     private var sourceIdentifier = "camera"
     private var temporalHoldActive = false
-    private var audio = SIMD4<Float>.zero
-    private var audioDynamics = SIMD4<Float>.zero
-    private var audioSpectrum: CameraAudioSpectrum = (.zero, .zero, .zero, .zero)
+    private var audioMailbox: AudioReactiveSnapshotMailbox?
+    private var audioGain: Float = 0
     private var blobFields: [SIMD4<Float>] = []
     private var scanlineParameters = ScanlineEffectParameters()
     private var overlays = SIMD4<Float>.zero
     private var screenScale: Float = 3
     private var syntheticTarget: MTLTexture?
+    #if DEBUG
+    /// Simulator-only photo feed for effect audits; nil unless launched with
+    /// `--synthetic-still`.
+    private lazy var auditStill = shaderLibrary.flatMap { GVAuditStillFeed.load(device: device, library: $0) }
+    private lazy var energyProbe = shaderLibrary.flatMap { GVEffectEnergyProbe(device: device, library: $0) }
+    #endif
     private var temporalLumaTarget: MTLTexture?
+
+    /// Origin of the effect clock; see `effectTime` in `draw(in:)`.
+    private let effectClockOrigin = ProcessInfo.processInfo.systemUptime
+    private static let effectClockPeriod = 4096.0
+
+    /// Tracking's analysis hand-off and its downsample pass, built on first use.
+    private var trackingFeed: GVTrackingFeed?
+    private lazy var trackingEncoder = shaderLibrary.flatMap { GVTrackingFeedEncoder(device: device, library: $0) }
+    /// Its own encoder, not the tracker's: the two read back on independent
+    /// completion handlers and must never share a buffer slot.
+    private lazy var frameTapEncoder = shaderLibrary.flatMap {
+        GVTrackingFeedEncoder(device: device, library: $0, longEdge: GVSourceFrameTap.longEdge)
+    }
+    private lazy var trackingBurnIn = shaderLibrary.flatMap { GVTrackingBurnIn(device: device, library: $0) }
 
     /// Live link to the Mac virtual camera. Nil unless the operator armed it.
     private var broadcastEngine: GVBroadcastEngine?
@@ -1189,9 +1215,25 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// off the decoder a handful of times a second, so the same frame is drawn many
     /// times over; importing it on every one of those draws would move megabytes to
     /// show a picture that has not changed.
-    private var previewDrawnGeneration: UInt64 = 0
     private var hasHistoryFrame = false
     private var graphNodes: [UUID: CameraRenderGraphNode] = [:]
+    /// Last effect-stack revision the graph was configured for. When the
+    /// operator isn't editing the stack, `configureRenderGraph` can skip
+    /// rebuilding the effects array and rewiring the graph every frame.
+    private var lastGraphConfigurationRevision: UInt64 = 0
+    /// Last RGB split parameters the graph was configured for, so a change
+    /// to rgbSplit alone still reconfigures even when the stack revision is
+    /// unchanged.
+    private var lastGraphConfigurationRGBSplit = RGBSplitEffectParameters()
+    /// Last `includeTemporalEffects` flag the graph was configured for. This
+    /// is per-frame history state, not stack state, so it can flip without a
+    /// revision bump and must be part of the cache key.
+    private var lastGraphConfigurationTemporal = false
+    /// Cached result of `activeStyleModes` walk, keyed by stack revision.
+    /// Avoids a `compactMap` array allocation every frame when the stack is
+    /// unchanged (which is most frames).
+    private var cachedActiveStyleModes: [UInt32] = []
+    private var cachedActiveStyleModesRevision: UInt64 = 0
     private lazy var rgbGraphNode = CameraRenderGraphNode(
         identifier: "camera.rgbSplit",
         owner: self
@@ -1213,7 +1255,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         onRecordingStateChange: @escaping @Sendable (Bool) -> Void,
         onRecordingMessage: @escaping @Sendable (String) -> Void,
         screenshotMailbox: CameraScreenshotMailbox,
-        previewMailbox: CameraPreviewMailbox,
         onScreenshotMessage: @escaping @Sendable (String) -> Void
     ) {
         guard let commandQueue = device.makeCommandQueue(),
@@ -1224,6 +1265,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
               let styleEffectFunction = library.makeFunction(name: CameraMetalShaderNames.styleEffectGeneric),
               let temporalEffectFunction = library.makeFunction(name: CameraMetalShaderNames.temporalEffect),
               let historyTapFunction = library.makeFunction(name: CameraMetalShaderNames.historyTap),
+              let recordResolveFunction = library.makeFunction(name: CameraMetalShaderNames.recordResolve),
               let moshClearStateFunction = library.makeFunction(name: CameraMetalShaderNames.moshClearState),
               let compositeWatermarkFunction = library.makeFunction(name: CameraMetalShaderNames.compositeWatermark),
               let flowLumaFunction = library.makeFunction(name: CameraMetalShaderNames.flowLuma),
@@ -1240,6 +1282,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
               let styleEffectPipeline = try? device.makeComputePipelineState(function: styleEffectFunction),
               let temporalEffectPipeline = try? device.makeComputePipelineState(function: temporalEffectFunction),
               let historyTapPipeline = try? device.makeComputePipelineState(function: historyTapFunction),
+              let recordResolvePipeline = try? device.makeComputePipelineState(function: recordResolveFunction),
               let moshClearStatePipeline = try? device.makeComputePipelineState(function: moshClearStateFunction),
               let compositeWatermarkPipeline = try? device.makeComputePipelineState(function: compositeWatermarkFunction),
               let flowLumaPipeline = try? device.makeComputePipelineState(function: flowLumaFunction),
@@ -1290,7 +1333,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         self.onRecordingStateChange = onRecordingStateChange
         self.onRecordingMessage = onRecordingMessage
         self.screenshotMailbox = screenshotMailbox
-        self.previewMailbox = previewMailbox
         self.onScreenshotMessage = onScreenshotMessage
         self.device = device
         shaderLibrary = library
@@ -1306,6 +1348,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         self.styleEffectPipeline = styleEffectPipeline
         self.temporalEffectPipeline = temporalEffectPipeline
         self.historyTapPipeline = historyTapPipeline
+        self.recordResolvePipeline = recordResolvePipeline
         self.moshClearStatePipeline = moshClearStatePipeline
         self.compositeWatermarkPipeline = compositeWatermarkPipeline
         self.flowLumaPipeline = flowLumaPipeline
@@ -1343,16 +1386,24 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         isSynthetic: Bool,
         sourceDimensions: CaptureDimensions,
         sourceIdentifier: String,
-        audioSnapshot: AudioReactiveSnapshot,
+        audioMailbox: AudioReactiveSnapshotMailbox,
         audioIntensity: Float,
         blobFields: [SIMD4<Float>],
         scanlineParameters: ScanlineEffectParameters,
         overlays: SIMD4<Float> = .zero,
         screenScale: Float
     ) {
-        let activeStyleModes = effectStack.orderedSlots.compactMap { slot -> UInt32? in
-            guard slot.parameters.sanitized.isEnabled else { return nil }
-            return slot.effect.styleMode
+        let stackRevision = effectStack.revisionedIdentity
+        let activeStyleModes: [UInt32]
+        if stackRevision == cachedActiveStyleModesRevision {
+            activeStyleModes = cachedActiveStyleModes
+        } else {
+            activeStyleModes = effectStack.orderedSlots.compactMap { slot -> UInt32? in
+                guard slot.parameters.isEnabled else { return nil }
+                return slot.effect.styleMode
+            }
+            cachedActiveStyleModes = activeStyleModes
+            cachedActiveStyleModesRevision = stackRevision
         }
         settingsLock.withLock {
             self.rgbSplitParameters = rgbSplitParameters.sanitized
@@ -1360,16 +1411,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             self.isSynthetic = isSynthetic
             self.sourceDimensions = sourceDimensions
             self.sourceIdentifier = sourceIdentifier
-            let audioGain = min(max(audioIntensity, 0), 1)
-            audio = audioSnapshot.metalBands * audioGain
-            audioDynamics = audioSnapshot.metalDynamics * audioGain
-            let bands = audioSnapshot.metalSpectrum
-            audioSpectrum = (
-                bands.0 * audioGain,
-                bands.1 * audioGain,
-                bands.2 * audioGain,
-                bands.3 * audioGain
-            )
+            self.audioMailbox = audioMailbox
+            audioGain = audioIntensity.isFinite ? min(max(audioIntensity, 0), 1) : 0
             self.blobFields = blobFields
             self.scanlineParameters = scanlineParameters
             self.overlays = overlays
@@ -1404,6 +1447,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     ///
     /// Not part of `update(...)` because it changes once when the operator
     /// arms the link, not sixty times a second with the rest of the settings.
+    func setTrackingFeed(_ feed: GVTrackingFeed?) {
+        settingsLock.withLock { trackingFeed = feed }
+    }
+
     func setBroadcastEngine(_ engine: GVBroadcastEngine?) {
         settingsLock.withLock {
             broadcastEngine = engine
@@ -1427,16 +1474,18 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         }
 
         let settings = settingsLock.withLock {
-            CameraRenderSettings(
+            let liveAudio = audioGain > 0 ? audioMailbox?.latest ?? .zero : .zero
+            let bands = liveAudio.metalSpectrum
+            return CameraRenderSettings(
                 rgbSplit: rgbSplitParameters,
                 effectStack: effectStack,
                 isSynthetic: isSynthetic,
                 sourceDimensions: self.sourceDimensions,
                 sourceIdentifier: sourceIdentifier,
                 temporalHoldActive: temporalHoldActive,
-                audio: audio,
-                audioDynamics: audioDynamics,
-                audioSpectrum: audioSpectrum,
+                audio: liveAudio.metalBands * audioGain,
+                audioDynamics: liveAudio.metalDynamics * audioGain,
+                audioSpectrum: (bands.0 * audioGain, bands.1 * audioGain, bands.2 * audioGain, bands.3 * audioGain),
                 blobs: blobFields,
                 scanlines: scanlineParameters,
                 overlays: overlays
@@ -1463,51 +1512,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             touchImpactVector = SIMD4<Float>(0.5, 0.5, 100, 0)
         }
         var frameLease: CameraFrameTextureLease?
-        var previewLeases: [CVMetalTexture] = []
 
-        if let preview = previewMailbox.frame(now: CACurrentMediaTime()) {
-            // A scrub preview is one frame out of the recorded take, run through the
-            // same single graph pass as the camera. It is deliberately not a second
-            // pass: every temporal Slot advances its own state once per draw
-            // (`moshStateReadsA`, the moshHistory copy-back), so passing twice would
-            // corrupt the live effect at double rate while the operator was only
-            // trying to look at one still.
-            //
-            // The capture mailbox is drained alongside it. A preview is not a new
-            // capture sample, and letting samples pile up behind one makes the camera
-            // jump forward the moment the preview window closes.
-            _ = mailbox.consumeLatest()
-            if preview.generation != previewDrawnGeneration || !hasLinearFrame {
-                let width = CVPixelBufferGetWidth(preview.buffer)
-                let height = CVPixelBufferGetHeight(preview.buffer)
-                guard ensureWorkingTextures(width: width, height: height),
-                      let linearTexture,
-                      encodePreviewFrame(
-                          preview.buffer,
-                          into: linearTexture,
-                          commandBuffer: commandBuffer,
-                          leases: &previewLeases
-                      )
-                else {
-                    // Nothing drawn this tick: the previous frame stays on screen,
-                    // which is the right answer for a preview and never a black one.
-                    return
-                }
-                previewDrawnGeneration = preview.generation
-                geometryLock.withLock {
-                    sourceGeometry = CameraSourceGeometry(
-                        width: width,
-                        height: height,
-                        // The take was composited by this same renderer, so its frames
-                        // are already upright: the aspect says which way is up, and
-                        // nothing needs mirroring back.
-                        orientation: height >= width ? .portrait : .landscapeRight,
-                        isMirrored: false
-                    )
-                }
-                hasLinearFrame = true
-            }
-        } else if settings.isSynthetic {
+        if settings.isSynthetic {
             if !settings.temporalHoldActive || !hasLinearFrame {
                 let size = syntheticTextureSize(for: view.drawableSize)
                 guard ensureWorkingTextures(width: size.width, height: size.height),
@@ -1568,7 +1574,29 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         else { return }
 
         let renderTime = ProcessInfo.processInfo.systemUptime
-        let effectTime = Float(renderTime)
+        // Effects get a small, renderer-relative clock. Raw uptime is days of
+        // seconds on a phone that has not rebooted; in float32 that leaves
+        // `time * 12` with no fractional bits, and every sin-hash keyed on it
+        // (`fract(sin(dot(p, k)) * 43758)`) collapses to a constant — so
+        // time-gated effects such as Signal Tear, Dropout and Color Bar Tear
+        // simply never fired. Wrapping at 4096 s keeps ~0.5 ms precision; the
+        // once-an-hour wrap is a single-frame phase jump.
+        let effectTime = Float((renderTime - effectClockOrigin).truncatingRemainder(dividingBy: Self.effectClockPeriod))
+        // Tracking reads the clean source frame, before any effect: a tracker
+        // that saw its own effects would chase them.
+        if let feed = settingsLock.withLock({ trackingFeed }), feed.isActive {
+            trackingEncoder?.encodeIfNeeded(
+                source: linearTexture, commandBuffer: commandBuffer, feed: feed, time: renderTime,
+                viewAspect: Double(view.drawableSize.width / max(view.drawableSize.height, 1))
+            )
+        }
+        // The effect browser's previews: one clean frame, on request only.
+        if GVSourceFrameTap.shared.feed.isActive {
+            frameTapEncoder?.encodeIfNeeded(
+                source: linearTexture, commandBuffer: commandBuffer, feed: GVSourceFrameTap.shared.feed,
+                time: renderTime, viewAspect: 1
+            )
+        }
         let deltaTime = min(max(renderTime - (previousRenderTime ?? renderTime - 1 / 60), 1 / 240), 0.25)
         previousRenderTime = renderTime
         let holdSeconds: Float
@@ -1788,6 +1816,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             scratchTextures: (effectTextureA, effectTextureB)
         )
         var presentedTexture = graphResult.texture
+        #if DEBUG
+        energyProbe?.encode(source: linearTexture, output: presentedTexture, commandBuffer: commandBuffer)
+        #endif
 
         let shouldWriteHistory = !hasHistoryFrame ||
             (!shouldFreezeTemporalHistory && !temporalEffects.contains(where: { $0.0 == WorkspaceAdjustableEffect.freeze }))
@@ -1853,7 +1884,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
 
         // Camera recording: the effect stack output is blitted into the
         // writer's pixel-buffer pool, then appended once the GPU finishes.
-        let (shouldStart, codecRawValue, fps, burnHUD) = recordingMailbox.consumeStartRequest()
+        let (shouldStart, codecRawValue, fps) = recordingMailbox.consumeStartRequest()
         if shouldStart, recordingSession == nil {
             startRecording(
                 size: CGSize(
@@ -1861,10 +1892,24 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                     height: CGFloat(presentedTexture.height)
                 ),
                 codecRawValue: codecRawValue,
-                fps: fps,
-                burnHUD: burnHUD
+                fps: fps
             )
         }
+        // Frames that leave the device — a still, a take, the Mac link — carry
+        // the tracking marks. The preview draws them live in SwiftUI, so this
+        // only runs on frames something is capturing.
+        let capturing = screenshotMailbox.isCapturePending
+            || (recordingSession != nil && recordingMailbox.isActive())
+            || settingsLock.withLock({ broadcastEngine != nil })
+        let captureSource = capturing
+            ? trackingBurnIn?.composite(
+                frame: presentedTexture,
+                snapshot: settingsLock.withLock { trackingFeed }?.latestSnapshot,
+                commandBuffer: commandBuffer,
+                now: renderTime
+            ) ?? presentedTexture
+            : presentedTexture
+
         var screenshotLease: CameraScreenshotLease?
         // The chain output, not the drawable.
         //
@@ -1897,7 +1942,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) {
                     encoder.label = "greyVISION Still Resolve"
                     encoder.setRenderPipelineState(stillPipeline)
-                    encoder.setFragmentTexture(presentedTexture, index: 0)
+                    encoder.setFragmentTexture(captureSource, index: 0)
                     encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
                     encoder.endEncoding()
                     screenshotLease = lease
@@ -1924,11 +1969,11 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             }
             if let lease = makeRecordLease(recording: session, texture: presentedTexture) {
                 if let encoder = commandBuffer.makeComputeCommandEncoder() {
-                    encoder.label = "greyVISION Record Copy"
-                    encoder.setComputePipelineState(historyTapPipeline)
-                    encoder.setTexture(presentedTexture, index: 0)
+                    encoder.label = "greyVISION Record sRGB Resolve"
+                    encoder.setComputePipelineState(recordResolvePipeline)
+                    encoder.setTexture(captureSource, index: 0)
                     encoder.setTexture(lease.texture, index: 1)
-                    dispatch(encoder, pipeline: historyTapPipeline, texture: lease.texture)
+                    dispatch(encoder, pipeline: recordResolvePipeline, texture: lease.texture)
 
                     encoder.endEncoding()
                 }
@@ -1947,7 +1992,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             if let encoder = commandBuffer.makeComputeCommandEncoder() {
                 encoder.label = "greyVISION Broadcast Copy"
                 encoder.setComputePipelineState(historyTapPipeline)
-                encoder.setTexture(presentedTexture, index: 0)
+                encoder.setTexture(captureSource, index: 0)
                 encoder.setTexture(lease.texture, index: 1)
                 dispatch(encoder, pipeline: historyTapPipeline, texture: lease.texture)
                 encoder.endEncoding()
@@ -1958,7 +2003,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let bandSlot = encodeBandLuma(source: presentedTexture, commandBuffer: commandBuffer)
 
         let retainedLease = frameLease
-        let retainedPreviewLeases = previewLeases
         let retainedRecordLease = recordLease
         let retainedBroadcastLease = broadcastLease
         let retainedScreenshotLease = screenshotLease
@@ -1966,7 +2010,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         let reducedDetail = effectQuality.reducedDetail
         commandBuffer.addCompletedHandler { [weak self] buffer in
             _ = retainedLease
-            _ = retainedPreviewLeases
             if let bandSlot {
                 self?.readBandLuma(slot: bandSlot)
             }
@@ -1991,6 +2034,13 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         settings: CameraRenderSettings,
         includeTemporalEffects: Bool
     ) {
+        let stackRevision = settings.effectStack.revisionedIdentity
+        if stackRevision == lastGraphConfigurationRevision &&
+            settings.rgbSplit == lastGraphConfigurationRGBSplit &&
+            includeTemporalEffects == lastGraphConfigurationTemporal
+        {
+            return
+        }
         var effects: [any RenderEffect] = []
         var activeSlotIDs = Set<UUID>()
         /// In stack order, which is the order the codec budget is spent in.
@@ -2064,6 +2114,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             codecSlotsRequestedSnapshot = codecNodes.count
         }
         renderGraph.replaceEffects(effects)
+        lastGraphConfigurationRevision = stackRevision
+        lastGraphConfigurationRGBSplit = settings.rgbSplit
+        lastGraphConfigurationTemporal = includeTemporalEffects
     }
 
     /// Ensure this Slot owns a codec round trip and that the budget has been
@@ -2141,6 +2194,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             )
 
         case let .style(effect):
+            let sound = audioSignal(for: effect, state: state)
             encodeStyleEffect(
                 effect,
                 parameters: node.cameraParameters,
@@ -2148,9 +2202,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 destination: request.output,
                 commandBuffer: request.frame.commandBuffer,
                 time: state.time,
-                audio: state.settings.audio,
-                audioDynamics: state.settings.audioDynamics,
-                audioSpectrum: state.settings.audioSpectrum,
+                audio: sound.bands,
+                audioDynamics: sound.dynamics,
+                audioSpectrum: sound.spectrum,
                 touch: state.touch,
                 touchImpact: state.touchImpact,
                 touchDrag: state.touchDrag,
@@ -2174,7 +2228,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 commandBuffer: request.frame.commandBuffer,
                 source: request.input,
                 destination: request.output,
-                touch: state.touch,
+                touch: GVGhostFinger.resolve(effect: .fluid, touch: state.touch, drag: state.touchDrag, time: state.time).touch,
                 parameters: CameraFluidParameters(
                     drag: parameters.primary,
                     persistence: parameters.secondary,
@@ -2260,6 +2314,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                                    held: state.settings.temporalHoldActive,
                                    decoded: &decodedFrame)
             }
+            let ghost = GVGhostFinger.resolve(effect: effect, touch: state.touch, drag: state.touchDrag, time: state.time)
+            let sound = audioSignal(for: effect, state: state)
             encodeTemporalEffect(
                 effect,
                 parameters: node.cameraParameters,
@@ -2276,12 +2332,12 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 holdStyle: holdStyle(for: effect, freezeActive: freezeForEffect),
                 holdSeconds: state.holdSeconds,
                 deltaTime: state.deltaTime,
-                audio: state.settings.audio,
-                audioDynamics: state.settings.audioDynamics,
-                audioSpectrum: state.settings.audioSpectrum,
-                touch: state.touch,
+                audio: sound.bands,
+                audioDynamics: sound.dynamics,
+                audioSpectrum: sound.spectrum,
+                touch: ghost.touch,
                 touchImpact: state.touchImpact,
-                touchDrag: state.touchDrag,
+                touchDrag: ghost.drag,
                 moshState: moshState,
                 decode: decodedFrame?.texture,
                 blobs: state.settings.blobs
@@ -2310,6 +2366,16 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// the shader: motion lock, feedback runaway, frame starvation, and vector
     /// drift. The defaults were tuned against the same sliders as the live
     /// paths so the held state is the same image family at a different clock.
+    /// Live audio for an effect, floored by `GVAudioIdle` where it opts in.
+    private func audioSignal(for effect: WorkspaceAdjustableEffect, state: CameraRenderGraphFrameState) -> GVAudioIdle.Signal {
+        GVAudioIdle.resolve(
+            effect: effect,
+            live: GVAudioIdle.Signal(bands: state.settings.audio, dynamics: state.settings.audioDynamics,
+                                     spectrum: state.settings.audioSpectrum),
+            time: state.time
+        )
+    }
+
     private func holdStyle(for effect: WorkspaceAdjustableEffect, freezeActive: Bool) -> UInt32 {
         guard freezeActive else { return 0 }
         switch effect {
@@ -2394,7 +2460,11 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             bytesPerRow: bytesPerRow,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        ), let image = context.makeImage() else {
+        ) else {
+            onScreenshotMessage("PHOTO // ENCODE FAILED")
+            return
+        }
+        guard let image = context.makeImage() else {
             onScreenshotMessage("PHOTO // ENCODE FAILED")
             return
         }
@@ -2509,7 +2579,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         return (lease, texture)
     }
 
-    private func startRecording(size: CGSize, codecRawValue: String, fps _: Int, burnHUD: Bool) {
+    private func startRecording(size: CGSize, codecRawValue: String, fps _: Int) {
         guard size.width > 0, size.height > 0 else { return }
 
         // Capture current orientation from source geometry
@@ -2543,8 +2613,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             outputURL: url,
             size: size,
             saveToPhotos: false,
-            codec: codec,
-            burnHUD: burnHUD
+            codec: codec
         )
         session.videoOrientation = videoOrientation
         guard session.start(withAudio: true) else {
@@ -2576,7 +2645,9 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         session.finish { [weak self] result in
             switch result {
             case let .success(url):
-                GVLog.recording.notice("Camera recording finalized")
+                GVLog.recording.notice(
+                    "Camera recording finalized: \(session.encodedFrameCount, privacy: .public) encoded, \(session.droppedFrameCount, privacy: .public) dropped, \(session.poolExhaustionFrameCount, privacy: .public) pool-starved"
+                )
                 // The runtime owns what happens next — library record, Photos
                 // export, and the message that reports both. Saying "saved to
                 // Photos" here would have pre-empted an export that had not run.
@@ -3455,71 +3526,17 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         encoder.endEncoding()
     }
 
-    /// Converts a decoded take frame into the working texture with the same
-    /// YUV-to-linear kernel the camera uses, so a preview is graded from the same
-    /// numbers a live frame is rather than looking like a different picture.
-    ///
-    /// The range, matrix and transfer are stated rather than read: this is a video
-    /// range BT.709 frame, which is what this app records, and those are the values
-    /// the camera path arrives at for a frame tagged that way. Probing the buffer's
-    /// attachments would answer a question the writer already decided.
-    private func encodePreviewFrame(
-        _ pixelBuffer: CVPixelBuffer,
-        into destination: MTLTexture,
-        commandBuffer: MTLCommandBuffer,
-        leases: inout [CVMetalTexture]
-    ) -> Bool {
-        guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 2,
-              let lumaLease = makeTexture(
-                  pixelBuffer: pixelBuffer,
-                  pixelFormat: .r8Unorm,
-                  plane: 0,
-                  width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 0),
-                  height: CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
-              ),
-              let chromaLease = makeTexture(
-                  pixelBuffer: pixelBuffer,
-                  pixelFormat: .rg8Unorm,
-                  plane: 1,
-                  width: CVPixelBufferGetWidthOfPlane(pixelBuffer, 1),
-                  height: CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
-              ),
-              let encoder = commandBuffer.makeComputeCommandEncoder()
-        else {
-            return false
-        }
-        var uniforms = CameraConversionUniforms(
-            source: SIMD4<UInt32>(
-                UInt32(max(CVPixelBufferGetWidth(pixelBuffer), 1)),
-                UInt32(max(CVPixelBufferGetHeight(pixelBuffer), 1)),
-                0,
-                1
-            ),
-            tuning: SIMD4<Float>(0, 0, 0, 0)
-        )
-        encoder.label = "greyVISION Take Preview to Linear"
-        encoder.setComputePipelineState(yuvPipeline)
-        encoder.setTexture(lumaLease.1, index: 0)
-        encoder.setTexture(chromaLease.1, index: 1)
-        encoder.setTexture(destination, index: 2)
-        encoder.setBytes(
-            &uniforms,
-            length: MemoryLayout<CameraConversionUniforms>.stride,
-            index: 0
-        )
-        dispatch(encoder, pipeline: yuvPipeline, texture: destination)
-        encoder.endEncoding()
-        // The cache views are the only things standing between this encoder and the
-        // buffers behind them, and the GPU has not run it yet.
-        leases = [lumaLease.0, chromaLease.0]
-        return true
-    }
-
     private func encodeSyntheticFrame(
         into destination: MTLTexture,
         commandBuffer: MTLCommandBuffer,
         time: Float
     ) {
+        #if DEBUG
+        if let auditStill {
+            auditStill.encode(into: destination, commandBuffer: commandBuffer, time: time)
+            return
+        }
+        #endif
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
         var uniforms = CameraConversionUniforms(
             source: SIMD4<UInt32>(UInt32(destination.width), UInt32(destination.height), 1, 1),

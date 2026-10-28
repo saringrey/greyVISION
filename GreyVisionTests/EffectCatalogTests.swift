@@ -25,10 +25,23 @@ final class EffectCatalogTests: XCTestCase {
     }
 
     func testFamilyBrowsingDeduplicatesWithoutLosingLegacyIdentity() {
-        XCTAssertEqual(EffectCatalog.canonicalEffects([.kaleido6, .kaleidoscope, .curlWarp, .flowField]), [.kaleidoscope, .flowField])
+        XCTAssertEqual(EffectCatalog.canonicalEffects([.kaleido6, .kaleidoscope, .flowField]), [.kaleidoscope, .flowField])
         XCTAssertEqual(EffectCatalog.variants(for: .kaleido6), [.kaleidoscope, .kaleido6])
-        XCTAssertEqual(EffectCatalog.search("OPTICAL-FLOW LIQUID"), [.opticalFlowLiquid])
-        XCTAssertEqual(EffectCatalog.search("OBJECT SORT"), [.objectSort])
+        XCTAssertEqual(EffectCatalog.search("POINT-CLOUD SMEAR"), [.pointCloudSmear])
+    }
+
+    /// A retired effect's name still finds the look that replaced it, and a
+    /// recipe that names one decodes onto that replacement instead of failing.
+    func testRetiredEffectsResolveToTheirReplacementEverywhere() throws {
+        XCTAssertEqual(EffectCatalog.search("opticalFlowLiquid"), [.liquidMosh])
+        XCTAssertEqual(EffectCatalog.search("bokeh"), [.softFocus])
+        for (retired, replacement) in WorkspaceAdjustableEffect.retiredReplacements {
+            XCTAssertNil(WorkspaceAdjustableEffect(rawValue: retired), "\(retired) is still a live case")
+            XCTAssertEqual(WorkspaceAdjustableEffect.resolving(retired), replacement)
+            let decoded = try JSONDecoder().decode(WorkspaceAdjustableEffect.self, from: JSONEncoder().encode(retired))
+            XCTAssertEqual(decoded, replacement)
+        }
+        XCTAssertThrowsError(try JSONDecoder().decode(WorkspaceAdjustableEffect.self, from: JSONEncoder().encode("neverAnEffect")))
     }
 
     @MainActor
@@ -49,11 +62,11 @@ final class EffectCatalogTests: XCTestCase {
     @MainActor
     func testFamilyTapKeepsDisabledSlotIdentityAndPower() throws {
         let editor = EffectEditingSession()
-        editor.effectStack.reset(.curlWarp, enabled: false)
-        let slot = try XCTUnwrap(editor.effectStack.firstSlotID(for: .curlWarp))
-        editor.selectFamily(.flowField)
+        editor.effectStack.reset(.kaleido6, enabled: false)
+        let slot = try XCTUnwrap(editor.effectStack.firstSlotID(for: .kaleido6))
+        editor.selectFamily(.kaleidoscope)
         XCTAssertEqual(editor.focusedSlot, slot)
-        XCTAssertEqual(editor.selectedEffect, .curlWarp)
+        XCTAssertEqual(editor.selectedEffect, .kaleido6)
         XCTAssertFalse(try XCTUnwrap(editor.effectStack[slot: slot]).isEnabled)
         XCTAssertEqual(editor.effectStack.orderedSlots.count, 1)
     }
@@ -106,7 +119,7 @@ final class EffectCatalogTests: XCTestCase {
     func testTemporalOnlyPresetHasAnAccurateSummaryAndRoundTrips() throws {
         var stack = CameraEffectStackParameters()
         stack.reset(.datamosh)
-        stack.reset(.opticalFlowLiquid)
+        stack.reset(.trails)
         let preset = GVPreset(name: "LEGACY", codecRaw: "hvc1", frameRate: 60, resolutionRaw: "4K", rgbSplit: .init(), stack: stack)
         XCTAssertNotEqual(preset.summary, "EMPTY PLATE")
         XCTAssertTrue(preset.summary.contains(WorkspaceAdjustableEffect.datamosh.label))
@@ -118,7 +131,7 @@ final class EffectCatalogTests: XCTestCase {
     func testBroadcastKeepsLegacyDescriptorsEvenWhenShelvesAreCurated() {
         let surface = GVBroadcastControlCatalog.makeSurface(isAudioAvailable: true)
         let ids = Set(surface.effects.map(\.id))
-        XCTAssertTrue(ids.contains(WorkspaceAdjustableEffect.opticalFlowLiquid.rawValue))
+        XCTAssertTrue(ids.contains(WorkspaceAdjustableEffect.liquidMosh.rawValue))
         XCTAssertTrue(ids.contains(WorkspaceAdjustableEffect.kaleido6.rawValue))
         for family in surface.families {
             XCTAssertTrue(Set(family.effectIDs).isSubset(of: ids))
@@ -172,20 +185,18 @@ final class EffectCatalogTests: XCTestCase {
         }
 
         let sort = Set(EffectCatalog.effects(in: "sort"))
-        for expected in [WorkspaceAdjustableEffect.sort, .depthSort, .objectSort, .radialSort] {
+        for expected in [WorkspaceAdjustableEffect.sort, .radialSort, .temporalPixelSort] {
             XCTAssertTrue(sort.contains(expected), expected.rawValue)
         }
         XCTAssertFalse(datamosh.contains(.sort), "A sort is not a mosh")
 
         let history = Set(EffectCatalog.effects(in: "time"))
-        XCTAssertTrue(history.contains(.rollingTime))
         XCTAssertTrue(history.contains(.frameHoldSmear))
         XCTAssertTrue(Set(datamosh).isDisjoint(with: history))
         XCTAssertTrue(Set(datamosh).isDisjoint(with: sort))
 
         // Depth-named effects are luma/edge sorts, not scanner reads. They must
         // never be presented as the real depth modes.
-        XCTAssertTrue(sort.contains(.depthSort))
         XCTAssertTrue(sort.contains(.pointCloudSmear))
         XCTAssertFalse(WorkspaceDockCategory.browsable.filter(\.isShelf).contains(.spatial))
         XCTAssertTrue(WorkspaceDockCategory.spatial.displayLabel == "Depth")

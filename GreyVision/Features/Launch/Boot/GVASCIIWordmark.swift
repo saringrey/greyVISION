@@ -13,6 +13,7 @@ import SwiftUI
 /// finger the way the original's mouse-driven mesh rotation does.
 struct GVASCIIWordmark: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     let text: String
     /// Glyph size for the ASCII overlay.
@@ -20,6 +21,8 @@ struct GVASCIIWordmark: View {
     /// Columns in the ASCII grid. Rows follow from the text aspect.
     var columns: Int = 74
     var enableWaves = true
+    var animated = true
+    var interactive = true
     var tint = GVTheme.bone
     /// Bright glyphs pick this up, so the mark reads as lit rather than flat
     /// grey. The gradient runs across the block, not per character, which keeps
@@ -30,6 +33,8 @@ struct GVASCIIWordmark: View {
     /// of being switched on.
     var revealStart: Date = .distantPast
     var revealDuration: Double = 2.6
+    /// A shared title clock owns the single letter currently decrypting.
+    var decryption: GVLetterDecryption.Frame?
 
     @State private var mask: GVGlyphMask?
     @State private var touch: CGPoint?
@@ -46,10 +51,13 @@ struct GVASCIIWordmark: View {
     var body: some View {
         Group {
             if let mask {
-                if reduceMotion {
-                    asciiText(mask.render(time: 0, tilt: .zero, waves: false, reveal: 1))
+                if reduceMotion || !animated {
+                    asciiText(mask.render(
+                        time: 0, tilt: .zero, waves: false, reveal: 1,
+                        decryption: reduceMotion ? nil : decryption, letterCount: text.count
+                    ))
                 } else {
-                    TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { timeline in
+                    TimelineView(GVAmbientClock.ambient(hertz: 20, scenePhase: scenePhase)) { timeline in
                         let time = timeline.date.timeIntervalSinceReferenceDate
                         asciiText(
                             mask.render(
@@ -64,26 +72,36 @@ struct GVASCIIWordmark: View {
                     }
                 }
             } else {
-                // Nothing legible until the raster exists; the splash reveals
-                // this block late anyway.
-                Color.clear
+                Text(text)
+                    .font(.system(size: glyphSize * 14, weight: .black, design: .monospaced))
+                    .foregroundStyle(tint)
+                    .accessibilityHidden(true)
             }
         }
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { value in touch = value.location }
+                .onChanged { value in
+                    guard interactive, !reduceMotion else { return }
+                    touch = value.location
+                }
                 .onEnded { _ in
                     withAnimation(.spring(response: 0.6, dampingFraction: 0.75)) {
                         touch = nil
                     }
-                }
+                },
+            including: interactive ? .all : .none
         )
-        .task(id: text) {
+        .task(id: RasterKey(text: text, columns: columns)) {
             mask = await GVGlyphMask.make(text: text, columns: columns)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)
+    }
+
+    private struct RasterKey: Hashable {
+        let text: String
+        let columns: Int
     }
 
     private func reveal(at date: Date) -> Double {
@@ -183,7 +201,10 @@ struct GVGlyphMask: Sendable {
 
     /// Resamples the grid with a travelling wave plus a tilt offset and returns
     /// the finished ASCII block.
-    func render(time: TimeInterval, tilt: CGVector, waves: Bool, reveal: Double) -> String {
+    func render(
+        time: TimeInterval, tilt: CGVector, waves: Bool, reveal: Double,
+        decryption: GVLetterDecryption.Frame? = nil, letterCount: Int = 1
+    ) -> String {
         var output = String()
         output.reserveCapacity((columns + 1) * rows)
 
@@ -204,7 +225,11 @@ struct GVGlyphMask: Sendable {
 
                 let sourceX = Int((Double(column) + shift).rounded())
                 let sourceY = Int((Double(row) + lift).rounded())
-                output.append(character(x: sourceX, y: sourceY, time: time, reveal: reveal))
+                let resolved = character(x: sourceX, y: sourceY, time: time, reveal: reveal)
+                output.append(decryption?.character(
+                    resolved: resolved, column: column, row: row,
+                    columns: columns, letterCount: letterCount
+                ) ?? resolved)
             }
             output.append("\n")
         }
@@ -239,5 +264,41 @@ struct GVGlyphMask: Sendable {
         // `invert: true` in the reference: bright pixels take dense glyphs.
         let index = Int(value * Double(GVGlyphMask.charset.count - 1))
         return GVGlyphMask.charset[min(max(index, 0), GVGlyphMask.charset.count - 1)]
+    }
+}
+
+/// A repeatable decrypt-then-rest sequence; only one display letter owns noise.
+enum GVLetterDecryption {
+    static let letterDuration: TimeInterval = 1.1
+    static let decryptDuration: TimeInterval = 0.72
+    private static let glyphs = Array("01/+*=<>#%&@")
+
+    struct Frame: Equatable {
+        let letter: Int
+        let progress: Double
+        let tick: Int
+
+        func forWord(start: Int, length: Int) -> Frame? {
+            guard start >= 0, length > 0, letter >= start, letter - start < length else { return nil }
+            return Frame(letter: letter - start, progress: progress, tick: tick)
+        }
+
+        func character(resolved: Character, column: Int, row: Int, columns: Int, letterCount: Int) -> Character {
+            guard resolved != " ", letterCount > 0, columns > 0,
+                  column * letterCount / columns == letter, progress < 1 else { return resolved }
+            let local = Double(column * letterCount) / Double(columns) - Double(letter)
+            let jitter = (sin(Double(column) * 91.7 + Double(row) * 47.3) + 1) * 0.5
+            guard progress < local * 0.65 + jitter * 0.35 else { return resolved }
+            let index = (column * 17 + row * 31 + tick * 7) % GVLetterDecryption.glyphs.count
+            return GVLetterDecryption.glyphs[index]
+        }
+    }
+
+    static func frame(elapsed: TimeInterval, letterCount: Int) -> Frame? {
+        guard elapsed.isFinite, elapsed >= 0, letterCount > 0 else { return nil }
+        let cycle = elapsed.truncatingRemainder(dividingBy: Double(letterCount) * letterDuration)
+        let letter = min(Int(cycle / letterDuration), letterCount - 1)
+        let local = cycle - Double(letter) * letterDuration
+        return Frame(letter: letter, progress: min(local / decryptDuration, 1), tick: Int(local * 30))
     }
 }

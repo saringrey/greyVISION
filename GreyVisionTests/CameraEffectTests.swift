@@ -10,55 +10,6 @@ import Metal
 import XCTest
 
 final class CameraEffectTests: XCTestCase {
-    // NOTE: testBundledSplashGIFPreservesTimingAndLoops was removed with
-    // `GVSplashAnimation`. The GIF-backed splash was replaced by the dot
-    // lettering backdrop, the gif asset was never committed to this tree, and
-    // nothing in the app referenced the decoder — so the test asserted a
-    // resource that cannot exist. Restore it alongside the asset, not before.
-
-
-    func testSplashDotsNeverSwellIntoEachOther() {
-        XCTAssertFalse(GVSplashLettering.points.isEmpty)
-        for row in 0 ..< 20 {
-            for tick in 0 ..< 600 {
-                let radius = GVSplashLettering.dotRadius(at: Double(tick) / 60, row: row)
-                XCTAssertTrue((0.254 ... 0.306).contains(radius))
-                XCTAssertLessThan(radius * 2, 1)
-            }
-        }
-    }
-
-    /// The rows used to alternate by parity, which made every second row a
-    /// mirror of the first and locked any two rows of the same parity together
-    /// forever. Each row now draws its own heading, pace and offset.
-    func testSplashRowsTakeIndependentHeadingsAndPaces() {
-        let motions = (0 ..< 40).map(GVSplashLettering.motion(for:))
-        let repeated = (0 ..< 40).map(GVSplashLettering.motion(for:))
-
-        // Deterministic: the draw closure asks for these on every frame, so a
-        // row that re-rolled its heading per tick would strobe.
-        for (first, second) in zip(motions, repeated) {
-            XCTAssertEqual(first.direction, second.direction)
-            XCTAssertEqual(first.speed, second.speed)
-            XCTAssertEqual(first.phase, second.phase)
-        }
-
-        XCTAssertEqual(Set(motions.map(\.direction)), [CGFloat(1), CGFloat(-1)],
-                       "the field must contain both headings")
-
-        // Parity decides nothing now: at least one row shares a heading with the
-        // row two below it, which the even/odd split made impossible.
-        XCTAssertTrue(
-            (0 ..< 38).contains { motions[$0].direction == motions[$0 + 2].direction }
-        )
-
-        XCTAssertGreaterThan(Set(motions.map(\.speed)).count, 20, "rows must not share one pace")
-
-        for motion in motions {
-            XCTAssertTrue((9 ... 30).contains(motion.speed))
-            XCTAssertTrue(motion.phase >= 0 && motion.phase < 1)
-        }
-    }
 
     func testEffectRegistryHasUniqueImplementedModesAndLiveParameters() {
         let styleEffects = WorkspaceAdjustableEffect.allCases.filter { $0.styleMode != nil }
@@ -66,22 +17,16 @@ final class CameraEffectTests: XCTestCase {
         let styleModes = styleEffects.compactMap(\.styleMode)
         let temporalModes = temporalEffects.compactMap(\.temporalMode)
 
-        // Asserted as an invariant, not as a count. The mode value indexes a
-        // switch inside the Metal kernel, so what matters is that the modes
-        // are unique and contiguous from zero — a gap silently routes an
-        // effect to whatever the shader's default arm draws. The previous
-        // hardcoded 31/30 only recorded how many effects existed on the day
-        // it was written and went red on every effect added since.
+        // Retired effects leave stable holes in the shader switch; live modes
+        // must remain unique and every catalog effect must have a render stage.
         XCTAssertFalse(styleEffects.isEmpty)
         XCTAssertFalse(temporalEffects.isEmpty)
         XCTAssertEqual(Set(styleModes).count, styleModes.count, "Two style effects share a shader mode")
         XCTAssertEqual(Set(temporalModes).count, temporalModes.count, "Two temporal effects share a shader mode")
-        XCTAssertEqual(styleModes.sorted(), Array(0 ... UInt32(styleModes.count - 1)), "Style modes must be contiguous")
-        XCTAssertEqual(
-            temporalModes.sorted(),
-            Array(0 ... UInt32(temporalModes.count - 1)),
-            "Temporal modes must be contiguous"
-        )
+        for effect in WorkspaceAdjustableEffect.allCases {
+            XCTAssertTrue(effect.styleMode != nil || effect.temporalMode != nil ||
+                          [.rgbSplit, .fluid, .reactionGarden].contains(effect), effect.rawValue)
+        }
 
         for effect in styleEffects + temporalEffects {
             let parameters = effect.defaultCameraParameters

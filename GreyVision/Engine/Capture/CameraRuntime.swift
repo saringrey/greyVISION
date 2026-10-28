@@ -36,11 +36,6 @@ final class CameraRuntime: ObservableObject {
     @Published private(set) var screenshotMessage: String?
     @Published private(set) var isFrameFrozen = false
 
-    /// The most recent take this session wrote. The timeline scrub preview reads a
-    /// frame out of this file, and the take library can open it even after a Photos
-    /// export was refused or failed.
-    @Published private(set) var lastCompletedTake: URL?
-
     let recordingMailbox = CameraRecordingMailbox()
     /// Where the recording transaction hears the outcome of a finished take —
     /// including one kept in the library because Photos refused it. A message
@@ -48,58 +43,8 @@ final class CameraRuntime: ObservableObject {
     /// `onChange` event, and the second take would look like it never happened.
     var takeOutcomeHandler: (@MainActor (Result<GVTake, any Error>) -> Void)?
     let screenshotMailbox = CameraScreenshotMailbox()
-    /// One pending scrub-preview frame. A mailbox rather than a published value
-    /// because the render thread and the main actor must not share observable state,
-    /// for the same reason `recordingMailbox` exists.
-    let previewMailbox = CameraPreviewMailbox()
-    /// The viewfinder is showing a frame out of the recorded take instead of the
-    /// camera. Published because the badge is SwiftUI; it follows the same window the
-    /// renderer uses, so the label and the picture always describe one state.
-    @Published private(set) var isShowingTakePreview = false
-
-    private var previewReader: GVTakeFrameReader?
-    private var previewReaderTake: URL?
-    private var previewExpiryTask: Task<Void, Never>?
-
     var latestFrameMailbox: LatestCapturedFrameMailbox {
         controller.latestFrameMailbox
-    }
-
-    /// Records the take that just finished, for anything that has to read it back.
-    func noteCompletedTake(_ url: URL) {
-        lastCompletedTake = url
-    }
-
-    /// Asks for the graded frame at a playhead position.
-    ///
-    /// Fire-and-forget: the frame lands in `previewMailbox` and the render loop
-    /// substitutes it for a camera sample. Each request opens a reader walk from a
-    /// sync sample, so the caller quantises how often this is called; the reader
-    /// coalesces whatever arrives anyway.
-    func requestPreviewFrame(at seconds: TimeInterval) {
-        guard let take = lastCompletedTake else { return }
-        // One reader per take. It holds nothing but the URL and its coalescing
-        // state, so replacing it when a new take lands is enough — and building one
-        // per request would throw away the coalescing that keeps a drag from
-        // queueing decodes behind each other.
-        if previewReaderTake != take {
-            previewReader = GVTakeFrameReader(url: take)
-            previewReaderTake = take
-        }
-        guard let reader = previewReader else { return }
-
-        isShowingTakePreview = true
-        previewExpiryTask?.cancel()
-        previewExpiryTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(CameraPreviewMailbox.visibleFor))
-            guard let self, !Task.isCancelled else { return }
-            self.isShowingTakePreview = false
-        }
-
-        Task { [weak self] in
-            guard let buffer = await reader.frame(at: seconds) else { return }
-            self?.previewMailbox.publish(buffer)
-        }
     }
 
     /// Called by the renderer when the writer actually comes online / finishes.
@@ -266,9 +211,8 @@ final class CameraRuntime: ObservableObject {
         }
         // The live camera's take is written inside the render loop, so its file
         // URL has no path back to the runtime except through this mailbox, which
-        // the runtime already owns. Without it `lastCompletedTake` only ever
-        // fills in on the RAW and objects paths, and the timeline scrub preview
-        // has nothing to open after a normal recording.
+        // the runtime already owns — and without it a normal recording would
+        // never be filed or exported.
         recordingMailbox.setTakeSavedHandler { [weak self] url in
             Task { @MainActor [weak self] in
                 await self?.fileCompletedTake(url, source: .camera)
@@ -282,7 +226,6 @@ final class CameraRuntime: ObservableObject {
     /// between leaves a pending record the library can retry.
     @discardableResult
     private func fileCompletedTake(_ url: URL, source: GVTake.Source) async -> GVTake? {
-        noteCompletedTake(url)
         recordingMessage = "RECORD // FILING TAKE"
         do {
             let take = try await GVTakeArchive.shared.completeRecording(at: url, source: source, exporter: GVSystemPhotosExporter())

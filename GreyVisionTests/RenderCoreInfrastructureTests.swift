@@ -159,6 +159,13 @@ final class RenderCoreInfrastructureTests: XCTestCase {
         XCTAssertEqual(recorder.identifiers, ["first", "failing", "last"])
         XCTAssertEqual(result.failedEffectIdentifiers, ["failing"])
         XCTAssertFalse(failing.isEnabled)
+        first.mix = 0
+        let next = graph.process(
+            input: input,
+            frame: makeFrameContext(texture: input, commandBuffer: buffer, temporalBuffers: bank)
+        )
+        XCTAssertEqual(recorder.identifiers, ["first", "failing", "last", "last"])
+        XCTAssertTrue(next.failedEffectIdentifiers.isEmpty)
     }
 
     func testRenderGraphAcceptsPersistentExternalScratchTextures() throws {

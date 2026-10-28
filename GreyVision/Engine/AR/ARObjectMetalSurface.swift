@@ -9,10 +9,13 @@ import UIKit
 
 struct ARObjectMetalSurface: UIViewRepresentable {
     @ObservedObject var runtime: ARObjectRuntime
+    @EnvironmentObject private var audioRuntime: AudioReactiveRuntime
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             mailbox: runtime.mailbox,
+            audioMailbox: audioRuntime.snapshotMailbox,
+            modelStore: runtime.modelStore,
             onPlaceObject: { point, size in
                 Task { @MainActor in
                     await runtime.placeObject(at: point, viewportSize: size)
@@ -59,6 +62,7 @@ struct ARObjectMetalSurface: UIViewRepresentable {
         context.coordinator.renderer?.update(
             objects: runtime.objects,
             parameters: runtime.parameters,
+            selectedObjectID: runtime.selectedObjectID,
             orientation: runtime.snapshot.orientation,
             recording: runtime.activeRecordingSession
         )
@@ -81,16 +85,22 @@ struct ARObjectMetalSurface: UIViewRepresentable {
     @MainActor
     final class Coordinator {
         let mailbox: LatestARObjectFrameMailbox
+        let audioMailbox: AudioReactiveSnapshotMailbox
+        let modelStore: ARUserModelStore
         let onPlaceObject: (CGPoint, CGSize) -> Void
         let onManipulate: (ARManipulation) -> Void
         fileprivate var renderer: ARObjectRenderer?
 
         init(
             mailbox: LatestARObjectFrameMailbox,
+            audioMailbox: AudioReactiveSnapshotMailbox,
+            modelStore: ARUserModelStore,
             onPlaceObject: @escaping (CGPoint, CGSize) -> Void,
             onManipulate: @escaping (ARManipulation) -> Void
         ) {
             self.mailbox = mailbox
+            self.audioMailbox = audioMailbox
+            self.modelStore = modelStore
             self.onPlaceObject = onPlaceObject
             self.onManipulate = onManipulate
         }
@@ -100,7 +110,9 @@ struct ARObjectMetalSurface: UIViewRepresentable {
                   let renderer = ARObjectRenderer(
                       device: device,
                       colorPixelFormat: view.colorPixelFormat,
-                      mailbox: mailbox
+                      mailbox: mailbox,
+                      audioMailbox: audioMailbox,
+                      modelStore: modelStore
                   )
             else {
                 GVLog.rendering.error("AR objects Metal renderer initialization failed")
@@ -140,7 +152,6 @@ enum ARManipulation: Sendable {
 }
 
 extension ARManipulationPhase {
-    /// UIKit states that carry no meaning here (`possible`) are dropped.
     init?(_ state: UIGestureRecognizer.State) {
         switch state {
         case .began: self = .began
@@ -153,13 +164,9 @@ extension ARManipulationPhase {
 
 final class ARObjectMetalView: MTKView {
     var onTap: ((CGPoint, CGSize) -> Void)?
-    /// Drag on an existing object: re-raycasts to move it along the world plane.
     var onDrag: ((CGPoint, CGSize, UIGestureRecognizer.State) -> Void)?
-    /// Pinch scale, relative to the object's size when the gesture began.
     var onScale: ((CGFloat, UIGestureRecognizer.State) -> Void)?
-    /// Two-finger twist, in radians.
     var onRotate: ((CGFloat, UIGestureRecognizer.State) -> Void)?
-    /// Long press removes the object under the finger.
     var onRemove: ((CGPoint, CGSize) -> Void)?
 
     override init(frame frameRect: CGRect, device: MTLDevice?) {
@@ -178,8 +185,6 @@ final class ARObjectMetalView: MTKView {
         let rotate = UIRotationGestureRecognizer(target: self, action: #selector(handleRotate(_:)))
         addGestureRecognizer(rotate)
 
-        // Pinch and twist are performed together constantly; without this only
-        // whichever recognised first would ever fire.
         pinch.delegate = self
         rotate.delegate = self
 
@@ -187,7 +192,6 @@ final class ARObjectMetalView: MTKView {
         press.minimumPressDuration = 0.55
         addGestureRecognizer(press)
 
-        // A drag must not also register as a tap and place a second object.
         tap.require(toFail: pan)
     }
 
@@ -235,6 +239,7 @@ extension ARObjectMetalView: UIGestureRecognizerDelegate {
 private struct ARObjectSettings {
     let objects: [ARObjectDescriptor]
     let parameters: ARObjectParameters
+    let selectedObjectID: UUID?
     let orientation: CapturedFrameOrientation
     let recording: GVRealtimeRecordingSession?
 }
@@ -273,6 +278,8 @@ private final class ARObjectFrameLease: @unchecked Sendable {
 // swiftlint:disable type_body_length
 private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Sendable {
     private let mailbox: LatestARObjectFrameMailbox
+    private let audioMailbox: AudioReactiveSnapshotMailbox
+    private let modelStore: ARUserModelStore
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let yuvPipeline: MTLComputePipelineState
@@ -285,16 +292,22 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
 
     private var objects: [ARObjectDescriptor] = []
     private var parameters = ARObjectParameters.defaults
+    private var selectedObjectID: UUID?
     private var orientation = CapturedFrameOrientation.portrait
     private var latestFrame: ARObjectFrame?
     private var backgroundTexture: MTLTexture?
     private var recordingSession: GVRealtimeRecordingSession?
     private var meshes: [ARObjectShape: MTKMesh] = [:]
+    private var userModelMeshes: [UUID: MTKMesh] = [:]
+    private var failedUserModelIDs: Set<UUID> = []
+    private var didReportFirstFrame = false
 
     init?(
         device: MTLDevice,
         colorPixelFormat: MTLPixelFormat,
-        mailbox: LatestARObjectFrameMailbox
+        mailbox: LatestARObjectFrameMailbox,
+        audioMailbox: AudioReactiveSnapshotMailbox,
+        modelStore: ARUserModelStore
     ) {
         guard let commandQueue = device.makeCommandQueue(),
               let library = device.makeDefaultLibrary(),
@@ -302,9 +315,16 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
               let backgroundVertex = library.makeFunction(name: "gvARBackgroundVertex"),
               let backgroundFragment = library.makeFunction(name: "gvARBackgroundFragment"),
               let objectVertex = library.makeFunction(name: "gvARObjectVertex"),
-              let objectFragment = library.makeFunction(name: "gvARObjectFragment"),
-              let yuvPipeline = try? device.makeComputePipelineState(function: yuvFunction)
+              let objectFragment = library.makeFunction(name: "gvARObjectFragment")
         else {
+            GVLog.rendering.error("AR renderer: queue, library or shader function missing")
+            return nil
+        }
+        let yuvPipeline: MTLComputePipelineState
+        do {
+            yuvPipeline = try device.makeComputePipelineState(function: yuvFunction)
+        } catch {
+            GVLog.rendering.error("AR renderer: YUV pipeline failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
 
@@ -313,22 +333,30 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         backgroundDescriptor.vertexFunction = backgroundVertex
         backgroundDescriptor.fragmentFunction = backgroundFragment
         backgroundDescriptor.colorAttachments[0].pixelFormat = colorPixelFormat
-        // The view carries a depth attachment, so every pipeline used in that
-        // pass must declare the matching format. Without it the background draw
-        // fails validation and only the clear colour reaches the screen — which
-        // is why AR objects rendered as a black frame.
         backgroundDescriptor.depthAttachmentPixelFormat = .depth32Float
 
         let solidDescriptor = MTLRenderPipelineDescriptor()
         solidDescriptor.label = "greyVISION AR Object Solid"
         solidDescriptor.vertexFunction = objectVertex
         solidDescriptor.fragmentFunction = objectFragment
-        solidDescriptor.colorAttachments[0].pixelFormat = colorPixelFormat
+        if let colorAttachment = solidDescriptor.colorAttachments[0] {
+            colorAttachment.pixelFormat = colorPixelFormat
+            colorAttachment.isBlendingEnabled = true
+            colorAttachment.sourceRGBBlendFactor = .sourceAlpha
+            colorAttachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            colorAttachment.sourceAlphaBlendFactor = .one
+            colorAttachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        }
         solidDescriptor.depthAttachmentPixelFormat = .depth32Float
+        solidDescriptor.vertexDescriptor = MTKMetalVertexDescriptorFromModelIO(Self.meshVertexDescriptor)
 
-        guard let backgroundPipeline = try? device.makeRenderPipelineState(descriptor: backgroundDescriptor),
-              let objectSolidPipeline = try? device.makeRenderPipelineState(descriptor: solidDescriptor)
-        else {
+        let backgroundPipeline: MTLRenderPipelineState
+        let objectSolidPipeline: MTLRenderPipelineState
+        do {
+            backgroundPipeline = try device.makeRenderPipelineState(descriptor: backgroundDescriptor)
+            objectSolidPipeline = try device.makeRenderPipelineState(descriptor: solidDescriptor)
+        } catch {
+            GVLog.rendering.error("AR renderer: render pipeline failed: \(String(describing: error), privacy: .public)")
             return nil
         }
 
@@ -337,12 +365,13 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         backgroundDepthDescriptor.isDepthWriteEnabled = false
 
         let objectDepthDescriptor = MTLDepthStencilDescriptor()
-        objectDepthDescriptor.depthCompareFunction = .less
+        objectDepthDescriptor.depthCompareFunction = .lessEqual
         objectDepthDescriptor.isDepthWriteEnabled = true
 
         guard let backgroundDepthState = device.makeDepthStencilState(descriptor: backgroundDepthDescriptor),
               let objectDepthState = device.makeDepthStencilState(descriptor: objectDepthDescriptor)
         else {
+            GVLog.rendering.error("AR renderer: depth state failed")
             return nil
         }
 
@@ -350,10 +379,13 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache) == kCVReturnSuccess,
               let cache
         else {
+            GVLog.rendering.error("AR renderer: texture cache failed")
             return nil
         }
 
         self.mailbox = mailbox
+        self.audioMailbox = audioMailbox
+        self.modelStore = modelStore
         self.device = device
         self.commandQueue = commandQueue
         self.yuvPipeline = yuvPipeline
@@ -369,12 +401,14 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
     func update(
         objects: [ARObjectDescriptor],
         parameters: ARObjectParameters,
+        selectedObjectID: UUID?,
         orientation: CapturedFrameOrientation,
         recording: GVRealtimeRecordingSession?
     ) {
         settingsLock.withLock {
             self.objects = objects
             self.parameters = parameters.sanitized
+            self.selectedObjectID = selectedObjectID
             self.orientation = orientation
             recordingSession = recording
         }
@@ -385,6 +419,8 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         backgroundTexture = nil
         recordingSession = nil
         meshes.removeAll()
+        userModelMeshes.removeAll()
+        failedUserModelIDs.removeAll()
         CVMetalTextureCacheFlush(textureCache, 0)
         GVLog.rendering.notice("AR objects renderer stopped")
     }
@@ -397,6 +433,7 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
             ARObjectSettings(
                 objects: objects,
                 parameters: parameters,
+                selectedObjectID: selectedObjectID,
                 orientation: orientation,
                 recording: recordingSession
             )
@@ -431,19 +468,35 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
 
         let now = CACurrentMediaTime()
         let interfaceOrientation = Self.interfaceOrientation(for: settings.orientation)
-        let projection = latestFrame.camera.projectionMatrix(
-            for: interfaceOrientation,
-            viewportSize: view.drawableSize,
-            zNear: 0.001,
-            zFar: 25
-        )
-        let viewMatrix = latestFrame.camera.viewMatrix(for: interfaceOrientation)
+        let projection: simd_float4x4
+        let viewMatrix: simd_float4x4
+        if let arCamera = latestFrame.camera {
+            projection = arCamera.projectionMatrix(
+                for: interfaceOrientation,
+                viewportSize: view.drawableSize,
+                zNear: 0.001,
+                zFar: 25
+            )
+            viewMatrix = arCamera.viewMatrix(for: interfaceOrientation)
+        } else {
+            projection = ARObjectSource.syntheticProjectionMatrix(
+                viewportSize: view.drawableSize,
+                zNear: 0.001,
+                zFar: 25
+            )
+            viewMatrix = latestFrame.cameraTransform.inverse
+        }
         let viewProjection = projection * viewMatrix
+        let cameraTransform = latestFrame.cameraTransform
         let cameraPosition = SIMD3(
-            latestFrame.camera.transform.columns.3.x,
-            latestFrame.camera.transform.columns.3.y,
-            latestFrame.camera.transform.columns.3.z
+            cameraTransform.columns.3.x,
+            cameraTransform.columns.3.y,
+            cameraTransform.columns.3.z
         )
+
+        let audioSnap = audioMailbox.latest
+        let audioLevel = Float(settings.parameters.audioReactivity)
+            * min(max(audioSnap.rms * 2.2, audioSnap.peak), 1.5)
 
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
             return
@@ -472,41 +525,59 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
 
         // Placed geometry.
         encoder.setDepthStencilState(objectDepthState)
-        let sizeScale = Float(parameters.size)
-        let glow = Float(parameters.glow)
+        encoder.setRenderPipelineState(objectSolidPipeline)
+        let anchored = settings.parameters.physicsMode == .anchored
+
         for object in settings.objects {
-            guard let mesh = mesh(for: object.shape) else { continue }
+            guard let resolvedMesh = resolveMesh(for: object) else { continue }
             let model = Self.modelMatrix(
                 for: object,
                 time: now,
-                scale: object.scale * sizeScale,
-                spin: Float(parameters.spin)
+                audioBoost: audioLevel,
+                anchored: anchored
             )
-            let tint: SIMD4<Float>
+            let tintRGB: SIMD3<Float>
             let glowScaled: Float
+            let materialRaw: UInt32
             if object.isBlackHole {
-                // Dark violet core with a hot rim: the constellation's appetite.
-                tint = SIMD4(SIMD3(0.05, 0.0, 0.18), 1)
-                glowScaled = max(glow * 2.4, 1.7)
+                tintRGB = SIMD3(0.05, 0.0, 0.18)
+                glowScaled = max(object.glow * 2.4, 1.7)
+                materialRaw = ARObjectMaterialMode.solidRim.rawValue
             } else {
-                tint = SIMD4(ARObjectPalette.colors[object.tintIndex % ARObjectPalette.colors.count], 1)
-                glowScaled = glow
+                tintRGB = ARObjectPalette.resolveTint(for: object)
+                glowScaled = object.glow
+                materialRaw = object.material.rawValue
             }
+
+            let isSelected = (settings.selectedObjectID != nil && settings.selectedObjectID == object.id)
             var uniforms = ARObjectUniforms(
                 model: model,
                 viewProjection: viewProjection,
-                cameraPosition: SIMD4(cameraPosition, 1),
-                tint: tint,
-                tuning: SIMD4(Float(now.truncatingRemainder(dividingBy: 3600)), 0, glowScaled, 0),
-                options: SIMD4<UInt32>(object.wire ? 1 : 0, 0, 0, 0)
+                cameraPosition: SIMD4(cameraPosition, audioLevel),
+                tint: SIMD4(tintRGB, object.opacity),
+                tuning: SIMD4(
+                    Float(now.truncatingRemainder(dividingBy: 3600)),
+                    object.metallic,
+                    glowScaled,
+                    object.rimSharpness
+                ),
+                options: SIMD4<UInt32>(
+                    materialRaw,
+                    0,
+                    0,
+                    isSelected ? 1 : 0
+                )
             )
-            encoder.setRenderPipelineState(objectSolidPipeline)
-            for (index, buffer) in mesh.vertexBuffers.enumerated() {
+
+            for (index, buffer) in resolvedMesh.vertexBuffers.enumerated() {
                 encoder.setVertexBuffer(buffer.buffer, offset: buffer.offset, index: index)
             }
+
+            let isWireframeMode = (object.material == .wireframe)
+            encoder.setTriangleFillMode(isWireframeMode ? .lines : .fill)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<ARObjectUniforms>.stride, index: 1)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<ARObjectUniforms>.stride, index: 0)
-            for submesh in mesh.submeshes {
+            for submesh in resolvedMesh.submeshes {
                 encoder.drawIndexedPrimitives(
                     type: submesh.primitiveType,
                     indexCount: submesh.indexCount,
@@ -515,7 +586,25 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                     indexBufferOffset: submesh.indexBuffer.offset
                 )
             }
+
+            // Optional wireframe lattice overlay on top of solid/shaded materials
+            if object.wire, !isWireframeMode {
+                uniforms.options.y = 1
+                encoder.setTriangleFillMode(.lines)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<ARObjectUniforms>.stride, index: 1)
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<ARObjectUniforms>.stride, index: 0)
+                for submesh in resolvedMesh.submeshes {
+                    encoder.drawIndexedPrimitives(
+                        type: submesh.primitiveType,
+                        indexCount: submesh.indexCount,
+                        indexType: submesh.indexType,
+                        indexBuffer: submesh.indexBuffer.buffer,
+                        indexBufferOffset: submesh.indexBuffer.offset
+                    )
+                }
+            }
         }
+        encoder.setTriangleFillMode(.fill)
         encoder.endEncoding()
 
         // Recording: blit the finished frame into a pixel buffer from the
@@ -561,21 +650,18 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
             recording.append(pixelBuffer, timestamp: recordTimestamp)
         }
         commandBuffer.commit()
+        if !didReportFirstFrame {
+            didReportFirstFrame = true
+            GVLog.rendering.notice("AR objects renderer drew its first frame: \(settings.objects.count, privacy: .public) objects")
+        }
     }
 
-    /// Keeps the recording pixel buffer's texture cache lease alive until the
-    /// command buffer completes and the encoder has consumed the pixels; it is
-    /// handed to the command-buffer completion handler once the GPU has
-    /// finished writing, and only that handler reads the pixels afterwards.
     private struct ARObjectRecordLease: @unchecked Sendable {
         let cacheLease: CVMetalTexture
         let texture: MTLTexture
         let pixelBuffer: CVPixelBuffer
     }
 
-    /// Prepares a recording pool pixel buffer for the finished frame, or nil
-    /// when recording is inactive, the drawable size changed, or the encoder
-    /// is backed up.
     private func makeRecordLease(
         recording: GVRealtimeRecordingSession?,
         size: CGSize
@@ -594,8 +680,6 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         )
     }
 
-    /// Wraps a recording pool pixel buffer so the GPU can write into it
-    /// directly. The lease must stay alive until the command completes.
     private func makeRecordingTexture(
         pixelBuffer: CVPixelBuffer
     ) -> (CVMetalTexture, MTLTexture)? {
@@ -729,6 +813,24 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         return (lease, texture)
     }
 
+    private func resolveMesh(for object: ARObjectDescriptor) -> MTKMesh? {
+        if let modelID = object.userModelID {
+            if let cached = userModelMeshes[modelID] {
+                return cached
+            }
+            if !failedUserModelIDs.contains(modelID),
+               let url = modelStore.fileURL(for: modelID),
+               let loaded = Self.makeUserModelMesh(from: url, device: device)
+            {
+                userModelMeshes[modelID] = loaded
+                return loaded
+            } else {
+                failedUserModelIDs.insert(modelID)
+            }
+        }
+        return mesh(for: object.shape)
+    }
+
     private func mesh(for shape: ARObjectShape) -> MTKMesh? {
         if let existing = meshes[shape] {
             return existing
@@ -740,9 +842,24 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         return mesh
     }
 
-    private static func makeMesh(shape: ARObjectShape, device: MTLDevice) -> MTKMesh? {
+    /// Interleaved position + normal, 24-byte stride, buffer 0 — the layout
+    /// `GVARObjectVertexIn` reads and the object pipeline declares.
+    static var meshVertexDescriptor: MDLVertexDescriptor {
+        let descriptor = MDLVertexDescriptor()
+        descriptor.attributes[0] = MDLVertexAttribute(
+            name: MDLVertexAttributePosition, format: .float3, offset: 0, bufferIndex: 0
+        )
+        descriptor.attributes[1] = MDLVertexAttribute(
+            name: MDLVertexAttributeNormal, format: .float3, offset: 12, bufferIndex: 0
+        )
+        descriptor.layouts[0] = MDLVertexBufferLayout(stride: 24)
+        return descriptor
+    }
+
+    // swiftlint:disable:next cyclomatic_complexity function_body_length
+    static func makeMesh(shape: ARObjectShape, device: MTLDevice) -> MTKMesh? {
         let allocator = MTKMeshBufferAllocator(device: device)
-        let mesh = switch shape {
+        let mesh: MDLMesh? = switch shape {
         case .icosahedron:
             MDLMesh.newIcosahedron(withRadius: 0.5, inwardNormals: false, allocator: allocator)
         case .box:
@@ -794,8 +911,6 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 allocator: allocator
             )
         case .plate:
-            // A thin slab reads far better than a flat plane once it is
-            // spinning — it catches an edge highlight every half turn.
             MDLMesh.newBox(
                 withDimensions: SIMD3<Float>(1.10, 0.68, 0.06),
                 segments: SIMD3<UInt32>(1, 1, 1),
@@ -804,8 +919,6 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 allocator: allocator
             )
         case .torus:
-            // ModelIO has no torus primitive, so it is generated directly into
-            // the same interleaved position+normal layout the others use.
             makeTorus(majorRadius: 0.42, minorRadius: 0.16, allocator: allocator)
         case .capsule:
             MDLMesh.newCapsule(
@@ -819,11 +932,9 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 allocator: allocator
             )
         case .prism:
-            // Six radial segments on a cone gives a hard-faceted crystal
-            // rather than a smooth cone — much stronger under the flat shading.
-            MDLMesh.newEllipticalCone(
-                withHeight: 1.05,
-                radii: SIMD2<Float>(0.48, 0.48),
+            MDLMesh.newCylinder(
+                withHeight: 0.96,
+                radii: SIMD2<Float>(0.44, 0.44),
                 radialSegments: 6,
                 verticalSegments: 1,
                 geometryType: .triangles,
@@ -841,7 +952,6 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 allocator: allocator
             )
         case .ring:
-            // Thin torus: a halo rather than a doughnut.
             makeTorus(majorRadius: 0.48, minorRadius: 0.055, allocator: allocator)
         case .spike:
             MDLMesh.newEllipticalCone(
@@ -861,34 +971,102 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 inwardNormals: false,
                 allocator: allocator
             )
+        case .torusKnot:
+            makeTorusKnot(p: 2, q: 3, allocator: allocator)
+        case .octahedron:
+            makeBipyramid(sides: 4, radius: 0.52, halfHeight: 0.56, allocator: allocator)
+        case .tetrahedron:
+            MDLMesh.newEllipticalCone(
+                withHeight: 0.92,
+                radii: SIMD2<Float>(0.54, 0.54),
+                radialSegments: 3,
+                verticalSegments: 1,
+                geometryType: .triangles,
+                inwardNormals: false,
+                allocator: allocator
+            )
+        case .pyramid:
+            MDLMesh.newEllipticalCone(
+                withHeight: 0.92,
+                radii: SIMD2<Float>(0.54, 0.54),
+                radialSegments: 4,
+                verticalSegments: 1,
+                geometryType: .triangles,
+                inwardNormals: false,
+                allocator: allocator
+            )
+        case .stellated:
+            makeStellatedStar(allocator: allocator)
+        case .helix:
+            makeHelix(allocator: allocator)
+        case .mobius:
+            makeMobiusStrip(allocator: allocator)
+        case .gyroscope:
+            makeGyroscope(allocator: allocator)
+        case .crystal:
+            makeCrystal(allocator: allocator)
+        case .waveGrid:
+            makeWaveGrid(allocator: allocator)
+        case .asteroid:
+            makeAsteroid(allocator: allocator)
         case .baby, .melissa:
-            loadScannedMesh(shape: shape, allocator: allocator)
+            loadScannedMeshOrProceduralFallback(shape: shape, allocator: allocator)
         }
 
         guard let mesh else { return nil }
-
-        let vertexDescriptor = MDLVertexDescriptor()
-        vertexDescriptor.attributes[0] = MDLVertexAttribute(
-            name: MDLVertexAttributePosition,
-            format: .float3,
-            offset: 0,
-            bufferIndex: 0
-        )
-        vertexDescriptor.attributes[1] = MDLVertexAttribute(
-            name: MDLVertexAttributeNormal,
-            format: .float3,
-            offset: 12,
-            bufferIndex: 0
-        )
-        vertexDescriptor.layouts[0] = MDLVertexBufferLayout(stride: 24)
-        mesh.vertexDescriptor = vertexDescriptor
+        mesh.vertexDescriptor = meshVertexDescriptor
         return try? MTKMesh(mesh: mesh, device: device)
     }
 
-    /// Builds a torus as interleaved float3 position + float3 normal.
-    ///
-    /// Written by hand because ModelIO ships no torus primitive, and a ring is
-    /// the one silhouette none of the other shapes can approximate.
+    // MARK: - Procedural & Parametric Mesh Generators
+
+    private static func buildInterleavedMesh(
+        vertices: [Float],
+        indices: [UInt32],
+        allocator: MTKMeshBufferAllocator
+    ) -> MDLMesh {
+        let vertexBuffer = allocator.newBuffer(
+            with: Data(bytes: vertices, count: vertices.count * MemoryLayout<Float>.size),
+            type: .vertex
+        )
+        let indexBuffer = allocator.newBuffer(
+            with: Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size),
+            type: .index
+        )
+        let submesh = MDLSubmesh(
+            indexBuffer: indexBuffer,
+            indexCount: indices.count,
+            indexType: .uInt32,
+            geometryType: .triangles,
+            material: nil
+        )
+        return MDLMesh(
+            vertexBuffer: vertexBuffer,
+            vertexCount: vertices.count / 6,
+            descriptor: meshVertexDescriptor,
+            submeshes: [submesh]
+        )
+    }
+
+    private static func appendFlatTriangle(
+        _ a: SIMD3<Float>,
+        _ b: SIMD3<Float>,
+        _ c: SIMD3<Float>,
+        vertices: inout [Float],
+        indices: inout [UInt32]
+    ) {
+        let edge1 = b - a
+        let edge2 = c - a
+        let crossVec = simd_cross(edge1, edge2)
+        let len = simd_length(crossVec)
+        let normal = len > 0.00001 ? crossVec / len : SIMD3<Float>(0, 1, 0)
+        let baseIndex = UInt32(vertices.count / 6)
+        for pt in [a, b, c] {
+            vertices.append(contentsOf: [pt.x, pt.y, pt.z, normal.x, normal.y, normal.z])
+        }
+        indices.append(contentsOf: [baseIndex, baseIndex + 1, baseIndex + 2])
+    }
+
     private static func makeTorus(
         majorRadius: Float,
         minorRadius: Float,
@@ -907,7 +1085,6 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 let v = Float(minor) / Float(minorSegments) * 2 * .pi
                 let cosV = cos(v)
                 let sinV = sin(v)
-                // Normal points away from the tube's centre circle.
                 let normal = SIMD3<Float>(cosU * cosV, sinV, sinU * cosV)
                 let position = SIMD3<Float>(
                     (majorRadius + minorRadius * cosV) * cosU,
@@ -930,49 +1107,376 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 indices.append(contentsOf: [a, b, a + 1, a + 1, b, b + 1])
             }
         }
-
-        let vertexBuffer = allocator.newBuffer(
-            with: Data(bytes: vertices, count: vertices.count * MemoryLayout<Float>.size),
-            type: .vertex
-        )
-        let indexBuffer = allocator.newBuffer(
-            with: Data(bytes: indices, count: indices.count * MemoryLayout<UInt32>.size),
-            type: .index
-        )
-        let submesh = MDLSubmesh(
-            indexBuffer: indexBuffer,
-            indexCount: indices.count,
-            indexType: .uInt32,
-            geometryType: .triangles,
-            material: nil
-        )
-
-        let descriptor = MDLVertexDescriptor()
-        descriptor.attributes[0] = MDLVertexAttribute(
-            name: MDLVertexAttributePosition, format: .float3, offset: 0, bufferIndex: 0
-        )
-        descriptor.attributes[1] = MDLVertexAttribute(
-            name: MDLVertexAttributeNormal, format: .float3, offset: 12, bufferIndex: 0
-        )
-        descriptor.layouts[0] = MDLVertexBufferLayout(stride: 24)
-
-        return MDLMesh(
-            vertexBuffer: vertexBuffer,
-            vertexCount: vertices.count / 6,
-            descriptor: descriptor,
-            submeshes: [submesh]
-        )
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
     }
 
-    /// Loads a bundled USDZ and normalises it into the same unit box the
-    /// primitives occupy.
-    ///
-    /// Scanned assets arrive at arbitrary scale and origin, so without this a
-    /// model lands either invisible or the size of a room. The mesh is
-    /// recentred on its bounding box and uniformly scaled to a ~1 unit extent,
-    /// which is what lets the SIZE parameter mean the same thing for every
-    /// shape.
-    private static func loadScannedMesh(
+    private static func makeTorusKnot(
+        p: Int,
+        q: Int,
+        tubularSegments: Int = 128,
+        radialSegments: Int = 16,
+        tubeRadius: Float = 0.095,
+        allocator: MTKMeshBufferAllocator
+    ) -> MDLMesh {
+        func knotPoint(_ t: Float) -> SIMD3<Float> {
+            let pf = Float(p)
+            let qf = Float(q)
+            let r = 0.30 * (1.0 + 0.42 * cos(qf * t))
+            return SIMD3<Float>(
+                r * cos(pf * t),
+                0.30 * 0.48 * sin(qf * t),
+                r * sin(pf * t)
+            )
+        }
+
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+        let eps: Float = 0.002
+
+        for i in 0 ... tubularSegments {
+            let t = Float(i) / Float(tubularSegments) * 2.0 * .pi
+            let center = knotPoint(t)
+            let nextCenter = knotPoint(t + eps)
+            let tangent = simd_normalize(nextCenter - center)
+            let upGuess = abs(tangent.y) < 0.9 ? SIMD3<Float>(0, 1, 0) : SIMD3<Float>(1, 0, 0)
+            let normalAxis = simd_normalize(simd_cross(tangent, upGuess))
+            let binormalAxis = simd_normalize(simd_cross(tangent, normalAxis))
+
+            for j in 0 ... radialSegments {
+                let v = Float(j) / Float(radialSegments) * 2.0 * .pi
+                let n = normalAxis * cos(v) + binormalAxis * sin(v)
+                let pos = center + n * tubeRadius
+                vertices.append(contentsOf: [pos.x, pos.y, pos.z, n.x, n.y, n.z])
+            }
+        }
+
+        let ring = UInt32(radialSegments + 1)
+        for i in 0 ..< UInt32(tubularSegments) {
+            for j in 0 ..< UInt32(radialSegments) {
+                let a = i * ring + j
+                let b = a + ring
+                indices.append(contentsOf: [a, b, a + 1, a + 1, b, b + 1])
+            }
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeBipyramid(
+        sides: Int,
+        radius: Float,
+        halfHeight: Float,
+        allocator: MTKMeshBufferAllocator
+    ) -> MDLMesh {
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+        let top = SIMD3<Float>(0, halfHeight, 0)
+        let bottom = SIMD3<Float>(0, -halfHeight, 0)
+
+        for i in 0 ..< sides {
+            let a0 = Float(i) / Float(sides) * 2.0 * .pi
+            let a1 = Float(i + 1) / Float(sides) * 2.0 * .pi
+            let p0 = SIMD3<Float>(cos(a0) * radius, 0, sin(a0) * radius)
+            let p1 = SIMD3<Float>(cos(a1) * radius, 0, sin(a1) * radius)
+            appendFlatTriangle(top, p1, p0, vertices: &vertices, indices: &indices)
+            appendFlatTriangle(bottom, p0, p1, vertices: &vertices, indices: &indices)
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeCrystal(allocator: MTKMeshBufferAllocator) -> MDLMesh {
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+        let sides = 6
+        let r: Float = 0.28
+        let waist: Float = 0.28
+        let tip: Float = 0.58
+        let topApex = SIMD3<Float>(0, tip, 0)
+        let botApex = SIMD3<Float>(0, -tip, 0)
+
+        for i in 0 ..< sides {
+            let a0 = Float(i) / Float(sides) * 2.0 * .pi
+            let a1 = Float(i + 1) / Float(sides) * 2.0 * .pi
+            let t0 = SIMD3<Float>(cos(a0) * r, waist, sin(a0) * r)
+            let t1 = SIMD3<Float>(cos(a1) * r, waist, sin(a1) * r)
+            let b0 = SIMD3<Float>(cos(a0) * r, -waist, sin(a0) * r)
+            let b1 = SIMD3<Float>(cos(a1) * r, -waist, sin(a1) * r)
+
+            appendFlatTriangle(topApex, t1, t0, vertices: &vertices, indices: &indices)
+            appendFlatTriangle(t0, t1, b1, vertices: &vertices, indices: &indices)
+            appendFlatTriangle(t0, b1, b0, vertices: &vertices, indices: &indices)
+            appendFlatTriangle(botApex, b0, b1, vertices: &vertices, indices: &indices)
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeStellatedStar(allocator: MTKMeshBufferAllocator) -> MDLMesh {
+        let phi: Float = (1.0 + sqrt(5.0)) * 0.5
+        let rawVerts: [SIMD3<Float>] = [
+            SIMD3(-1, phi, 0), SIMD3(1, phi, 0), SIMD3(-1, -phi, 0), SIMD3(1, -phi, 0),
+            SIMD3(0, -1, phi), SIMD3(0, 1, phi), SIMD3(0, -1, -phi), SIMD3(0, 1, -phi),
+            SIMD3(phi, 0, -1), SIMD3(phi, 0, 1), SIMD3(-phi, 0, -1), SIMD3(-phi, 0, 1)
+        ].map { simd_normalize($0) * 0.26 }
+
+        let faces: [(Int, Int, Int)] = [
+            (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
+            (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+            (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
+            (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1)
+        ]
+
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+        for (i0, i1, i2) in faces {
+            let v0 = rawVerts[i0]
+            let v1 = rawVerts[i1]
+            let v2 = rawVerts[i2]
+            let center = simd_normalize((v0 + v1 + v2) / 3.0) * 0.56
+            appendFlatTriangle(v0, v1, center, vertices: &vertices, indices: &indices)
+            appendFlatTriangle(v1, v2, center, vertices: &vertices, indices: &indices)
+            appendFlatTriangle(v2, v0, center, vertices: &vertices, indices: &indices)
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeHelix(allocator: MTKMeshBufferAllocator) -> MDLMesh {
+        let segs = 96
+        let radSegs = 12
+        let coilRadius: Float = 0.30
+        let tubeRadius: Float = 0.068
+        let turns: Float = 3.0
+        let height: Float = 0.96
+
+        func centerAt(_ s: Float) -> SIMD3<Float> {
+            let a = s * turns * 2.0 * .pi
+            return SIMD3<Float>(cos(a) * coilRadius, (s - 0.5) * height, sin(a) * coilRadius)
+        }
+
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+        for i in 0 ... segs {
+            let s = Float(i) / Float(segs)
+            let c0 = centerAt(s)
+            let c1 = centerAt(s + 0.002)
+            let tangent = simd_normalize(c1 - c0)
+            let nAxis = simd_normalize(simd_cross(tangent, SIMD3<Float>(0, 1, 0)))
+            let bAxis = simd_normalize(simd_cross(tangent, nAxis))
+            for j in 0 ... radSegs {
+                let v = Float(j) / Float(radSegs) * 2.0 * .pi
+                let n = nAxis * cos(v) + bAxis * sin(v)
+                let p = c0 + n * tubeRadius
+                vertices.append(contentsOf: [p.x, p.y, p.z, n.x, n.y, n.z])
+            }
+        }
+
+        let ring = UInt32(radSegs + 1)
+        for i in 0 ..< UInt32(segs) {
+            for j in 0 ..< UInt32(radSegs) {
+                let a = i * ring + j
+                let b = a + ring
+                indices.append(contentsOf: [a, b, a + 1, a + 1, b, b + 1])
+            }
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeMobiusStrip(allocator: MTKMeshBufferAllocator) -> MDLMesh {
+        let uSegs = 64
+        let vSegs = 14
+        let radius: Float = 0.40
+        let halfWidth: Float = 0.16
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+
+        func eval(_ u: Float, _ v: Float) -> SIMD3<Float> {
+            let halfU = u * 0.5
+            let r = radius + v * cos(halfU)
+            return SIMD3<Float>(r * cos(u), v * sin(halfU), r * sin(u))
+        }
+
+        for i in 0 ..< uSegs {
+            let u0 = Float(i) / Float(uSegs) * 2.0 * .pi
+            let u1 = Float(i + 1) / Float(uSegs) * 2.0 * .pi
+            for j in 0 ..< vSegs {
+                let v0 = (Float(j) / Float(vSegs) * 2.0 - 1.0) * halfWidth
+                let v1 = (Float(j + 1) / Float(vSegs) * 2.0 - 1.0) * halfWidth
+                let p00 = eval(u0, v0)
+                let p10 = eval(u1, v0)
+                let p11 = eval(u1, v1)
+                let p01 = eval(u0, v1)
+                // Double-sided so non-orientable strip is lit from both sides
+                appendFlatTriangle(p00, p10, p11, vertices: &vertices, indices: &indices)
+                appendFlatTriangle(p00, p11, p01, vertices: &vertices, indices: &indices)
+                appendFlatTriangle(p00, p11, p10, vertices: &vertices, indices: &indices)
+                appendFlatTriangle(p00, p01, p11, vertices: &vertices, indices: &indices)
+            }
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeGyroscope(allocator: MTKMeshBufferAllocator) -> MDLMesh {
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+        let rings: [(Float, Float, simd_float3x3)] = [
+            (0.48, 0.042, matrix_identity_float3x3),
+            (0.38, 0.040, simd_float3x3(columns: (
+                SIMD3<Float>(1, 0, 0),
+                SIMD3<Float>(0, 0, 1),
+                SIMD3<Float>(0, -1, 0)
+            ))),
+            (0.28, 0.038, simd_float3x3(columns: (
+                SIMD3<Float>(0, 1, 0),
+                SIMD3<Float>(-1, 0, 0),
+                SIMD3<Float>(0, 0, 1)
+            )))
+        ]
+        let majorSegs = 40
+        let minorSegs = 12
+        let ringStride = UInt32(minorSegs + 1)
+
+        for (majorR, minorR, rot) in rings {
+            let baseVertex = UInt32(vertices.count / 6)
+            for major in 0 ... majorSegs {
+                let u = Float(major) / Float(majorSegs) * 2 * .pi
+                let cosU = cos(u)
+                let sinU = sin(u)
+                for minor in 0 ... minorSegs {
+                    let v = Float(minor) / Float(minorSegs) * 2 * .pi
+                    let cosV = cos(v)
+                    let sinV = sin(v)
+                    let n = rot * SIMD3<Float>(cosU * cosV, sinV, sinU * cosV)
+                    let p = rot * SIMD3<Float>(
+                        (majorR + minorR * cosV) * cosU,
+                        minorR * sinV,
+                        (majorR + minorR * cosV) * sinU
+                    )
+                    vertices.append(contentsOf: [p.x, p.y, p.z, n.x, n.y, n.z])
+                }
+            }
+            for major in 0 ..< UInt32(majorSegs) {
+                for minor in 0 ..< UInt32(minorSegs) {
+                    let a = baseVertex + major * ringStride + minor
+                    let b = a + ringStride
+                    indices.append(contentsOf: [a, b, a + 1, a + 1, b, b + 1])
+                }
+            }
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeWaveGrid(allocator: MTKMeshBufferAllocator) -> MDLMesh {
+        let cols = 24
+        let rows = 24
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+
+        func wavePoint(_ ix: Int, _ iz: Int) -> SIMD3<Float> {
+            let x = (Float(ix) / Float(cols) - 0.5) * 0.96
+            let z = (Float(iz) / Float(rows) - 0.5) * 0.96
+            let r = sqrt(x * x + z * z)
+            let y = sin(r * 14.0) * 0.14 * cos(x * 4.0)
+            return SIMD3<Float>(x, y, z)
+        }
+
+        for iz in 0 ..< rows {
+            for ix in 0 ..< cols {
+                let p00 = wavePoint(ix, iz)
+                let p10 = wavePoint(ix + 1, iz)
+                let p11 = wavePoint(ix + 1, iz + 1)
+                let p01 = wavePoint(ix, iz + 1)
+                appendFlatTriangle(p00, p10, p11, vertices: &vertices, indices: &indices)
+                appendFlatTriangle(p00, p11, p01, vertices: &vertices, indices: &indices)
+                appendFlatTriangle(p00, p11, p10, vertices: &vertices, indices: &indices)
+                appendFlatTriangle(p00, p01, p11, vertices: &vertices, indices: &indices)
+            }
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeAsteroid(allocator: MTKMeshBufferAllocator) -> MDLMesh {
+        let latSegs = 20
+        let lonSegs = 28
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+
+        func displaced(_ theta: Float, _ phi: Float) -> SIMD3<Float> {
+            let dir = SIMD3<Float>(
+                sin(theta) * cos(phi),
+                cos(theta),
+                sin(theta) * sin(phi)
+            )
+            let noise = 0.08 * sin(dir.x * 7.0 + dir.y * 5.0)
+                + 0.05 * cos(dir.z * 9.0 - dir.x * 4.0)
+                + 0.04 * sin(dir.y * 11.0 + dir.z * 6.0)
+            return dir * (0.44 + noise)
+        }
+
+        for i in 0 ..< latSegs {
+            let t0 = Float(i) / Float(latSegs) * .pi
+            let t1 = Float(i + 1) / Float(latSegs) * .pi
+            for j in 0 ..< lonSegs {
+                let p0 = Float(j) / Float(lonSegs) * 2.0 * .pi
+                let p1 = Float(j + 1) / Float(lonSegs) * 2.0 * .pi
+                let v00 = displaced(t0, p0)
+                let v10 = displaced(t1, p0)
+                let v11 = displaced(t1, p1)
+                let v01 = displaced(t0, p1)
+                appendFlatTriangle(v00, v10, v11, vertices: &vertices, indices: &indices)
+                appendFlatTriangle(v00, v11, v01, vertices: &vertices, indices: &indices)
+            }
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func makeSculptedBustFallback(
+        isRelic: Bool,
+        allocator: MTKMeshBufferAllocator
+    ) -> MDLMesh {
+        let stacks = 28
+        let slices = 24
+        var vertices: [Float] = []
+        var indices: [UInt32] = []
+
+        func profile(_ u: Float, _ v: Float) -> SIMD3<Float> {
+            let y = (v - 0.5) * 1.0
+            let angle = u * 2.0 * .pi
+            if isRelic {
+                let twist = v * .pi * 2.2
+                let baseR = 0.26 + 0.14 * sin(v * .pi * 3.0)
+                let crown = (Int(u * 12) % 2 == 0) ? Float(1.16) : Float(0.88)
+                let r = baseR * crown * (1.0 - 0.35 * pow(abs(v - 0.5) * 1.8, 2))
+                return SIMD3<Float>(cos(angle + twist) * r, y, sin(angle + twist) * r)
+            } else {
+                // Cranial bust silhouette: pedestal, neck, cranium
+                let r: Float = if v < 0.22 {
+                    0.34 - (v * 0.6)
+                } else if v < 0.42 {
+                    0.18 + 0.04 * sin((v - 0.22) * 15.0)
+                } else {
+                    0.33 * sin(min(max((v - 0.35) / 0.65, 0.05), 0.98) * .pi)
+                }
+                let jaw: Float = (v > 0.42 && v < 0.72) ? (1.0 + 0.14 * cos(angle)) : 1.0
+                return SIMD3<Float>(cos(angle) * r * jaw, y, sin(angle) * r)
+            }
+        }
+
+        for i in 0 ..< stacks {
+            let v0 = Float(i) / Float(stacks)
+            let v1 = Float(i + 1) / Float(stacks)
+            for j in 0 ..< slices {
+                let u0 = Float(j) / Float(slices)
+                let u1 = Float(j + 1) / Float(slices)
+                let p00 = profile(u0, v0)
+                let p10 = profile(u1, v0)
+                let p11 = profile(u1, v1)
+                let p01 = profile(u0, v1)
+                appendFlatTriangle(p00, p10, p11, vertices: &vertices, indices: &indices)
+                appendFlatTriangle(p00, p11, p01, vertices: &vertices, indices: &indices)
+            }
+        }
+        return buildInterleavedMesh(vertices: vertices, indices: indices, allocator: allocator)
+    }
+
+    private static func loadScannedMeshOrProceduralFallback(
         shape: ARObjectShape,
         allocator: MTKMeshBufferAllocator
     ) -> MDLMesh? {
@@ -981,34 +1485,136 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         case .melissa: "gv_melissa"
         default: nil
         }
-        guard let name else { return nil }
-        guard let url = Bundle.main.url(forResource: name, withExtension: "usdz") else {
-            GVLog.rendering.error("scanned mesh missing from bundle: \(name).usdz")
+        if let name,
+           let url = Bundle.main.url(forResource: name, withExtension: "usdz"),
+           let loaded = loadNormalizedMDLMesh(from: url, allocator: allocator)
+        {
+            return loaded
+        }
+        return makeSculptedBustFallback(isRelic: shape == .melissa, allocator: allocator)
+    }
+
+    // MARK: - User Model Loader (Multi-Mesh Normalized)
+
+    static func makeUserModelMesh(from url: URL, device: MTLDevice) -> MTKMesh? {
+        let allocator = MTKMeshBufferAllocator(device: device)
+        guard let mdlMesh = loadNormalizedMDLMesh(from: url, allocator: allocator) else {
+            return nil
+        }
+        mdlMesh.vertexDescriptor = meshVertexDescriptor
+        return try? MTKMesh(mesh: mdlMesh, device: device)
+    }
+
+    private static func loadNormalizedMDLMesh(
+        from url: URL,
+        allocator: MTKMeshBufferAllocator
+    ) -> MDLMesh? {
+        let sourceMeshes = ARUserModelStore.loadAllMeshes(from: url, allocator: allocator)
+        guard !sourceMeshes.isEmpty else { return nil }
+
+        // If single mesh, normalize directly in-place
+        if sourceMeshes.count == 1, let single = sourceMeshes.first {
+            if single.vertexAttributeData(forAttributeNamed: MDLVertexAttributeNormal) == nil {
+                single.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.2)
+            }
+            single.vertexDescriptor = meshVertexDescriptor
+            normalizePositionsInPlace(single)
+            return single
+        }
+
+        // Multi-mesh asset: conform each child mesh and merge into one normalized MDLMesh
+        var combinedVertices: [Float] = []
+        var combinedIndices: [UInt32] = []
+
+        for mesh in sourceMeshes {
+            if mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeNormal) == nil {
+                mesh.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.2)
+            }
+            mesh.vertexDescriptor = meshVertexDescriptor
+            guard let posData = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributePosition),
+                  let normData = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeNormal)
+            else { continue }
+
+            let baseVertex = UInt32(combinedVertices.count / 6)
+            let vCount = mesh.vertexCount
+            for idx in 0 ..< vCount {
+                let pPtr = posData.dataStart.advanced(by: idx * posData.stride).assumingMemoryBound(to: Float.self)
+                let nPtr = normData.dataStart.advanced(by: idx * normData.stride).assumingMemoryBound(to: Float.self)
+                combinedVertices.append(contentsOf: [
+                    pPtr[0], pPtr[1], pPtr[2],
+                    nPtr[0], nPtr[1], nPtr[2]
+                ])
+            }
+
+            if let submeshes = mesh.submeshes as? [MDLSubmesh] {
+                for sub in submeshes where sub.geometryType == .triangles {
+                    let map = sub.indexBuffer.map()
+                    let rawPtr = map.bytes
+                    switch sub.indexType {
+                    case .uInt16:
+                        let ptr = rawPtr.assumingMemoryBound(to: UInt16.self)
+                        for k in 0 ..< sub.indexCount {
+                            combinedIndices.append(baseVertex + UInt32(ptr[k]))
+                        }
+                    case .uInt32:
+                        let ptr = rawPtr.assumingMemoryBound(to: UInt32.self)
+                        for k in 0 ..< sub.indexCount {
+                            combinedIndices.append(baseVertex + ptr[k])
+                        }
+                    case .uInt8:
+                        let ptr = rawPtr.assumingMemoryBound(to: UInt8.self)
+                        for k in 0 ..< sub.indexCount {
+                            combinedIndices.append(baseVertex + UInt32(ptr[k]))
+                        }
+                    default:
+                        break
+                    }
+                }
+            }
+        }
+
+        guard !combinedVertices.isEmpty, !combinedIndices.isEmpty else {
+            if let fallback = sourceMeshes.first {
+                normalizePositionsInPlace(fallback)
+                return fallback
+            }
             return nil
         }
 
-        let asset = MDLAsset(url: url, vertexDescriptor: nil, bufferAllocator: allocator)
-        asset.loadTextures()
-        guard let mesh = asset.childObjects(of: MDLMesh.self).first as? MDLMesh else {
-            GVLog.rendering.error("scanned mesh has no MDLMesh: \(name)")
-            return nil
+        // Normalize combined vertices into unit box
+        var minB = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var maxB = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        let vTotal = combinedVertices.count / 6
+        for i in 0 ..< vTotal {
+            let p = SIMD3<Float>(combinedVertices[i * 6], combinedVertices[i * 6 + 1], combinedVertices[i * 6 + 2])
+            minB = simd_min(minB, p)
+            maxB = simd_max(maxB, p)
+        }
+        let extent = maxB - minB
+        let longest = max(extent.x, max(extent.y, extent.z), 0.0001)
+        let center = (minB + maxB) * 0.5
+        let scale = 1.0 / longest
+        for i in 0 ..< vTotal {
+            combinedVertices[i * 6] = (combinedVertices[i * 6] - center.x) * scale
+            combinedVertices[i * 6 + 1] = (combinedVertices[i * 6 + 1] - center.y) * scale
+            combinedVertices[i * 6 + 2] = (combinedVertices[i * 6 + 2] - center.z) * scale
         }
 
-        // Shading is flat position+normal, so missing normals would render the
-        // model as a silhouette.
-        if mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeNormal) == nil {
-            mesh.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.2)
-        }
+        return buildInterleavedMesh(
+            vertices: combinedVertices,
+            indices: combinedIndices,
+            allocator: allocator
+        )
+    }
 
+    private static func normalizePositionsInPlace(_ mesh: MDLMesh) {
         let bounds = mesh.boundingBox
         let extent = bounds.maxBounds - bounds.minBounds
         let longest = max(extent.x, max(extent.y, extent.z))
-        guard longest > 0 else { return mesh }
+        guard longest > 0 else { return }
         let centre = (bounds.maxBounds + bounds.minBounds) * 0.5
         let normalise = 1.0 / longest
 
-        // Rewrite positions in place: cheaper than a transform node and keeps
-        // the descriptor identical to the procedural shapes.
         if let positions = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributePosition) {
             let stride = positions.stride
             let pointer = positions.dataStart
@@ -1020,23 +1626,45 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 slot[2] = (slot[2] - centre.z) * normalise
             }
         }
-        return mesh
     }
 
-    /// Anchor transform with a slow spin, gentle bob, and per-object phase so
-    /// placed geometry never sits perfectly still.
+    // MARK: - Transform Matrix
+
     private static func modelMatrix(
         for object: ARObjectDescriptor,
         time: TimeInterval,
-        scale: Float,
-        spin: Float
+        audioBoost: Float,
+        anchored: Bool
     ) -> simd_float4x4 {
         let elapsed = Float(max(time - object.birthTime, 0))
-        let angle = spin * object.spinSpeed * elapsed
-        let bob = sin(elapsed * 1.1 + object.phase) * 0.05 * scale
+        let angle = object.spinSpeed * elapsed * (1.0 + audioBoost * 0.5)
+        let bob = anchored ? 0.0 : sin(elapsed * object.bobSpeed + object.phase) * object.bobAmplitude * object.scale
+        let pulse = 1.0 + sin(elapsed * 2.4 + object.phase) * object.pulseAmount * 0.35 + audioBoost * 0.28
+        let effectiveScale = object.scale * max(0.15, pulse)
+
+        let degToRad: Float = .pi / 180.0
+        let staticPitch = object.orientationDegrees.x * degToRad
+        let staticYaw = object.orientationDegrees.y * degToRad + object.phase
+        let staticRoll = object.orientationDegrees.z * degToRad
+
+        let spinMatrix: simd_float4x4 = switch object.spinAxis {
+        case .yaw:
+            rotationYMatrix(angle)
+        case .pitch:
+            rotationXMatrix(angle)
+        case .roll:
+            rotationZMatrix(angle)
+        case .tumble:
+            rotationYMatrix(angle) * rotationXMatrix(angle * 0.73) * rotationZMatrix(angle * 0.41)
+        case .none:
+            matrix_identity_float4x4
+        }
+
         var transform = translationMatrix(object.position + SIMD3<Float>(0, bob, 0))
-        transform = transform * rotationYMatrix(angle) * rotationXMatrix(object.phase * 3.0)
-        return transform * scaleMatrix(scale)
+        transform = transform * spinMatrix
+        transform = transform * rotationYMatrix(staticYaw) * rotationXMatrix(staticPitch) * rotationZMatrix(staticRoll)
+        let nonUniform = object.stretch * effectiveScale
+        return transform * nonUniformScaleMatrix(nonUniform)
     }
 
     private static func translationMatrix(_ vector: SIMD3<Float>) -> simd_float4x4 {
@@ -1070,11 +1698,22 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         ))
     }
 
-    private static func scaleMatrix(_ scale: Float) -> simd_float4x4 {
+    private static func rotationZMatrix(_ angle: Float) -> simd_float4x4 {
+        let cosine = cos(angle)
+        let sine = sin(angle)
+        return simd_float4x4(columns: (
+            SIMD4<Float>(cosine, sine, 0, 0),
+            SIMD4<Float>(-sine, cosine, 0, 0),
+            SIMD4<Float>(0, 0, 1, 0),
+            SIMD4<Float>(0, 0, 0, 1)
+        ))
+    }
+
+    private static func nonUniformScaleMatrix(_ scale: SIMD3<Float>) -> simd_float4x4 {
         simd_float4x4(columns: (
-            SIMD4<Float>(scale, 0, 0, 0),
-            SIMD4<Float>(0, scale, 0, 0),
-            SIMD4<Float>(0, 0, scale, 0),
+            SIMD4<Float>(scale.x, 0, 0, 0),
+            SIMD4<Float>(0, scale.y, 0, 0),
+            SIMD4<Float>(0, 0, scale.z, 0),
             SIMD4<Float>(0, 0, 0, 1)
         ))
     }

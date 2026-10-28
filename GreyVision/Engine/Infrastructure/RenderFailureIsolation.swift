@@ -85,7 +85,7 @@ final class RenderGraph: @unchecked Sendable {
         var destination = textureA
         var failures: [String] = []
 
-        for effect in effects {
+        for effect in effects where !effect.shouldBypass() {
             do {
                 try effect.process(EffectRenderRequest(
                     frame: frame,

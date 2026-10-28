@@ -316,3 +316,34 @@ struct AnyShape: Shape {
         pathBuilder(rect)
     }
 }
+
+// MARK: - Chrome plate
+
+extension View {
+    /// The workspace's bottom-chrome surface: frosted material under a black
+    /// veil, with a hairline edge. The capture pill and every parameter deck
+    /// above it share it, so the bottom of the screen reads as one family
+    /// instead of a refracting glass slab stacked on a frosted pill.
+    func gvChromePlate(_ shape: some InsettableShape) -> some View {
+        modifier(GVChromePlate(shape: shape))
+    }
+}
+
+private struct GVChromePlate<S: InsettableShape>: ViewModifier {
+    let shape: S
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if reduceTransparency {
+                    shape.fill(Color(white: 0.08))
+                } else {
+                    shape.fill(.ultraThinMaterial)
+                        .overlay { shape.fill(Color.black.opacity(0.38)) }
+                }
+            }
+            .overlay { shape.strokeBorder(Color.white.opacity(0.13), lineWidth: 0.5) }
+            .shadow(color: .black.opacity(0.28), radius: 10, y: 4)
+    }
+}

@@ -34,6 +34,8 @@
 	<string>grey//VISION streams the processed camera image to the greyVISION virtual camera on your Mac over your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>grey//VISION uses microphone audio for recording and audio-reactive modulation when you enable it.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>grey//VISION uses device motion to drive interactive splash and camera effects.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>grey//VISION saves your captures straight to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

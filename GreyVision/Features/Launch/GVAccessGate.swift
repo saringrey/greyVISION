@@ -1,13 +1,17 @@
 import SwiftUI
 import UIKit
 
-/// Single-action entry gate. Pointer motion moves the plate, never the cursor
-/// or its hit region; touch and keyboard activation retain the same action.
+/// The entry action uses the reference's scramble and mirrored scan on touch,
+/// pointer hover, and activation, with a stable accessible button label.
 struct GVAccessGate: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isTouching = false
+    @State private var isHovered = false
     @State private var isActivating = false
     @State private var activationTask: Task<Void, Never>?
 
+    private static let targetText = "OPEN // GREYVISION"
     let onUnlocked: () -> Void
 
     var body: some View {
@@ -15,32 +19,27 @@ struct GVAccessGate: View {
             GVSplashBackdrop()
                 .ignoresSafeArea()
 
-            VStack(spacing: GVMetrics.stepRelated) {
+            VStack(spacing: GVMetrics.stepSection) {
                 Spacer()
-                Button(action: activate) {
-                    HStack(spacing: 12) {
-                        Image(systemName: isActivating ? "lock.open" : "power")
-                            .font(.subheadline.weight(.medium))
-                        Text(isActivating ? "OPENING // SESSION" : "OPEN // GREYVISION")
-                            .gvMono(11, .medium)
-                            .tracking(0.6)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                            .layoutPriority(1)
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.right")
-                            .font(.caption.weight(.medium))
-                    }
-                    .foregroundStyle(GVTheme.bone)
-                    .padding(.horizontal, 18)
-                    .frame(width: 252, height: 54)
-                    .background(Color.black.opacity(0.9), in: RoundedRectangle(cornerRadius: 14))
-                    .overlay {
-                        GVScrollingPerimeter(radius: 14, active: isActivating)
-                    }
-                    .gvDecay(isActivating, seed: 8)
+                VStack(spacing: GVMetrics.gap) {
+                    Text("grey//VISION")
+                        .font(GVTheme.mono(28, .semibold))
+                        .tracking(-1)
+                        .foregroundStyle(GVTheme.bone)
+                    Text("LIVE VISUAL INSTRUMENT")
+                        .font(GVTheme.mono(10, .medium))
+                        .tracking(2)
+                        .foregroundStyle(GVTheme.ash)
                 }
-                .buttonStyle(GVAccessMagneticStyle(active: isActivating))
+                Button(action: activate) {
+                    GVEncryptButtonFace(
+                        target: Self.targetText,
+                        engaged: isHovered || isTouching || isActivating,
+                        opening: isActivating
+                    )
+                }
+                .buttonStyle(GVAccessMagneticStyle(active: isActivating, isTouching: $isTouching))
+                .onHover { isHovered = $0 }
                 .disabled(isActivating)
                 .accessibilityLabel("Enter GreyVision")
                 .accessibilityValue(isActivating ? "Opening session" : "Closed")
@@ -51,6 +50,14 @@ struct GVAccessGate: View {
         }
         .background(GVTheme.void.ignoresSafeArea())
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active else { return }
+            activationTask?.cancel()
+            activationTask = nil
+            isActivating = false
+            isHovered = false
+            isTouching = false
+        }
         .onDisappear {
             activationTask?.cancel()
             activationTask = nil
@@ -69,7 +76,7 @@ struct GVAccessGate: View {
             return
         }
         activationTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(420))
+            try? await Task.sleep(for: .seconds(GVEncryptText.duration(for: Self.targetText)))
             guard !Task.isCancelled else { return }
             onUnlocked()
         }
@@ -92,9 +99,11 @@ enum GVButtonMagnetism {
 
 private struct GVAccessMagneticStyle: ButtonStyle {
     let active: Bool
+    @Binding var isTouching: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         GVAccessMagneticFeedback(label: configuration.label, pressed: configuration.isPressed, active: active)
+            .onChange(of: configuration.isPressed) { _, pressed in isTouching = pressed }
     }
 }
 
@@ -120,7 +129,7 @@ private struct GVAccessMagneticFeedback<Label: View>: View {
                         .strokeBorder(GVTheme.bone.opacity(pointer != nil || pressed ? 0.7 : 0), lineWidth: 1)
                 }
                 .brightness(pressed ? 0.13 : (pointer != nil ? 0.04 : 0))
-                .scaleEffect(reduceMotion ? 1 : (pressed ? 0.96 : (pointer != nil ? 1.025 : 1)))
+                .scaleEffect(reduceMotion ? 1 : (pressed ? 0.975 : (pointer != nil ? 1.025 : 1)))
                 .offset(attraction)
                 .shadow(color: .black.opacity(0.28), radius: 12, y: pointer == nil ? 4 : 8)
         }
@@ -139,25 +148,71 @@ private struct GVAccessMagneticFeedback<Label: View>: View {
     }
 }
 
-private struct GVScrollingPerimeter: View {
-    let radius: CGFloat
-    let active: Bool
+struct GVEncryptButtonFace: View {
+    let target: String
+    let engaged: Bool
+    let opening: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var startedAt = Date.now
+    @ScaledMetric(relativeTo: .callout) private var textSize: CGFloat = 12
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        shape.strokeBorder(GVTheme.bone.opacity(active ? 0.65 : 0.28), lineWidth: 1)
-            .overlay {
-                if active, !reduceMotion {
-                    TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
-                        let phase = timeline.date.timeIntervalSinceReferenceDate * 1.8
-                        AngularGradient(colors: [.clear, .clear, GVTheme.bone, .clear],
-                                        center: .center, angle: .degrees(phase * 360))
-                            .mask(shape.strokeBorder(lineWidth: 1.5))
-                    }
-                }
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !engaged || reduceMotion || scenePhase != .active)) { timeline in
+            let elapsed = max(timeline.date.timeIntervalSince(startedAt), 0)
+            HStack(spacing: 12) {
+                Image(systemName: opening ? "lock.open" : "lock")
+                    .font(.subheadline.weight(.medium))
+                Text(GVEncryptText.frame(target: target, elapsed: elapsed, animated: engaged && !reduceMotion))
+                    .font(GVTheme.mono(textSize, .medium))
+                    .tracking(0.6)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right")
+                    .font(.caption.weight(.medium))
             }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+            .foregroundStyle(engaged ? GVSplashPalette.cyan : GVTheme.bone)
+            .padding(.horizontal, 18)
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .background {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.black.opacity(0.88))
+                    .overlay {
+                        GeometryReader { geometry in
+                            let travel = 1 - abs(elapsed.truncatingRemainder(dividingBy: 2) - 1)
+                            LinearGradient(
+                                colors: [.clear, GVSplashPalette.cyan.opacity(0.22), GVSplashPalette.violet.opacity(0.16), .clear],
+                                startPoint: .bottom,
+                                endPoint: .top
+                            )
+                            .scaleEffect(1.25)
+                            .offset(y: geometry.size.height * (1 - 2 * travel))
+                        }
+                        .opacity(engaged && !reduceMotion ? 1 : 0)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .modifier(GVSplashBorder(active: engaged))
+        }
+        .onChange(of: engaged, initial: true) { _, _ in startedAt = .now }
+    }
+}
+
+enum GVEncryptText {
+    private static let characters = Array("!@#$%^&*():{};|,.<>/?")
+    static let shuffleTime = 0.05
+    static let cyclesPerLetter = 2
+
+    static func duration(for target: String) -> Double {
+        Double(target.count * cyclesPerLetter) * shuffleTime
+    }
+
+    static func frame(target: String, elapsed: Double, animated: Bool) -> String {
+        guard animated, elapsed.isFinite, elapsed >= 0, elapsed < duration(for: target) else { return target }
+        let step = Int(elapsed / shuffleTime)
+        return String(target.enumerated().map { index, character in
+            if character.isWhitespace || step / cyclesPerLetter > index { return character }
+            return characters[(step * 7 + index * 11) % characters.count]
+        })
     }
 }

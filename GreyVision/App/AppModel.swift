@@ -65,13 +65,8 @@ final class AppModel: ObservableObject {
         if arguments.contains("--uitesting-workspace") || arguments.contains("--skip-boot") {
             route = .workspace
             runtimeStatus = .queued
-        } else if isUITesting {
-            // The gate is an entry ceremony, not a thing under test. `--uitesting`
-            // lands on the boot screen so the format-dock suite can drive it;
-            // without this it sat on the keypad and every assertion timed out.
-            route = .boot
         } else {
-            route = .gate
+            route = .boot
         }
 
         sourceTransition.onStateChange = { [weak self] state in
@@ -80,23 +75,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Correct code entered. The only way out of `.gate`.
-    ///
-    /// With the startup ceremony enabled this hands over to the boot sequence;
-    /// with it disabled the operator lands straight in the workspace — the
-    /// camera pipeline starts through exactly the same path `startEngine`
-    /// uses, so there is still one capture session.
+    /// Legacy gate routes now join the same format-and-entry surface.
     func unlockAccess() {
         guard route == .gate else { return }
-        if preferences.startupAnimationEnabled {
-            route = .boot
-        } else {
-            sourceMode = .camera
-            runtimeStatus = .queued
-            entrySettleStart = nil
-            route = .workspace
-            beginEngineStart()
-        }
+        route = .boot
     }
 
     func startEngine() {
@@ -114,7 +96,7 @@ final class AppModel: ObservableObject {
 
     func returnToBoot() {
         sourceTransition.stopSoon()
-        blobs.stop(using: camera)
+        blobs.stop()
         audio.stop()
         broadcast.stop()
         sourceMode = .camera
@@ -192,7 +174,7 @@ final class AppModel: ObservableObject {
 
     func stopAll() {
         sourceTransition.stopSoon()
-        blobs.stop(using: camera)
+        blobs.stop()
         audio.stop()
         broadcast.stop()
         sourceMode = .camera
@@ -209,7 +191,7 @@ final class AppModel: ObservableObject {
         GVSoundEngine.shared.shutdown()
         guard route == .workspace else { return }
         sourceTransition.suspendSoon()
-        blobs.stop(using: camera)
+        blobs.stop()
         audio.stop()
         if stopBroadcast { broadcast.stop() }
         runtimeStatus = .offline

@@ -11,15 +11,18 @@ struct DeterministicStarfield: View {
     /// Brightness multiplier for the starfield. 1.0 is the splash default;
     /// the passcode flash uses 1.35 for extra pop on a small pill.
     var intensity: Double = 1.0
+    var tilt: CGSize = .zero
 
     private let stars: [Star]
     private let shootingStarInterval: Double
 
     init(showShootingStar: Bool = true, intensity: Double = 1,
-         starCount: Int = 268, shootingStarInterval: Double = 6.5)
+         starCount: Int = 268, shootingStarInterval: Double = 6.5,
+         tilt: CGSize = .zero)
     {
         self.showShootingStar = showShootingStar
         self.intensity = intensity
+        self.tilt = tilt
         stars = Star.seeded(count: max(0, starCount), seed: 0x47_5649_5349_4F4E)
         self.shootingStarInterval = max(2, shootingStarInterval)
     }
@@ -31,8 +34,8 @@ struct DeterministicStarfield: View {
                 for star in stars {
                     let basePulse = reduceMotion ? 0.72 : 0.52 + sin(time * star.speed + star.phase) * 0.28
                     let pulse = min(basePulse * intensity, 1.0)
-                    let x = star.x * size.width + dragOffset.width * star.depth
-                    let y = star.y * size.height + dragOffset.height * star.depth
+                    let x = star.x * size.width + (dragOffset.width + tilt.width * 18) * star.depth
+                    let y = star.y * size.height + (dragOffset.height + tilt.height * 14) * star.depth
                     let rect = CGRect(x: x, y: y, width: star.size, height: star.size)
                     context.fill(
                         Path(ellipseIn: rect),

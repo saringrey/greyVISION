@@ -233,13 +233,18 @@ extension View {
 }
 
 private struct GVCompactDeckPlateModifier: ViewModifier {
-    @ViewBuilder
+    /// Matches the capture pill below it: same surface, a radius that reads
+    /// as the pill's rounded cousin, and the same maximum width so the deck's
+    /// edges line up with the pill's instead of overhanging it.
+    static let radius: CGFloat = 26
+
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, GVMetrics.stepRelated)
-            .padding(.top, GVMetrics.gap)
+            .padding(.horizontal, GVMetrics.stepRelated + 2)
+            .padding(.top, GVMetrics.gap + 2)
             .padding(.bottom, GVMetrics.gap)
-            .gvMaterial(.deck, shape: .rounded(radius: GVMetrics.radiusPanel))
+            .gvChromePlate(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
+            .frame(maxWidth: 390)
     }
 }
 
@@ -277,22 +282,34 @@ struct GVDeckChip: View {
         }
     }
 
+    /// A neutral chip selects the way the browser's category pills do —
+    /// filled bone with dark type. A tinted one (record) keeps its colour.
+    private var isNeutral: Bool { tint == .white }
+
+    private var foreground: Color {
+        if active { return isNeutral ? .black : tint }
+        return GVTheme.bone.opacity(dimmed ? 0.35 : 0.78)
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 if let symbol {
                     Image(systemName: symbol)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 11, weight: .semibold))
                 }
-                Text(label)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
+                if !label.isEmpty {
+                    Text(label)
+                        .font(GVTheme.mono(11, active ? .semibold : .medium))
+                        .lineLimit(1)
+                }
             }
-            .foregroundStyle(active ? tint : GVTheme.bone.opacity(dimmed ? 0.35 : 0.75))
-            .padding(.horizontal, symbol == nil ? 10 : 8)
+            .foregroundStyle(foreground)
+            .padding(.horizontal, label.isEmpty ? 0 : (symbol == nil ? 11 : 9))
+            .frame(minWidth: label.isEmpty ? height + 4 : nil)
             .frame(height: height)
         }
-        .buttonStyle(GVGlassChipStyle(active: active, dimmed: dimmed, tint: tint, height: height))
+        .buttonStyle(GVGlassChipStyle(active: active, dimmed: dimmed, tint: tint, neutral: isNeutral, height: height))
         .frame(minHeight: GVMetrics.touchTarget)
         .contentShape(Rectangle())
         .disabled(dimmed && !active)
@@ -302,24 +319,44 @@ struct GVDeckChip: View {
     }
 }
 
+/// Capsule chips in the browser's pill idiom: a hairline outline at rest, a
+/// filled bone capsule when on. Opaque grey slabs read as a second design
+/// language on the frosted plates.
 private struct GVGlassChipStyle: ButtonStyle {
     let active: Bool
     let dimmed: Bool
     let tint: Color
+    let neutral: Bool
     let height: CGFloat
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
+        let pressed = configuration.isPressed
         configuration.label
-            .gvGlassChip(radius: 8, active: active || configuration.isPressed, tint: tint)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(fill(pressed: pressed))
+            }
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(stroke, lineWidth: 0.75)
+            }
             .frame(height: height)
-            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.97 : 1))
-            .animation(
-                GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion),
-                value: configuration.isPressed
-            )
+            .scaleEffect(reduceMotion ? 1 : (pressed ? 0.95 : 1))
+            .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: pressed)
+            .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: active)
             .opacity(dimmed && !active ? 0.55 : 1)
+    }
+
+    private func fill(pressed: Bool) -> Color {
+        if active { return neutral ? GVTheme.bone : tint.opacity(0.22) }
+        return Color.white.opacity(pressed ? 0.14 : 0.05)
+    }
+
+    private var stroke: Color {
+        if active { return neutral ? .clear : tint.opacity(0.7) }
+        return Color.white.opacity(0.12)
     }
 }
 
@@ -412,8 +449,9 @@ struct GVRailSlider: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text(label.capitalized)
-                .font(.system(size: 11, weight: .regular))
+            Text(label.uppercased())
+                .font(GVTheme.mono(9.5, .medium))
+                .tracking(0.6)
                 .foregroundStyle(isDragging ? Color.white.opacity(0.92) : GVTheme.ash)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)

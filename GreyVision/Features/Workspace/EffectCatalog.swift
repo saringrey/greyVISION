@@ -52,9 +52,7 @@ enum EffectCatalog {
     }
 
     static let variantGroups: [[WorkspaceAdjustableEffect]] = [
-        [.kaleidoscope, .kaleido6],
-        [.flowField, .curlWarp],
-        [.liquidMosh, .opticalFlowLiquid]
+        [.kaleidoscope, .kaleido6]
     ]
 
     static func canonical(_ effect: WorkspaceAdjustableEffect) -> WorkspaceAdjustableEffect {
@@ -112,17 +110,19 @@ enum EffectCatalog {
         shelfIndex[shelfID] ?? []
     }
 
+    /// Search terms beyond the label. Includes the names of retired effects
+    /// this one replaced, so typing an old name finds the look that absorbed it.
     static func aliases(for effect: WorkspaceAdjustableEffect) -> [String] {
-        switch effect {
-        case .objectSort: ["OBJECT SORT"]
-        case .depthSort: ["DEPTH SORT"]
-        case .depthFeedback: ["DEPTH FEEDBACK"]
+        let own: [String] = switch effect {
         case .pointCloudSmear: ["POINT CLOUD SMEAR", "POINT-CLOUD SMEAR"]
-        case .bokeh: ["BOKEH"]
-        case .opticalFlowLiquid: ["OPTICAL-FLOW LIQUID", "OPTICAL FLOW LIQUID"]
         default: []
         }
+        return own + (retiredAliases[effect] ?? [])
     }
+
+    private static let retiredAliases: [WorkspaceAdjustableEffect: [String]] =
+        Dictionary(grouping: WorkspaceAdjustableEffect.retiredReplacements, by: \.value)
+            .mapValues { $0.map(\.key).sorted() }
 
     /// Search returns one result per family, retaining the matching variant
     /// so an old name opens precisely the algorithm the operator requested.

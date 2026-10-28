@@ -92,10 +92,14 @@ private final class AudioBox: @unchecked Sendable {
 }
 
 final class GVRealtimeRecordingSession: @unchecked Sendable {
+    static let colorProperties: [String: String] = [
+        AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+        AVVideoTransferFunctionKey: AVVideoTransferFunction_IEC_sRGB,
+        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
+    ]
     let outputURL: URL
     let size: CGSize
     let saveToPhotos: Bool
-    let burnHUD: Bool
 
     private let lock = NSLock()
     private let writerQueue = DispatchQueue(
@@ -153,14 +157,12 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
         outputURL: URL,
         size: CGSize,
         saveToPhotos: Bool,
-        codec: AVVideoCodecType = .hevc,
-        burnHUD: Bool = false
+        codec: AVVideoCodecType = .hevc
     ) {
         self.outputURL = outputURL
         self.size = size
         self.saveToPhotos = saveToPhotos
         self.codec = codec
-        self.burnHUD = burnHUD
     }
 
     func start(withAudio: Bool = false) -> Bool {
@@ -170,22 +172,12 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
             let height = max(16, Int(size.height.rounded() / 2) * 2)
             do {
                 let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-                var outputSettings: [String: Any] = [
+                let outputSettings: [String: Any] = [
                     AVVideoCodecKey: codec,
                     AVVideoWidthKey: width,
-                    AVVideoHeightKey: height
+                    AVVideoHeightKey: height,
+                    AVVideoColorPropertiesKey: Self.colorProperties
                 ]
-                if isHighPrecisionProRes {
-                    // The Metal graph works in RGBA16Float linear light. Keep
-                    // that precision through the ProRes encoder and identify
-                    // the transfer correctly instead of quantizing to 8-bit
-                    // BGRA while merely changing the codec label.
-                    outputSettings[AVVideoColorPropertiesKey] = [
-                        AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-                        AVVideoTransferFunctionKey: AVVideoTransferFunction_Linear,
-                        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
-                    ]
-                }
                 guard assetWriter.canApply(outputSettings: outputSettings, forMediaType: .video) else {
                     return false
                 }
@@ -263,6 +255,14 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
             }
             return nil
         }
+        if let pixelBuffer {
+            CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey,
+                                  kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
+            CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey,
+                                  kCVImageBufferTransferFunction_sRGB, .shouldPropagate)
+            CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey,
+                                  kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
+        }
         return pixelBuffer
     }
 
@@ -299,9 +299,9 @@ final class GVRealtimeRecordingSession: @unchecked Sendable {
             // The completion handler is on the live render path. Burn the
             // recording-only overlay on the bounded writer queue instead, so
             // text rasterisation can never delay preview presentation.
-            if self.burnHUD {
-                self.overlayRenderer.composite(into: box.pixelBuffer, timestamp: max(timestamp - baseTime, 0))
-            }
+            // Every take carries the HUD. Tracking marks are already in the
+            // pixels: the renderer burns them on the GPU before this copy.
+            self.overlayRenderer.composite(into: box.pixelBuffer, timestamp: max(timestamp - baseTime, 0))
             if box.adaptor.assetWriterInput.isReadyForMoreMediaData {
                 box.adaptor.append(box.pixelBuffer, withPresentationTime: presentationTime)
                 self.lock.withLock { self.encodedFrames += 1 }

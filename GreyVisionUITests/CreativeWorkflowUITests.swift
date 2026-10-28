@@ -1,7 +1,6 @@
 import XCTest
 
-/// The workflow bundle: the recipe collection, the take library, the timeline
-/// transport, and the shutter self-timer.
+/// The workflow bundle: the recipe collection and the shutter self-timer.
 ///
 /// These are driven as an operator drives them — from the dock rail — because
 /// every one of them was reachable in code and unreachable on screen before
@@ -99,59 +98,6 @@ final class CreativeWorkflowUITests: XCTestCase {
         }
         star.tap()
         XCTAssertEqual(star.label, wanted, "Tapping the mark has to set it")
-    }
-
-    func testTakeLibraryOpensFromTheRail() {
-        let app = launchWorkspace()
-
-        app.buttons["workspace.takes"].tap()
-
-        XCTAssertTrue(
-            app.buttons["workspace.chip.takes.close"].waitForExistence(timeout: 3),
-            "The take library must open from the rail"
-        )
-        XCTAssertTrue(app.buttons["workspace.chip.takes.refresh"].exists)
-        // Nothing on the simulator has been recorded yet in this test run; the
-        // library either lists takes or says what it is for.
-        let emptyOrListed = app.staticTexts["NO TAKES YET"].exists
-            || app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "take.row.")).count > 0
-        XCTAssertTrue(emptyOrListed, "The library must account for every state it can be in")
-
-        app.buttons["workspace.chip.takes.close"].tap()
-        XCTAssertTrue(app.buttons["workspace.record.toggle"].waitForExistence(timeout: 3))
-    }
-
-    func testTimelinePickerArmsTheTransportAndTheBarRestartsACuedTimeline() {
-        let app = launchWorkspace()
-
-        XCTAssertFalse(
-            app.descendants(matching: .any)["workspace.timeline.bar"].exists,
-            "No transport before a cue is armed"
-        )
-
-        app.buttons["workspace.timeline"].tap()
-        XCTAssertTrue(
-            app.descendants(matching: .any)["workspace.timeline.picker"]
-                .waitForExistence(timeout: 3)
-        )
-
-        let play = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "workspace.timeline.picker.play.")
-        ).element(boundBy: 0)
-        XCTAssertTrue(play.waitForExistence(timeout: 3))
-        play.tap()
-
-        let bar = app.descendants(matching: .any)["workspace.timeline.bar"]
-        XCTAssertTrue(bar.waitForExistence(timeout: 3), "Playing a cue has to leave the transport on screen")
-        XCTAssertFalse(app.descendants(matching: .any)["workspace.timeline.picker"].exists)
-
-        let transport = app.buttons["workspace.timeline.play"]
-        XCTAssertTrue(transport.waitForExistence(timeout: 3))
-        transport.tap()
-        XCTAssertEqual(transport.label, "Play timeline", "Stop must stop the cue")
-        transport.tap()
-        XCTAssertEqual(transport.label, "Stop timeline", "The same button must restart the cue it just stopped")
-        transport.tap()
     }
 
     func testSelfTimerDelaysTheShutterAndCanBeCancelled() {

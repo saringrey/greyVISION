@@ -346,12 +346,14 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
                 try activeDevice.lockForConfiguration()
                 defer { activeDevice.unlockForConfiguration() }
 
-                if activeDevice.isFocusPointOfInterestSupported {
-                    activeDevice.focusPointOfInterest = devicePoint
-                    if activeDevice.isFocusModeSupported(.autoFocus) {
-                        activeDevice.focusMode = .autoFocus
+                    if activeDevice.isFocusPointOfInterestSupported {
+                        activeDevice.focusPointOfInterest = devicePoint
+                        if activeDevice.isFocusModeSupported(.continuousAutoFocus) {
+                            activeDevice.focusMode = .continuousAutoFocus
+                        } else if activeDevice.isFocusModeSupported(.autoFocus) {
+                            activeDevice.focusMode = .autoFocus
+                        }
                     }
-                }
                 if activeDevice.isExposurePointOfInterestSupported {
                     activeDevice.exposurePointOfInterest = devicePoint
                     if activeDevice.isExposureModeSupported(.continuousAutoExposure) {
@@ -594,6 +596,9 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
 
         if device.isFocusModeSupported(.continuousAutoFocus) {
             device.focusMode = .continuousAutoFocus
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
+            }
         }
         if device.isExposureModeSupported(.continuousAutoExposure) {
             device.exposureMode = .continuousAutoExposure

@@ -96,6 +96,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: grey//VISION uses the camera to render live visual effects.
+        NSMotionUsageDescription: grey//VISION uses device motion to drive interactive splash and camera effects.
         # Required to advertise the Mac link over Bonjour. Without both keys
         # NWListener fails at .ready with a permission error rather than at
         # build time, so their absence looks like a networking bug.

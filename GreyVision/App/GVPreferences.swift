@@ -84,6 +84,10 @@ final class GVPreferences: ObservableObject {
 
     static let recentEffectLimit = 10
 
+    private static func currentEffectName(_ stored: String) -> String {
+        WorkspaceAdjustableEffect.resolving(stored)?.rawValue ?? stored
+    }
+
     /// Records a selection. Re-selecting something already recent moves it to
     /// the front rather than adding a duplicate.
     func noteEffectUsed(_ identifier: String) {
@@ -117,11 +121,6 @@ final class GVPreferences: ObservableObject {
             defaults.set(soundEnabled, forKey: Key.sound)
             GVSoundEngine.shared.isEnabled = soundEnabled
         }
-    }
-
-    /// Whether to composite the HUD watermark into saved recordings.
-    @Published var watermarkEnabled: Bool {
-        didSet { defaults.set(watermarkEnabled, forKey: "gv.preferences.watermark") }
     }
 
     /// Camera tools & guide preferences
@@ -184,7 +183,6 @@ final class GVPreferences: ObservableObject {
             : defaults.bool(forKey: Key.startupAnimation)
 
         defaults.register(defaults: ["gv.preferences.watermark": true])
-        watermarkEnabled = defaults.bool(forKey: "gv.preferences.watermark")
         // `bool(forKey:)` returns false for an unset key, so sound has to be
         // registered explicitly to default on.
         // Sound state is persisted, so once it is switched off it stays off
@@ -215,9 +213,14 @@ final class GVPreferences: ObservableObject {
         reticleEnabled = defaults.bool(forKey: "gv.preferences.cam.reticle.v2")
         ndShutterEnabled = defaults.bool(forKey: "gv.preferences.cam.ndShutter")
 
-        favoriteEffects = Set(defaults.stringArray(forKey: Key.favorites) ?? [])
+        // Stored names pass through the retirement table, so a favourite or
+        // recent that named a removed effect points at its replacement.
+        favoriteEffects = Set((defaults.stringArray(forKey: Key.favorites) ?? []).map(Self.currentEffectName))
+        var seenRecents = Set<String>()
         recentEffects = Array(
-            (defaults.stringArray(forKey: Key.recents) ?? []).prefix(Self.recentEffectLimit)
+            (defaults.stringArray(forKey: Key.recents) ?? []).map(Self.currentEffectName)
+                .filter { seenRecents.insert($0).inserted }
+                .prefix(Self.recentEffectLimit)
         )
 
         GVSoundEngine.shared.isEnabled = soundVal

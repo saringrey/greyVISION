@@ -107,21 +107,6 @@ final class CameraEffectStackTests: XCTestCase {
         }
     }
 
-    // MARK: - A finished take stays addressable
-
-    /// A finished take has to stay addressable. The recorder nilled its own
-    /// `outputURL` before the completion handler ran, which made the coordinator's
-    /// success branch read nil and drop the path — so nothing downstream, scrub
-    /// preview included, could open the file it had just written.
-    @MainActor
-    func testCompletedTakeKeepsItsURLAvailableToTheRuntime() {
-        let runtime = CameraRuntime()
-        XCTAssertNil(runtime.lastCompletedTake, "a session that has recorded nothing has no take")
-        let url = URL(fileURLWithPath: "/private/tmp/greyvision-scrub-test.mov")
-        runtime.noteCompletedTake(url)
-        XCTAssertEqual(runtime.lastCompletedTake, url)
-    }
-
     /// The recorder's `outputURL` is the only handle its caller has on the movie it
     /// just wrote, and it has to still be there while the stop is in flight — the
     /// coordinator reads it from the finish callback. A URL for a movie the recorder
@@ -203,97 +188,6 @@ final class CameraEffectStackTests: XCTestCase {
         XCTAssertFalse(stats.hasRefusedCodecSlot, "a stack that got everything it asked for is quiet")
         stats.codecSlotsRequested = 2
         XCTAssertTrue(stats.hasRefusedCodecSlot, "the same one trip is a refusal at two Slots")
-    }
-
-    // MARK: - Scrubbing a timeline that has never played
-
-    /// Scrub has to work before anything has played: an operator drags the
-    /// playhead to see what a cue does, and the first drag always precedes the
-    /// transport. `storedTimelineForScrub()` returned nil unconditionally, so a
-    /// drag on a selected-but-unplayed timeline moved nothing at all.
-    @MainActor
-    func testScrubResolvesTheSelectedTimelineWithoutPlaying() {
-        let editor = EffectEditingSession()
-        let player = GVTimelinePlayer()
-        player.attach(editor: editor)
-
-        var timeline = GVTimeline.empty
-        timeline.name = "SCRUB TEST"
-        timeline.duration = 4
-        timeline.keyframes = [
-            GVTimelineKeyframe(time: 0, field: .primary, value: 0),
-            GVTimelineKeyframe(time: 4, field: .primary, value: 1)
-        ]
-        player.selectForScrub(timeline)
-
-        XCTAssertFalse(player.isPlaying, "scrub must not start the transport")
-        player.scrub(to: 2)
-        XCTAssertEqual(player.currentTime, 2, accuracy: 0.001)
-        XCTAssertEqual(player.activeTimeline?.name, "SCRUB TEST")
-    }
-
-    /// Selecting a timeline is not seeking it. A cue armed for later must not jump
-    /// the playhead to wherever the previous timeline had left it.
-    @MainActor
-    func testSelectingATimelineDoesNotMoveThePlayheadByItself() {
-        let player = GVTimelinePlayer()
-        var short = GVTimeline.empty
-        short.duration = 1
-        player.selectForScrub(short)
-        player.scrub(to: 0.75)
-        XCTAssertEqual(player.currentTime, 0.75, accuracy: 0.001)
-
-        var long = GVTimeline.empty
-        long.name = "LONGER"
-        long.duration = 6
-        player.selectForScrub(long)
-        XCTAssertEqual(player.currentTime, 0.75, accuracy: 0.001, "selection alone does not seek")
-
-        player.scrub(to: 5)
-        XCTAssertEqual(player.currentTime, 5, accuracy: 0.001)
-        XCTAssertEqual(player.activeTimeline?.name, "LONGER")
-
-        player.scrub(to: 99)
-        XCTAssertEqual(player.currentTime, 6, accuracy: 0.001, "a scrub past the end clamps to it")
-    }
-
-    // MARK: - A scrub preview holds the viewfinder, then lets go
-
-    /// A preview consumed on one draw is a frame the operator cannot look at: the
-    /// camera is back on screen the next tick. So the mailbox keeps the newest frame
-    /// for a window and expires on the window rather than on the read — while still
-    /// refusing to hold the viewfinder after the scrub has moved on, because a
-    /// viewfinder stuck on a take is indistinguishable from this app's real freeze
-    /// control.
-    @MainActor
-    func testPreviewMailboxHoldsNewestFrameForAWindow() throws {
-        let mailbox = CameraPreviewMailbox()
-        let first = try makePreviewBuffer()
-        let second = try makePreviewBuffer()
-
-        mailbox.publish(first)
-        mailbox.publish(second)
-        // The mailbox stamps publishes on the media clock, so the test reads it back
-        // on the same clock: a made-up `now` would be either in the past or so far in
-        // the future that the window assertion proves nothing.
-        let now = CACurrentMediaTime()
-        let held = try XCTUnwrap(mailbox.frame(now: now))
-        XCTAssertTrue(held.buffer === second, "newest wins")
-        XCTAssertEqual(mailbox.frame(now: now)?.generation, held.generation, "reading does not consume")
-
-        // Measured from the moment of the check, not from before the publishes: a
-        // deadline that lands a microsecond short of the window is still inside it.
-        let expired = now + CameraPreviewMailbox.visibleFor + 0.01
-        XCTAssertNil(
-            mailbox.frame(now: expired),
-            "a preview nobody refreshed has been let go of"
-        )
-        mailbox.publish(first)
-        XCTAssertEqual(
-            mailbox.frame(now: CACurrentMediaTime())?.generation,
-            held.generation + 1,
-            "the renderer compares generations to tell a new frame from the one it already drew"
-        )
     }
 
     private func makePreviewBuffer() throws -> CVPixelBuffer {

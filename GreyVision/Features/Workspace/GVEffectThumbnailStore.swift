@@ -4,8 +4,17 @@ import Metal
 import simd
 import UIKit
 
-/// Lazy, cached samples of the shipping effects, never captures of the user's
-/// camera. One utility-queue job at a time bounds GPU and codec contention.
+/// Lazy previews of the shipping effects, rendered by the production kernels.
+///
+/// When the browser opens it taps one clean frame from the live source and
+/// every preview is re-rendered over it, so a tile shows the effect on what
+/// the camera is pointed at. Until that frame arrives — and wherever there is
+/// no live source — previews use a stock test card, cached on disk. Live
+/// renders stay in memory: a camera frame is never written out.
+///
+/// A tile keeps its previous image while its fresh render is queued, so a
+/// re-open updates the grid in place instead of flashing it back to blank.
+/// One utility-queue job at a time bounds GPU and codec contention.
 @MainActor
 final class GVEffectThumbnailStore: ObservableObject {
     static let shared = GVEffectThumbnailStore()
@@ -15,7 +24,15 @@ final class GVEffectThumbnailStore: ObservableObject {
     private let queue = DispatchQueue(label: "greyvision.thumbnails", qos: .utility)
     private var inFlight: Set<WorkspaceAdjustableEffect> = []
     private var unavailable: Set<WorkspaceAdjustableEffect> = []
+    /// Which reference each cached preview was rendered over.
+    private var renderedGeneration: [WorkspaceAdjustableEffect: Int] = [:]
+    /// Effects a tile has asked for since the last reference change, so a new
+    /// live frame re-renders exactly what is on screen.
+    private var wanted: [WorkspaceAdjustableEffect] = []
     private var reference: CGImage?
+    /// 0 is the stock test card; each live frame increments it.
+    private var generation = 0
+    private var refreshing = false
     private let directory: URL
     // Accessed only from the serial thumbnail queue, including initialization.
     private nonisolated(unsafe) static let renderer = GVEffectSampleRenderer()
@@ -27,6 +44,9 @@ final class GVEffectThumbnailStore: ObservableObject {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
+    /// True once previews are rendered over the live frame.
+    var isLive: Bool { generation > 0 }
+
     func image(for effect: WorkspaceAdjustableEffect) -> UIImage? {
         cache.object(forKey: effect.rawValue as NSString)
     }
@@ -35,33 +55,59 @@ final class GVEffectThumbnailStore: ObservableObject {
         unavailable.contains(effect)
     }
 
+    /// Taps a fresh frame and re-renders the requested previews over it. The
+    /// browser calls this on open; with no live source it changes nothing.
+    func refreshFromLiveSource() {
+        guard !refreshing else { return }
+        refreshing = true
+        wanted.removeAll()
+        Task { @MainActor in
+            defer { refreshing = false }
+            guard let frame = await GVSourceFrameTap.shared.nextFrame() else { return }
+            reference = frame
+            generation += 1
+            // `wanted` stays: a render still in flight over the old frame
+            // checks it when it lands and goes again over this one.
+            wanted.forEach(request)
+        }
+    }
+
     func request(_ effect: WorkspaceAdjustableEffect) {
-        guard image(for: effect) == nil, !inFlight.contains(effect), !unavailable.contains(effect) else { return }
+        guard !unavailable.contains(effect) else { return }
+        if !wanted.contains(effect) { wanted.append(effect) }
+        // The cache may have evicted a preview its generation still claims.
+        let current = renderedGeneration[effect] == generation && image(for: effect) != nil
+        guard !current, !inFlight.contains(effect) else { return }
         if reference == nil { reference = Self.makeReferenceStill() }
         guard let reference else { return }
-        let url = directory.appendingPathComponent("\(effect.rawValue).png")
+        let target = generation
+        // Only the stock card is worth keeping across launches.
+        let url = target == 0 ? directory.appendingPathComponent("\(effect.rawValue).png") : nil
         inFlight.insert(effect)
         queue.async { [weak self] in
             autoreleasepool {
-                let stored = UIImage(contentsOfFile: url.path)
+                let stored = url.flatMap { UIImage(contentsOfFile: $0.path) }
                 let image = stored ?? Self.renderer?.render(effect, over: reference)
                 // Disk encoding/writes belong off the main thread too.
-                if stored == nil, let data = image?.pngData() {
+                if stored == nil, let url, let data = image?.pngData() {
                     try? data.write(to: url, options: .atomic)
                 }
                 Task { @MainActor [weak self] in
-                    self?.finish(effect, with: image)
+                    self?.finish(effect, with: image, generation: target)
                 }
             }
         }
     }
 
-    private func finish(_ effect: WorkspaceAdjustableEffect, with image: UIImage?) {
+    private func finish(_ effect: WorkspaceAdjustableEffect, with rendered: UIImage?, generation target: Int) {
         objectWillChange.send()
         inFlight.remove(effect)
-        if let image {
-            cache.setObject(image, forKey: effect.rawValue as NSString)
-        } else {
+        if let rendered {
+            cache.setObject(rendered, forKey: effect.rawValue as NSString)
+            renderedGeneration[effect] = target
+            // A newer frame arrived while this one rendered: go again.
+            if target != generation, wanted.contains(effect) { request(effect) }
+        } else if image(for: effect) == nil {
             unavailable.insert(effect)
         }
     }

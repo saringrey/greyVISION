@@ -8,6 +8,7 @@ struct LogoTreatment: View {
     var imageName = "OfficialLogo"
     var decay: Float = 0.08
     var interactive = false
+    var tilt: CGSize = .zero
     var accessibilityIdentifier = "logo.mark"
     var onActivate: (() -> Void)?
 
@@ -15,8 +16,10 @@ struct LogoTreatment: View {
         TimelineView(.animation(minimumInterval: reduceMotion ? 1 : 1 / 30, paused: reduceMotion)) { timeline in
             let time = Float(timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 120))
             let breathingScale = reduceMotion ? 1 : 1 + sin(Double(time) * 0.82) * 0.009
-            let yaw = min(max(rotationInput.width / 3.6, -24), 24)
-            let pitch = min(max(-rotationInput.height / 4.2, -20), 20)
+            let motionYaw = reduceMotion ? 0 : tilt.width * 14
+            let motionPitch = reduceMotion ? 0 : -tilt.height * 12
+            let yaw = min(max(rotationInput.width / 3.6 + motionYaw, -24), 24)
+            let pitch = min(max(-rotationInput.height / 4.2 + motionPitch, -20), 20)
             let edgeX = -yaw / 22
             let edgeY = pitch / 18
 

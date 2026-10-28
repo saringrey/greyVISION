@@ -96,6 +96,7 @@ enum WorkspaceDockCategory: String, CaseIterable, Identifiable {
         case .recents: "clock.arrow.circlepath"
         case .experimental: "flask"
         case .developer: "wrench.and.screwdriver"
+        case .blobs: "scope"
         default: nil
         }
     }
@@ -123,18 +124,17 @@ enum WorkspaceDockCategory: String, CaseIterable, Identifiable {
     }
 }
 
-/// The effect browser.
+/// The effect browser: a glass dashboard over the live picture.
 ///
-/// Replaces both the radial ring and the three-cards-per-category rail. The
-/// problem with the rail was not its size, it was its shape: a horizontal
-/// strip of 128-point cards showed three effects at a time, hid the rest
-/// behind a scroll nobody could see, and gave a thumbnail 26 points of height
-/// to say something with. 192 effects need a grid, a real category list and
-/// images big enough to tell `astralPlasma` from `plasmaRipple`.
+/// It replaced a full-screen sheet that was one long vertical grid under a
+/// horizontal shelf rail — 190 effects at two big tiles a row meant most of
+/// a session in the browser was spent scrolling. The dashboard puts every
+/// shelf on screen at once as a keypad, and pages the chosen shelf sideways
+/// in grids solved to fit the panel, so nothing is ever half off an edge.
 ///
-/// Families are named for what they contain, and the shelf list is derived
-/// from the same catalogue the dock reads, so a family can never exist in one
-/// place and not the other.
+/// The live camera stays visible through the glass, and every preview is the
+/// effect rendered over a frame tapped from that camera when the browser
+/// opened (`GVEffectThumbnailStore`), not over a stock test card.
 struct GVEffectBrowser: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -154,11 +154,10 @@ struct GVEffectBrowser: View {
     @State private var query = ""
     @FocusState private var searchFocused: Bool
 
-    @ScaledMetric(relativeTo: .caption) private var sidebarWidth: CGFloat = 112
-    @ScaledMetric(relativeTo: .caption) private var tileMinimum: CGFloat = 112
-    private static let spacing: CGFloat = 14
-    private let canvas = Color(red: 0.075, green: 0.073, blue: 0.080)
-    private let surface = Color(red: 0.115, green: 0.112, blue: 0.122)
+    @ScaledMetric(relativeTo: .caption) private var tileMinimum: CGFloat = 78
+    private static let spacing: CGFloat = 8
+    private static let panelRadius: CGFloat = 24
+    private let surface = Color.white.opacity(0.045)
 
     init(editor: EffectEditingSession, initialCategory: WorkspaceDockCategory) {
         self.editor = editor
@@ -167,52 +166,96 @@ struct GVEffectBrowser: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            HStack(spacing: 0) {
-                categoryColumn
-                Rectangle()
-                    .fill(GVTheme.bone.opacity(0.06))
-                    .frame(width: 1)
-                content
+        GeometryReader { geometry in
+            let wide = geometry.size.width > geometry.size.height * 1.15
+            Group {
+                if wide {
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(spacing: 10) {
+                            header
+                            controlRow
+                            selectorPanel
+                            Spacer(minLength: 0)
+                        }
+                        .frame(width: min(max(geometry.size.width * 0.4, 300), 380))
+                        contentPanel
+                    }
+                } else {
+                    VStack(spacing: 10) {
+                        header
+                        controlRow
+                        selectorPanel
+                        contentPanel
+                    }
+                }
             }
-            selectionBar
+            .padding(.horizontal, GVMetrics.screenInset)
+            .padding(.top, 6)
+            .padding(.bottom, 4)
         }
-        .background(canvas)
+        .presentationBackground { backdrop }
         .preferredColorScheme(.dark)
+        .onAppear { thumbnails.refreshFromLiveSource() }
         .onDisappear { editor.endPreview() }
+        .sensoryFeedback(.selection, trigger: category)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.browser")
+    }
+
+    /// The live picture, frosted and dimmed: the dashboard reads as glass laid
+    /// over the camera rather than a separate screen that replaced it.
+    private var backdrop: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            LinearGradient(colors: [.black.opacity(0.55), .black.opacity(0.35), .black.opacity(0.6)],
+                           startPoint: .top, endPoint: .bottom)
+        }
+        .ignoresSafeArea()
     }
 
     // MARK: - Chrome
 
     private var header: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                Text("Effects")
-                    .font(.title3.weight(.medium))
+        HStack(spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("EFFECTS")
+                    .font(GVTheme.mono(19, .semibold))
                     .foregroundStyle(GVTheme.bone)
-                Spacer(minLength: 8)
-                addModeChip
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(GVTheme.bone)
-                        .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
-                        .background(surface, in: Circle())
-                }
-                .buttonStyle(GVPressStyle())
-                .accessibilityLabel("Close effect browser")
-                .accessibilityIdentifier("workspace.browser.close")
+                Text("// \(trimmedQuery.isEmpty ? category.displayLabel.uppercased() : "SEARCH")")
+                    .font(GVTheme.mono(12, .medium))
+                    .foregroundStyle(GVTheme.bone.opacity(0.5))
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
             }
-            searchField
+            .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: category)
+            Spacer(minLength: 6)
+            captureModes
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(GVTheme.bone)
+                    .frame(width: 36, height: 36)
+                    .background(Color.white.opacity(0.08), in: Circle())
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))
+                    .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(GVPressStyle())
+            .accessibilityLabel("Close effect browser")
+            .accessibilityIdentifier("workspace.browser.close")
         }
-        .padding(.horizontal, GVMetrics.screenInset)
-        .padding(.top, 12)
-        .padding(.bottom, 16)
+    }
+
+    /// Search, the stacking switch and the live readouts on one row: the
+    /// dashboard's instrument strip.
+    private var controlRow: some View {
+        HStack(spacing: 6) {
+            searchField
+            addModeChip
+            readouts
+        }
     }
 
     /// Stacking is the one browser action that has no tile to hang off, so it
@@ -223,43 +266,76 @@ struct GVEffectBrowser: View {
             editor.setStackArmed(!editor.isStackArmed)
             decay.fire(.effectActivated)
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: editor.isStackArmed ? "checkmark" : "plus")
-                    .font(.caption.weight(.medium))
-                Text(editor.isStackArmed ? "Stacking" : "Stack")
-                    .font(.subheadline.weight(.medium))
-            }
-            .foregroundStyle(editor.isStackArmed ? GVTheme.bone : GVTheme.bone.opacity(0.72))
-            .padding(.horizontal, 11)
-            .frame(minHeight: GVMetrics.touchTarget)
-            .background(
-                GVTheme.bone.opacity(editor.isStackArmed ? 0.13 : 0.04),
-                in: Capsule()
-            )
+            Image(systemName: editor.isStackArmed ? "square.stack.3d.up.fill" : "square.stack.3d.up")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(editor.isStackArmed ? Color.black : GVTheme.bone.opacity(0.8))
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 40, height: 38)
+                .background {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(editor.isStackArmed ? GVTheme.bone : Color.white.opacity(0.06))
+                }
+                .contentShape(Rectangle())
         }
         .buttonStyle(GVPressStyle())
+        .frame(minHeight: GVMetrics.touchTarget)
         .accessibilityLabel(editor.isStackArmed ? "Stacking on, taps add effects" : "Add mode off, taps replace the effect")
         .accessibilityIdentifier("workspace.browser.add")
+    }
+
+    /// What is on and what it costs, at a glance: active count over a load
+    /// meter summed from the active effects' render-cost tiers, and whether
+    /// the microphone is feeding the audio-reactive effects.
+    private var readouts: some View {
+        let active = editor.activeEffects
+        let load = active.reduce(0) { $0 + $1.gpuCost.rawValue }
+        let micLive = audioRuntime.state == .running
+        return HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(active.count) ON")
+                    .font(GVTheme.mono(10, .semibold))
+                    .foregroundStyle(active.isEmpty ? GVTheme.bone.opacity(0.5) : GVTheme.bone)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                HStack(spacing: 2) {
+                    ForEach(0 ..< 6, id: \.self) { index in
+                        Capsule()
+                            .fill(index < load ? (load > 4 ? GVTheme.record : GVTheme.bone) : GVTheme.bone.opacity(0.18))
+                            .frame(width: 3, height: 7)
+                    }
+                }
+            }
+            Image(systemName: micLive ? "waveform" : "mic.slash")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(micLive ? Color.mint : GVTheme.bone.opacity(0.4))
+                .symbolEffect(.variableColor.iterative, isActive: micLive && !reduceMotion)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 38)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(active.count) effects on, render load \(load), microphone \(micLive ? "live" : "off")")
+        .accessibilityIdentifier("workspace.browser.readouts")
     }
 
     private var searchField: some View {
         HStack(spacing: GVMetrics.gapTight) {
             Image(systemName: "magnifyingglass")
-                .font(.subheadline)
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(GVTheme.bone.opacity(0.65))
             TextField(text: $query) {
-                Text("Search effects").foregroundStyle(GVTheme.bone.opacity(0.60))
+                Text("Search").foregroundStyle(GVTheme.bone.opacity(0.5))
             }
-                .textFieldStyle(.plain)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.search)
-                .focused($searchFocused)
-                .onSubmit { searchFocused = false }
-                .font(.subheadline)
-                .foregroundStyle(GVTheme.bone)
-                .tint(.white)
-                .accessibilityIdentifier("workspace.search.field")
+            .textFieldStyle(.plain)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .submitLabel(.search)
+            .focused($searchFocused)
+            .onSubmit { searchFocused = false }
+            .font(GVTheme.mono(13, .regular))
+            .foregroundStyle(GVTheme.bone)
+            .tint(.white)
+            .accessibilityIdentifier("workspace.search.field")
             if !query.isEmpty {
                 Button {
                     query = ""
@@ -267,122 +343,91 @@ struct GVEffectBrowser: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.subheadline)
                         .foregroundStyle(GVTheme.bone.opacity(0.65))
-                        .frame(width: 44, height: 44)
+                        .frame(width: 32, height: 38)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(GVPressStyle())
                 .accessibilityLabel("Clear search")
             }
         }
-        .padding(.horizontal, GVMetrics.stepRelated)
-        .frame(minHeight: GVMetrics.touchTarget)
-        .background(surface, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.leading, 11)
+        .frame(height: 38)
+        .background(Color.white.opacity(searchFocused ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.white.opacity(searchFocused ? 0.18 : 0.06), lineWidth: GVMetrics.hairline)
+                .strokeBorder(Color.white.opacity(searchFocused ? 0.32 : 0), lineWidth: 1)
         )
+        .frame(minHeight: GVMetrics.touchTarget)
+        .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: searchFocused)
     }
 
-    /// One aligned, scrollable column keeps every group directly reachable.
-    /// Personal shelves and effect families are separated, not nested.
-    private var categoryColumn: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            LazyVStack(alignment: .leading, spacing: 2) {
-                ForEach([WorkspaceDockCategory.all, .active, .favorites, .recents]) { item in
-                    categoryRow(item)
+    private var selectorPanel: some View {
+        GVEffectDashboardSelector(selected: category, readouts: shelfReadouts, onSelect: changeCategory)
+            .padding(10)
+            .gvLiquidGlass(radius: Self.panelRadius)
+    }
+
+    private var captureModes: some View {
+        Menu {
+            Button {
+                guard appModel.objects.capability.isSupported else {
+                    toasts.show(appModel.objects.capability.reason)
+                    return
                 }
-                Rectangle()
-                    .fill(GVTheme.bone.opacity(0.08))
-                    .frame(height: 1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 10)
-                ForEach(WorkspaceDockCategory.shelfCategories) { item in
-                    categoryRow(item)
-                }
-                // Real depth modes are listed last and are not effects, so they
-                // sit behind their own rule rather than inside the families.
-                Rectangle()
-                    .fill(GVTheme.bone.opacity(0.08))
-                    .frame(height: 1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 10)
-                categoryRow(.spatial)
+                editor.disableAll()
+                appModel.deactivateDepthMode()
+                appModel.activateObjectMode()
+                dismiss()
+            } label: { Label("AR Objects", systemImage: "cube.transparent") }
+            Button { changeCategory(.blobs) } label: {
+                Label("Tracking", systemImage: "scope")
             }
-            .padding(.vertical, 6)
-            .padding(.horizontal, 6)
-        }
-        .frame(width: min(sidebarWidth, 152))
-        .background(surface.opacity(0.32))
-        .accessibilityIdentifier("workspace.browser.categories")
-    }
-
-    private func categoryRow(_ item: WorkspaceDockCategory) -> some View {
-        let selected = category == item && trimmedQuery.isEmpty
-        return Button {
-            changeCategory(item)
+            Button { changeCategory(.spatial) } label: {
+                Label("LiDAR", systemImage: "sensor.tag.radiowaves.forward")
+            }
         } label: {
-            HStack(spacing: 5) {
-                Text(item.displayLabel)
-                    .font(.caption.weight(selected ? .medium : .regular))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(selected ? GVTheme.bone : GVTheme.bone.opacity(0.68))
-            .padding(.horizontal, 8)
-            .frame(minHeight: GVMetrics.touchTarget)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(GVTheme.bone.opacity(selected ? 0.10 : 0))
-            )
-            .overlay(alignment: .trailing) {
-                if selected {
-                    Circle().fill(GVTheme.bone.opacity(0.7))
-                        .frame(width: 3, height: 3)
-                        .padding(.trailing, 7)
-                        .accessibilityHidden(true)
-                }
-            }
-            .contentShape(Rectangle())
+            Image(systemName: "camera.aperture")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(GVTheme.bone)
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(0.08), in: Circle())
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))
+                .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
         }
-        .buttonStyle(GVPressStyle())
-        .accessibilityIdentifier("workspace.browser.category.\(item.rawValue)")
-        .accessibilityValue(selected ? "selected" : "")
+        .accessibilityLabel("Capture modes")
+        .accessibilityIdentifier("workspace.capture.modes")
     }
 
     // MARK: - Content
+
+    private var contentPanel: some View {
+        content
+            .padding(10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .gvLiquidGlass(radius: Self.panelRadius)
+    }
 
     @ViewBuilder
     private var content: some View {
         if category == .spatial, trimmedQuery.isEmpty {
             depthPane
+        } else if category == .blobs, trimmedQuery.isEmpty {
+            GVTrackingPane(runtime: appModel.blobs, tileMinimum: 100, spacing: Self.spacing) { preset in
+                appModel.deactivateDepthMode()
+                appModel.deactivateObjectMode()
+                editor.focus(nil)
+                appModel.blobs.apply(preset)
+                GVInteractionHaptics.select()
+                dismiss()
+            }
         } else if visibleEffects.isEmpty {
             emptyState
         } else {
-            ScrollView(.vertical, showsIndicators: false) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(trimmedQuery.isEmpty ? category.displayLabel : "Results")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(GVTheme.bone)
-                    Spacer()
-                    Text("\(visibleEffects.count)")
-                        .font(.caption)
-                        .foregroundStyle(GVTheme.bone.opacity(0.60))
-                }
-                .padding(.horizontal, Self.spacing)
-                .padding(.top, 4)
-                .padding(.bottom, 6)
-                LazyVGrid(
-                    // Keep the image legible on narrow phones, with additional
-                    // columns when landscape offers room.
-                    columns: [GridItem(.adaptive(minimum: tileMinimum, maximum: 260), spacing: Self.spacing)],
-                    spacing: Self.spacing
-                ) {
-                    ForEach(visibleEffects, id: \.rawValue) { effect in
-                        tile(effect)
-                    }
-                }
-                .padding(Self.spacing)
+            GVEffectPager(items: visibleEffects, resetKey: trimmedQuery.isEmpty ? category.rawValue : "search:\(trimmedQuery)",
+                          minimumTile: tileMinimum, spacing: Self.spacing)
+            { effect, index in
+                tile(effect)
+                    .gvTileEntrance(index: index, reduceMotion: reduceMotion)
             }
             .accessibilityIdentifier("workspace.effects.\(category.rawValue)")
         }
@@ -420,40 +465,23 @@ struct GVEffectBrowser: View {
 
     private func tile(_ effect: WorkspaceAdjustableEffect) -> some View {
         let active = EffectCatalog.variants(for: effect).contains { editor.isEnabled($0) }
-        let image = thumbnails.image(for: effect)
+        let model = GVEffectTileModel(
+            name: displayName(effect),
+            image: thumbnails.image(for: effect),
+            previewUnavailable: thumbnails.isUnavailable(effect),
+            active: active,
+            favorite: preferences.isFavorite(effect.rawValue),
+            cost: effect.gpuCost.rawValue,
+            needsAudio: effect.requiresAudioAnalysis
+        )
         return Button {
             select(effect)
         } label: {
-            VStack(alignment: .leading, spacing: 9) {
-                Color.clear
-                    .aspectRatio(1.12, contentMode: .fit)
-                    .overlay { thumbnailBody(effect, image: image) }
-                    .background(surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(GVTheme.bone.opacity(active ? 0.55 : 0), lineWidth: 1)
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if active {
-                            Image(systemName: "checkmark")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(GVTheme.bone)
-                                .frame(width: 26, height: 26)
-                                .background(canvas.opacity(0.88), in: Circle())
-                                .padding(8)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                Text(displayName(effect))
-                    .font(.caption.weight(active ? .medium : .regular))
-                    .foregroundStyle(GVTheme.bone)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
-            }
-            .contentShape(Rectangle())
+            GVEffectTileFace(model: model)
+                .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: model)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(GVPressStyle())
+        .buttonStyle(GVEffectTileStyle())
         .accessibilityLabel(effect.label)
         .accessibilityHint(effect.detail)
         .accessibilityValue(accessibilityState(for: effect, active: active))
@@ -475,28 +503,6 @@ struct GVEffectBrowser: View {
             if effect.requiresAudioAnalysis, audioRuntime.state != .running {
                 Button("Open Microphone Settings", action: openMicrophoneSettings)
             }
-        }
-    }
-
-    @ViewBuilder
-    private func thumbnailBody(_ effect: WorkspaceAdjustableEffect, image: UIImage?) -> some View {
-        if let image {
-            Image(uiImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-        } else {
-            VStack(spacing: 8) {
-                Image(systemName: "photo")
-                    .font(.title3.weight(.light))
-                Text(thumbnails.isUnavailable(effect) ? "Preview unavailable" : "Rendering preview")
-                    .font(.caption2)
-                    .multilineTextAlignment(.center)
-            }
-            .foregroundStyle(GVTheme.bone.opacity(0.65))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(12)
         }
     }
 
@@ -524,7 +530,7 @@ struct GVEffectBrowser: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: tileMinimum, maximum: 260), spacing: Self.spacing)],
+                    columns: [GridItem(.adaptive(minimum: 130, maximum: 260), spacing: Self.spacing)],
                     spacing: Self.spacing
                 ) {
                     ForEach(DepthEffectMode.allCases) { mode in
@@ -532,7 +538,6 @@ struct GVEffectBrowser: View {
                     }
                 }
             }
-            .padding(Self.spacing)
         }
         .accessibilityIdentifier("workspace.depth.modes")
     }
@@ -566,7 +571,7 @@ struct GVEffectBrowser: View {
                 Spacer(minLength: 0)
             }
             .padding(12)
-            .frame(maxWidth: .infinity, minHeight: tileMinimum * 0.86, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
             .background(surface)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay {
@@ -579,7 +584,7 @@ struct GVEffectBrowser: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(GVTheme.bone)
                         .frame(width: 26, height: 26)
-                        .background(canvas.opacity(0.88), in: Circle())
+                        .background(Color.black.opacity(0.7), in: Circle())
                         .padding(8)
                         .accessibilityHidden(true)
                 }
@@ -603,49 +608,43 @@ struct GVEffectBrowser: View {
         appModel.deactivateObjectMode()
         appModel.activateDepthEffect(mode)
         GVInteractionHaptics.select()
+        dismiss()
     }
 
     private func changeCategory(_ item: WorkspaceDockCategory) {
         searchFocused = false
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+        withAnimation(GVMotion.resolved(.spring(response: 0.38, dampingFraction: 0.82), reduceMotion: reduceMotion)) {
             category = item
             query = ""
         }
     }
 
-    private var selectionBar: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(editor.selectedEffect.map(displayName) ?? "Find your next look")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(GVTheme.bone)
-                    .lineLimit(1)
-                Text(selectionDetail)
-                    .font(.caption)
-                    .foregroundStyle(GVTheme.bone.opacity(0.65))
-            }
-            Spacer(minLength: 4)
-            if editor.selectedEffect != nil {
-                Button("Adjust") { dismiss() }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(GVTheme.bone)
-                    .padding(.horizontal, 18)
-                    .frame(minHeight: 44)
-                    .background(GVTheme.bone.opacity(0.09), in: Capsule())
-                    .accessibilityIdentifier("workspace.browser.adjust")
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .background(surface)
-    }
-
-    private var selectionDetail: String {
-        guard let selected = editor.selectedEffect else { return "Effect previews · Sample scene" }
-        return editor.isEnabled(selected) ? "Applied to your camera" : "Selected · Currently off"
-    }
 
     // MARK: - Data
+
+    /// Counts and live lights for every selector key, in one pass over the
+    /// active set rather than one catalogue walk per key.
+    private static let catalogueCount = EffectCatalog.canonicalEffects(EffectCatalog.shelves.flatMap(\.effects)).count
+
+    private var shelfReadouts: [WorkspaceDockCategory: GVEffectShelfReadout] {
+        let active = Set(editor.activeEffects)
+        let isLive: (WorkspaceAdjustableEffect) -> Bool = { effect in
+            EffectCatalog.variants(for: effect).contains(where: active.contains)
+        }
+        var readouts: [WorkspaceDockCategory: GVEffectShelfReadout] = [
+            .all: .init(count: Self.catalogueCount, live: !active.isEmpty),
+            .active: .init(count: active.count, live: !active.isEmpty),
+            .favorites: .init(count: WorkspaceAdjustableEffect.allCases.count { preferences.isFavorite($0.rawValue) }, live: false),
+            .recents: .init(count: preferences.recentEffects.count, live: false),
+            .blobs: .init(count: GVTrackingPreset.all.count, live: appModel.blobs.isEnabled),
+            .spatial: .init(count: DepthEffectMode.allCases.count, live: appModel.sourceMode == .lidar && appModel.depth.isActive),
+        ]
+        for shelf in WorkspaceDockCategory.shelfCategories {
+            let effects = EffectCatalog.effects(in: shelf.rawValue)
+            readouts[shelf] = .init(count: effects.count, live: effects.contains(where: isLive))
+        }
+        return readouts
+    }
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -658,7 +657,7 @@ struct GVEffectBrowser: View {
             return EffectCatalog.search(trimmedQuery)
         }
         switch category {
-        case .spatial:
+        case .spatial, .blobs:
             return []
         case .all:
             return EffectCatalog.canonicalEffects(EffectCatalog.shelves.flatMap(\.effects))
@@ -667,7 +666,7 @@ struct GVEffectBrowser: View {
         case .favorites:
             return WorkspaceAdjustableEffect.allCases.filter { preferences.isFavorite($0.rawValue) }
         case .recents:
-            return preferences.recentEffects.compactMap(WorkspaceAdjustableEffect.init(rawValue:))
+            return preferences.recentEffects.compactMap(WorkspaceAdjustableEffect.resolving)
         default:
             return EffectCatalog.effects(in: category.rawValue)
         }
@@ -692,12 +691,13 @@ struct GVEffectBrowser: View {
         appModel.deactivateDepthMode()
         appModel.deactivateObjectMode()
         armAudioIfNeeded(for: effect)
-        let activated = editor.selectFamily(effect, preferExactVariant: true)
-        if activated {
+        editor.applyFromBrowser(effect)
+        if editor.selectedEffect != nil {
             preferences.noteEffectUsed((editor.selectedEffect ?? effect).rawValue)
             decay.fire(.effectActivated)
         }
         GVInteractionHaptics.select()
+        dismiss()
     }
 
     private func armAudioIfNeeded(for effect: WorkspaceAdjustableEffect) {

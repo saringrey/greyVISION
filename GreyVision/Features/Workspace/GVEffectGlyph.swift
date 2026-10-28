@@ -22,25 +22,25 @@ enum GVEffectGlyphKind {
     // Maps the effect registry onto a glyph family.
     static func kind(for effect: WorkspaceAdjustableEffect) -> GVEffectGlyphKind {
         switch effect {
-        case .feedback, .feedbackTunnel, .depthFeedback:
+        case .feedback, .feedbackTunnel:
             .feedback
         case .trails, .motionBloom, .prismStreak:
             .trails
-        case .echo, .frameHoldSmear, .rollingTime, .slitScan:
+        case .echo, .frameHoldSmear, .slitScan:
             .echo
         case .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .dataBend, .pixelShift, .signalTear:
             .datamosh
-        case .sort, .depthSort, .objectSort, .radialSort, .temporalPixelSort, .sortBrush:
+        case .sort, .radialSort, .temporalPixelSort, .sortBrush:
             .pixelSort
-        case .opticalFlowLiquid, .vectorWarp, .ripple, .wave, .pixelGravity:
+        case .vectorWarp, .ripple, .pixelGravity:
             .flow
-        case .pointCloudSmear, .lumaExtrusion, .freezeBrush, .freeze:
+        case .pointCloudSmear, .freezeBrush, .freeze:
             .depth
-        case .pixelate, .posterize, .dither, .halftone, .threshold, .edge, .emboss, .sharpen:
+        case .pixelate, .posterize, .dither, .threshold, .edge, .emboss, .sharpen:
             .block
         case .rgbSplit, .vhs, .crt, .grain, .thermal, .solarize, .hueShift, .invert, .monochrome:
             .glitch
-        case .audioSpectral, .audioScanBend, .audioChromaPulse, .audioWaveform,
+        case .audioSpectral, .audioScanBend, .audioWaveform,
              .audioBandSlice, .audioBloom, .audioKick:
             .audio
         default:

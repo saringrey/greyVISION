@@ -241,17 +241,20 @@ final class GVBootMotion: ObservableObject {
 
     func start() {
         guard manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
-        // 10 Hz + even heavier damping — halved reactivity again.
-        manager.deviceMotionUpdateInterval = 1 / 10
-        manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+        let availableFrames = CMMotionManager.availableAttitudeReferenceFrames()
+        let frame: CMAttitudeReferenceFrame = availableFrames.contains(.xArbitraryCorrectedZVertical)
+            ? .xArbitraryCorrectedZVertical
+            : .xArbitraryZVertical
+        manager.deviceMotionUpdateInterval = 1.0 / 30.0
+        manager.startDeviceMotionUpdates(using: frame, to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
-            let roll = min(max(motion.attitude.roll, -0.7), 0.7) / 0.7
-            let pitch = min(max(motion.attitude.pitch + 0.6, -0.7), 0.7) / 0.7
+            let roll = min(max(motion.attitude.roll, -0.65), 0.65) / 0.65
+            let pitch = min(max(motion.attitude.pitch + 0.55, -0.65), 0.65) / 0.65
             let target = CGSize(width: roll, height: pitch)
             tilt = target
             smoothedTilt = CGSize(
-                width: smoothedTilt.width * 0.97 + target.width * 0.03,
-                height: smoothedTilt.height * 0.97 + target.height * 0.03
+                width: smoothedTilt.width * 0.80 + target.width * 0.20,
+                height: smoothedTilt.height * 0.80 + target.height * 0.20
             )
         }
     }

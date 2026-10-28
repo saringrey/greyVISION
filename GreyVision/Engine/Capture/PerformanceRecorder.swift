@@ -60,7 +60,7 @@ public final class PerformanceRecorder: ObservableObject {
             codec: captureConfig.videoCodec,
             dimensions: captureConfig.renderDimensions,
             fps: captureConfig.framesPerSecond,
-            burnHUD: false
+            burnHUD: true // every take carries the HUD
         )))
 
         GVLog.performance.notice("Performance recording started")

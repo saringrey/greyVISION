@@ -266,6 +266,20 @@ final class EffectEditingSession: ObservableObject {
         return true
     }
 
+    /// Browser choices apply a look; tapping the current look must not toggle it off.
+    func applyFromBrowser(_ effect: WorkspaceAdjustableEffect) {
+        focus(nil)
+        selectFamily(effect, preferExactVariant: true)
+        if let selectedEffect {
+            if !isStackArmed {
+                enableOnly(selectedEffect)
+                focus(selectedEffect)
+            } else if !isEnabled(selectedEffect) {
+                setEnabled(selectedEffect, true)
+            }
+        }
+    }
+
     /// A grouped card focuses a placed variant. It never powers off an
     /// arbitrary sibling just because that sibling is not the default label.
     @discardableResult
@@ -273,7 +287,9 @@ final class EffectEditingSession: ObservableObject {
         let canonical = EffectCatalog.canonical(effect)
         let variants = EffectCatalog.variants(for: effect)
         guard variants.count > 1 else { return select(effect) }
-        let candidates = effectStack.orderedSlots.filter { variants.contains($0.effect) }
+        let candidates = effectStack.orderedSlots.filter {
+            variants.contains($0.effect) && (!isStackArmed || !preferExactVariant || $0.effect == effect)
+        }
         let chosen = candidates.first { $0.id == focusedSlot }
             ?? (preferExactVariant ? candidates.first { $0.effect == effect } : nil)
             ?? candidates.first
@@ -369,12 +385,6 @@ final class EffectEditingSession: ObservableObject {
 
     func setStackArmed(_ armed: Bool) {
         isStackArmed = armed
-        guard !armed else { return }
-        guard let selectedEffect else {
-            disableAll()
-            return
-        }
-        enableOnly(selectedEffect)
     }
 
     func setEnabled(_ effect: WorkspaceAdjustableEffect, _ enabled: Bool) {
