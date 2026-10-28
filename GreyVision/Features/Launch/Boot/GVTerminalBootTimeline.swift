@@ -12,8 +12,8 @@ import Foundation
 ///     post     the boot log types out, [ OK ] on each line
 ///     loading  a Win95-style setup dialog loads codec drivers, stalls
 ///     fail     the dialog quietly reports it cannot continue
-///     crash    the tube switches off: raster collapses to a line, a dot,
-///              then nothing — five seconds of dead black
+///     crash    a quarter second of hard corruption, then a cut to black —
+///              five seconds of dead screen
 ///     fade     the black lifts onto the codec selection splash
 ///
 /// Deliberately calm. Constant tearing and colour fringing read as an
@@ -33,10 +33,9 @@ struct GVTerminalBootTimeline {
     static let stallAt = 0.8
     static let stallProgress = 0.87
     static let failHold = 1.1
-    /// The power-off collapse, raster to dot.
-    static let collapseDuration = 0.22
-    /// The dot's afterglow once the raster has gone.
-    static let afterglowDuration = 0.45
+    /// How long the picture tears itself apart before it cuts out. Short on
+    /// purpose: a crash is a flinch, not a performance.
+    static let glitchDuration = 0.26
     /// Dead screen between the crash and the fade.
     static let blackHold = 5.0
     static let fadeDuration = 1.0
@@ -67,6 +66,8 @@ struct GVTerminalBootTimeline {
         var dot: Double
         /// Beeps fired so far; a change is a cue to sound one.
         var beeps: Int
+        /// The crash corruption: 1 while the picture is breaking, else 0.
+        var glitch: Double
         /// 0...1 through the closing fade onto the splash.
         var fade: Double
         /// Characters revealed per line; `Int.max` once a line is complete.
@@ -100,12 +101,16 @@ struct GVTerminalBootTimeline {
             dot = clamp((time - 0.12) / 0.25) * 0.28
         }
         var power = easeOut(clamp((time - Self.powerStart) / Self.powerDuration))
+        var glitch = 0.0
         if phase == .crash {
-            // Power-off: the raster folds to a line and then a dot, which
-            // glows on briefly the way a tube's phosphor does, then dies.
-            let collapse = clamp((time - crashStart) / Self.collapseDuration)
-            power = 1 - collapse * collapse
-            dot = 1 - clamp((time - crashStart - Self.collapseDuration) / Self.afterglowDuration)
+            // The picture breaks for a moment, then the signal is simply gone:
+            // no collapse, no afterglow.
+            if time - crashStart < Self.glitchDuration {
+                glitch = 1
+            } else {
+                power = 0
+                dot = 0
+            }
         }
 
         var revealed: [Int] = []
@@ -124,6 +129,7 @@ struct GVTerminalBootTimeline {
             power: power,
             dot: dot,
             beeps: beeps,
+            glitch: glitch,
             fade: fade,
             revealed: revealed,
             statusCount: statusCount,

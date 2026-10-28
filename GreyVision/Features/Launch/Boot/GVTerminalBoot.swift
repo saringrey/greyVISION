@@ -2,14 +2,14 @@ import SwiftUI
 
 /// The cold-start sequence: a lone dot beeps three times, a CRT terminal
 /// powers on and POSTs the device, a Win95-style setup dialog stalls loading
-/// codec drivers and quietly reports it cannot continue, the tube switches
-/// off, and after five seconds of dead black the codec selection splash
-/// fades up.
+/// codec drivers and quietly reports it cannot continue, the picture
+/// glitches out in a flinch and cuts to black, and after five seconds the
+/// codec selection splash fades up.
 ///
 /// Everything on screen — type, HUD and black field — is one layer run
 /// through `terminalBoot` in TerminalBootShaders.metal, so power-on, tears,
-/// scanlines and the power-off collapse act on the picture as a whole, the
-/// way a tube would. The faint RGB convergence is the one stage composed here
+/// scanlines and the crash act on the picture as a whole, the way a tube
+/// would. The faint RGB convergence is the one stage composed here
 /// instead (see `chroma`), since the shader must sample its layer only once. Choreography lives in `GVTerminalBootTimeline`; the printed
 /// values come from `GVTerminalBootReport`.
 ///
@@ -18,11 +18,23 @@ struct GVTerminalBoot: View {
     let report: GVTerminalBootReport
     let onFinished: () -> Void
 
-    @State private var origin = Date()
+    @State private var origin = Date().addingTimeInterval(-Self.debugStartOffset)
     @State private var skippedAt: Double?
     @State private var seed = Float.random(in: 0 ... 64)
 
     private static let glow = Color(red: 0.55, green: 0.93, blue: 1.0)
+
+    /// `--boot-at <seconds>` (debug builds) starts the sequence part-way
+    /// through, so a late stage can be captured without timing a launch.
+    private static var debugStartOffset: Double {
+        #if DEBUG
+            let arguments = ProcessInfo.processInfo.arguments
+            if let flag = arguments.firstIndex(of: "--boot-at"), arguments.indices.contains(flag + 1) {
+                return Double(arguments[flag + 1]) ?? 0
+            }
+        #endif
+        return 0
+    }
 
     var body: some View {
         let timeline = GVTerminalBootTimeline(lineCount: report.lines.count, skippedAt: skippedAt)
@@ -36,7 +48,7 @@ struct GVTerminalBoot: View {
                     content.layerEffect(
                         ShaderLibrary.terminalBoot(
                             .float2(proxy.size), .float(Float(time)), .float(Float(frame.power)),
-                            .float(seed), .float(Float(frame.dot))
+                            .float(seed), .float(Float(frame.dot)), .float(Float(frame.glitch))
                         ),
                         maxSampleOffset: .zero
                     )
@@ -47,7 +59,7 @@ struct GVTerminalBoot: View {
                 .sensoryFeedback(trigger: frame.phase) { _, phase in
                     switch phase {
                     case .fail: .warning
-                    case .crash: .impact(weight: .heavy, intensity: 1)
+                    case .crash: .impact(flexibility: .rigid, intensity: 1)
                     default: nil
                     }
                 }
@@ -56,7 +68,7 @@ struct GVTerminalBoot: View {
                 }
                 .onChange(of: frame.phase) { _, phase in
                     if phase == .fail { GVSoundEngine.shared.play(.failure) }
-                    if phase == .crash { GVSoundEngine.shared.play(.powerOff) }
+                    if phase == .crash { GVSoundEngine.shared.play(.crash) }
                 }
         }
         .ignoresSafeArea()

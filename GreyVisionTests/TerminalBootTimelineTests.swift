@@ -31,6 +31,14 @@ final class TerminalBootTimelineTests: XCTestCase {
         XCTAssertEqual(failed.phase, .fail)
         XCTAssertEqual(failed.power, 1, "the failure is shown cleanly")
 
+        let breaking = timeline.frame(at: timeline.crashStart + 0.1, lineLengths: lengths)
+        XCTAssertEqual(breaking.glitch, 1, "the picture breaks before it cuts out")
+        XCTAssertEqual(breaking.power, 1)
+        let cut = timeline.frame(at: timeline.crashStart + GVTerminalBootTimeline.glitchDuration + 0.01, lineLengths: lengths)
+        XCTAssertEqual(cut.power, 0, "then it is gone at once, no collapse")
+        XCTAssertEqual(cut.dot, 0, "and no afterglow")
+        XCTAssertEqual(cut.glitch, 0)
+
         let dead = timeline.frame(at: timeline.crashStart + 2, lineLengths: lengths)
         XCTAssertEqual(dead.phase, .crash)
         XCTAssertEqual(dead.power, 0, "the raster has switched off")

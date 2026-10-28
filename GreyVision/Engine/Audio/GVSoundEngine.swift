@@ -33,9 +33,9 @@ final class GVSoundEngine {
         /// The cold start's setup failure: three soft steps down, each a
         /// little more crushed, the sound of a decoder running out of data.
         case failure
-        /// The cold start's crash: the thump of a tube switching off, then
-        /// a short whine falling away.
-        case powerOff
+        /// The cold start's crash: a quarter second of chopped, crushed
+        /// digital noise that stops dead.
+        case crash
     }
 
     var isEnabled = true {
@@ -425,11 +425,11 @@ final class GVSoundEngine {
             [
                 Segment(duration: 0.11, frequency: 988, duty: 0.5, gain: 0.2)
             ]
-        case .powerOff:
+        case .crash:
             [
-                Segment(duration: 0.035, frequency: 55, duty: 0.5, crush: 0.2, gain: 0.32),
-                Segment(duration: 0.05, frequency: 0, crush: 1, gain: 0.08),
-                Segment(duration: 0.18, frequency: 7_800, duty: 0.5, gain: 0.025)
+                Segment(duration: 0.06, frequency: 1_760, duty: 0.3, crush: 0.7, gate: 90, gain: 0.2),
+                Segment(duration: 0.08, frequency: 0, crush: 1, gate: 60, gain: 0.22),
+                Segment(duration: 0.1, frequency: 311, duty: 0.5, crush: 0.85, gate: 120, gain: 0.2)
             ]
         case .failure:
             [
