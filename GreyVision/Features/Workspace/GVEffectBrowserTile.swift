@@ -67,6 +67,9 @@ struct GVEffectTileFace: View {
             }
     }
 
+    /// At most two glyphs per corner, and active is not one of them: the
+    /// conic ring around the face is the sole "this is on" marker, so a tile
+    /// never carries a ring and a check for the same fact.
     private var badges: some View {
         HStack(spacing: 5) {
             if model.cost > 1 {
@@ -79,10 +82,6 @@ struct GVEffectTileFace: View {
             if model.favorite {
                 badge("star.fill")
             }
-            if model.active {
-                badge("checkmark")
-                    .transition(.scale(scale: 0.4).combined(with: .opacity))
-            }
         }
         .padding(4)
         .accessibilityHidden(true)
@@ -90,9 +89,9 @@ struct GVEffectTileFace: View {
 
     private func badge(_ symbol: String) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 7.5, weight: .bold))
+            .font(.system(size: 8.5, weight: .bold))
             .foregroundStyle(GVTheme.bone)
-            .frame(width: 16, height: 16)
+            .frame(width: 18, height: 18)
             .background(.black.opacity(0.55), in: Circle())
             .overlay(Circle().strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
     }
@@ -107,11 +106,11 @@ private struct GVCostPips: View {
             ForEach(0 ..< 3, id: \.self) { index in
                 Capsule()
                     .fill(GVTheme.bone.opacity(index < cost ? 0.95 : 0.25))
-                    .frame(width: 3, height: 6)
+                    .frame(width: 3, height: 7)
             }
         }
         .padding(.horizontal, 4)
-        .frame(height: 16)
+        .frame(height: 18)
         .background(.black.opacity(0.55), in: Capsule())
     }
 }

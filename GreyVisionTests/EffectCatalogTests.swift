@@ -116,6 +116,56 @@ final class EffectCatalogTests: XCTestCase {
         XCTAssertTrue(editor.effectStack.orderedSlots.isEmpty)
     }
 
+    @MainActor
+    func testAuditionSwapsRevertsAndKeepsAsOneUndoStep() {
+        let editor = EffectEditingSession()
+        editor.select(.grain)
+        editor.recordHistory()
+        let before = editor.snapshot
+
+        editor.auditionFromBrowser(.datamosh)
+        XCTAssertTrue(editor.isPreviewing)
+        XCTAssertTrue(editor.isEnabled(.datamosh))
+        XCTAssertFalse(editor.isEnabled(.grain))
+
+        editor.auditionFromBrowser(.trails)
+        XCTAssertTrue(editor.isEnabled(.trails))
+        XCTAssertFalse(editor.isEnabled(.datamosh))
+
+        editor.endPreview()
+        XCTAssertFalse(editor.isPreviewing)
+        XCTAssertEqual(editor.snapshot, before)
+
+        editor.auditionFromBrowser(.datamosh)
+        editor.commitPreview()
+        XCTAssertFalse(editor.isPreviewing)
+        XCTAssertTrue(editor.isEnabled(.datamosh))
+        XCTAssertTrue(editor.undo())
+        XCTAssertFalse(editor.isEnabled(.datamosh))
+        XCTAssertTrue(editor.isEnabled(.grain))
+    }
+
+    @MainActor
+    func testStackedAuditionAccumulatesOverTheStashedComposition() {
+        let editor = EffectEditingSession()
+        editor.select(.grain)
+        editor.recordHistory()
+        editor.setStackArmed(true)
+
+        editor.auditionFromBrowser(.datamosh)
+        XCTAssertTrue(editor.isEnabled(.grain))
+        XCTAssertTrue(editor.isEnabled(.datamosh))
+
+        editor.auditionFromBrowser(.trails)
+        XCTAssertTrue(editor.isEnabled(.trails))
+        XCTAssertTrue(editor.isEnabled(.datamosh))
+
+        editor.endPreview()
+        XCTAssertTrue(editor.isEnabled(.grain))
+        XCTAssertFalse(editor.isEnabled(.trails))
+        XCTAssertFalse(editor.isEnabled(.datamosh))
+    }
+
     func testTemporalOnlyPresetHasAnAccurateSummaryAndRoundTrips() throws {
         var stack = CameraEffectStackParameters()
         stack.reset(.datamosh)
