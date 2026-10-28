@@ -130,6 +130,28 @@ final class AppModel: ObservableObject {
         beginEngineStart()
     }
 
+    /// What the last shared-model import did, for the workspace to say.
+    @Published var sharedModelNotice: String?
+
+    /// Copies a 3D file shared to the app into the AR model library and
+    /// makes it the next thing spawned. In the workspace it opens the AR
+    /// studio straight away; from the splash it waits in the library.
+    func importSharedModel(_ url: URL) {
+        guard ARUserModelStore.supportedExtensions.contains(url.pathExtension.lowercased()) else {
+            sharedModelNotice = "Unsupported file: .\(url.pathExtension)"
+            return
+        }
+        do {
+            let model = try objects.importUserModel(from: url)
+            sharedModelNotice = "\(model.name) added to AR models"
+            if route == .workspace {
+                activateObjectMode()
+            }
+        } catch {
+            sharedModelNotice = error.localizedDescription
+        }
+    }
+
     func activateObjectMode() {
         guard route == .workspace else { return }
         guard objects.capability.isSupported else {

@@ -12,9 +12,9 @@ import Foundation
 ///     post     the boot log types out, [ OK ] on each line
 ///     loading  a Win95-style setup dialog loads codec drivers, stalls
 ///     fail     the dialog quietly reports it cannot continue
-///     crash    a quarter second of hard corruption, then a cut to black —
-///              five seconds of dead screen
-///     fade     the black lifts onto the codec selection splash
+///     crash    a fast digital decay — resolution and bit depth fall away and
+///              the picture dissolves block by block — then a second of black
+///     fade     the codec selection splash fades slowly up out of the black
 ///
 /// Deliberately calm. Constant tearing and colour fringing read as an
 /// effect laid over a fake; a real machine boots cleanly, fails quietly and
@@ -24,21 +24,26 @@ struct GVTerminalBootTimeline {
     static let beepFlash = 0.16
     static let powerStart = 1.95
     static let powerDuration = 0.42
-    static let lineGap = 0.26
-    static let charactersPerSecond = 80.0
-    static let promptHold = 0.45
+    static let lineGap = 0.32
+    /// Typed at a machine's pace, not a paste. The log is the one screen that
+    /// says what this device is, so it has to be readable rather than merely
+    /// watched.
+    static let charactersPerSecond = 52.0
+    /// How long the finished log holds before the setup dialog takes the
+    /// screen away from it.
+    static let promptHold = 1.6
     /// Long on purpose: a real setup bar is something you sit and watch.
     static let loadDuration = 7.0
     /// Fraction of the load at which the bar stops moving for good.
     static let stallAt = 0.8
     static let stallProgress = 0.87
     static let failHold = 1.1
-    /// How long the picture tears itself apart before it cuts out. Short on
-    /// purpose: a crash is a flinch, not a performance.
-    static let glitchDuration = 0.26
-    /// Dead screen between the crash and the fade.
-    static let blackHold = 5.0
-    static let fadeDuration = 1.0
+    /// How long the picture takes to decay to black. Short on purpose: a
+    /// crash is a flinch, not a performance.
+    static let decayDuration = 0.45
+    /// Dead screen between the decay and the fade.
+    static let blackHold = 1.0
+    static let fadeDuration = 2.5
 
     enum Phase: Equatable { case dot, post, loading, fail, crash }
 
@@ -52,7 +57,7 @@ struct GVTerminalBootTimeline {
     var crashStart: Double { failStart + Self.failHold }
 
     var fadeStart: Double {
-        let natural = crashStart + Self.blackHold
+        let natural = crashStart + Self.decayDuration + Self.blackHold
         guard let skippedAt else { return natural }
         return min(natural, skippedAt)
     }
@@ -66,8 +71,8 @@ struct GVTerminalBootTimeline {
         var dot: Double
         /// Beeps fired so far; a change is a cue to sound one.
         var beeps: Int
-        /// The crash corruption: 1 while the picture is breaking, else 0.
-        var glitch: Double
+        /// 0...1 through the crash decay; the picture is gone at 1.
+        var decay: Double
         /// 0...1 through the closing fade onto the splash.
         var fade: Double
         /// Characters revealed per line; `Int.max` once a line is complete.
@@ -101,13 +106,12 @@ struct GVTerminalBootTimeline {
             dot = clamp((time - 0.12) / 0.25) * 0.28
         }
         var power = easeOut(clamp((time - Self.powerStart) / Self.powerDuration))
-        var glitch = 0.0
+        var decay = 0.0
         if phase == .crash {
-            // The picture breaks for a moment, then the signal is simply gone:
-            // no collapse, no afterglow.
-            if time - crashStart < Self.glitchDuration {
-                glitch = 1
-            } else {
+            // The picture decays fast, then the signal is simply gone: no
+            // collapse, no afterglow.
+            decay = clamp((time - crashStart) / Self.decayDuration)
+            if decay >= 1 {
                 power = 0
                 dot = 0
             }
@@ -129,7 +133,7 @@ struct GVTerminalBootTimeline {
             power: power,
             dot: dot,
             beeps: beeps,
-            glitch: glitch,
+            decay: decay,
             fade: fade,
             revealed: revealed,
             statusCount: statusCount,

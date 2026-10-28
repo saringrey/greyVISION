@@ -5,6 +5,13 @@ using namespace metal;
 
 // MARK: - Cold-start CRT terminal
 
+constant float kTerminalBayer[16] = {
+     0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0,
+    12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0,
+     3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0,
+    15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0,
+};
+
 static inline float terminalHash(float2 p) {
     p = fract(p * float2(0.1031, 0.1030));
     p += dot(p, p.yx + 33.33);
@@ -17,14 +24,14 @@ static inline float terminalHash(float2 p) {
 /// `dot` is the centre dot's brightness while `power` is 0 — before the
 /// raster opens, and again as the afterglow once it has switched off.
 /// `power` 0→1 opens the raster from a dot to a line to the full screen.
-/// `glitch` > 0 is the crash: for a few frames bands tear, blocks jump and
-/// the frame inverts or swaps channels, re-rolled at 30 Hz.
+/// `decay` 0→1 is the crash: resolution and bit depth fall away and the
+/// picture dissolves block by block to black.
 ///
 /// Kept calm on purpose: no tears, no colour fringing beyond a hair of
 /// convergence. Busy glitching is what makes a boot screen read as fake.
 [[ stitchable ]]
 half4 terminalBoot(float2 position, SwiftUI::Layer layer, float2 size, float time,
-                   float power, float seed, float dot, float glitch) {
+                   float power, float seed, float dot, float decay) {
     float2 extent = max(size, float2(1.0));
     float2 uv = position / extent;
 
@@ -46,24 +53,20 @@ half4 terminalBoot(float2 position, SwiftUI::Layer layer, float2 size, float tim
     }
     float2 p = (local + 0.5) * extent;
 
-    // The crash: hard, frame-quantised corruption. Still one sample per
-    // pixel — only where it is taken from changes.
-    float crashTick = floor(time * 30.0);
-    float frameRoll = terminalHash(float2(crashTick, 9.0 + seed));
-    float cellRoll = 0.5;
-    if (glitch > 0.0) {
-        float band = floor(uv.y * 14.0);
-        float bandRoll = terminalHash(float2(band, crashTick + seed));
-        p.x += (bandRoll - 0.5) * extent.x * 0.4 * step(0.45, bandRoll);
-        float2 cell = floor(p / 56.0);
-        cellRoll = terminalHash(cell + crashTick * 1.7);
-        if (cellRoll > 0.78) {
-            p += (float2(terminalHash(cell + 3.1), terminalHash(cell + 7.7)) - 0.5) * 140.0;
-        }
-        if (cellRoll < 0.1) {
+    // The crash: a fast digital decay. Resolution halves in discrete steps
+    // and the picture dissolves block by block in a Bayer order — a decoder
+    // losing its data, not noise. Still one sample per pixel.
+    float levels = 256.0;
+    if (decay > 0.0) {
+        float block = exp2(floor(saturate(decay * 1.25) * 5.0));
+        float2 cell = floor(p / block);
+        p = (cell + 0.5) * block;
+        int2 bayer = int2(fmod(cell + seed, 4.0));
+        float threshold = kTerminalBayer[bayer.y * 4 + bayer.x];
+        if (threshold < saturate((decay - 0.35) / 0.65)) {
             return half4(0, 0, 0, 1);
         }
-        p.x = fmod(p.x + extent.x * 2.0, extent.x);
+        levels = mix(32.0, 3.0, saturate(decay * 1.3));
     }
 
     // Outside the layer the sample is undefined.
@@ -71,13 +74,8 @@ half4 terminalBoot(float2 position, SwiftUI::Layer layer, float2 size, float tim
     // text from the raster on the iOS 26 simulator while plain shapes survive.
     p = clamp(p, float2(0.5), extent - 0.5);
     half3 color = layer.sample(p).rgb;
-    if (glitch > 0.0) {
-        if (frameRoll > 0.62) {
-            color = 1.0h - color;
-        } else if (frameRoll < 0.3) {
-            color = color.brg * half3(1.4, 0.6, 1.2);
-        }
-        color *= half(0.75 + 0.6 * cellRoll);
+    if (levels < 256.0) {
+        color = floor(color * half(levels) + 0.5h) / half(levels);
     }
     // While the raster is still a line it reads as a light source, not type.
     float flare = pow(1.0 - saturate(power), 3.0);

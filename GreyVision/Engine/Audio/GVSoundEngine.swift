@@ -7,11 +7,12 @@ import Foundation
 /// small PCM buffer and then replayed, so the palette is tuned by editing
 /// numbers rather than re-exporting files.
 ///
-/// The palette is deliberately narrow: hard-edged square waves, abrupt gates
-/// and bit-crushed noise. No decay envelopes, no sine tones, nothing that
-/// resolves musically — a terminal acknowledging a keystroke, not a UI chime.
-/// Sound is reserved for the two selections that change what the whole
-/// interface is showing; everything else stays silent so these still register.
+/// The palette is deliberately narrow: square waves, abrupt gates and
+/// bit-crushed noise, rolled off at the top so they read as a small speaker
+/// in a room rather than as a synth chip. Nothing resolves musically — a
+/// terminal acknowledging a keystroke, not a UI chime. Sound is reserved for
+/// the two selections that change what the whole interface is showing;
+/// everything else stays silent so these still register.
 @MainActor
 final class GVSoundEngine {
     static let shared = GVSoundEngine()
@@ -30,9 +31,16 @@ final class GVSoundEngine {
         case accept
         /// Cold-start POST beep: one bare PC-speaker tone.
         case postBeep
-        /// The cold start's setup failure: three soft steps down, each a
-        /// little more crushed, the sound of a decoder running out of data.
-        case failure
+        /// The cold start's boot log being typed: a mechanical switch — a
+        /// sharp click over a short plastic thock. Two voicings alternate so
+        /// a run of keys never sounds like one sample on repeat.
+        case keyClick
+        case keyClickAlt
+        /// The heavier keypress that lands each line's [ OK ].
+        case keyReturn
+        /// The setup failure: a two-chord system error, bright then falling,
+        /// in the manner of a 90s desktop OS refusing to continue.
+        case systemError
         /// The cold start's crash: a quarter second of chopped, crushed
         /// digital noise that stops dead.
         case crash
@@ -390,6 +398,14 @@ final class GVSoundEngine {
         /// Amplitude gate rate in Hz. Non-zero chops the segment into a buzz.
         var gate: Float = 0
         var gain: Float = 0.5
+        /// A second square voiced with the first, for chords.
+        var harmony: Float = 0
+        /// Exponential decay rate per second; 0 holds the level flat.
+        var decay: Float = 0
+        /// Low-pass cutoff in Hz. 0 leaves the waveform alone. Rolling the
+        /// top off is what stops a hard square from sounding like a toy: no
+        /// real speaker has edges that sharp.
+        var cutoff: Float = 0
     }
 
     private func segments(for cue: Cue) -> [Segment] {
@@ -398,54 +414,78 @@ final class GVSoundEngine {
             // A pop, not a beep. Short enough that it reads as contact rather
             // than as a tone, and quiet enough to disappear under the camera.
             [
-                Segment(duration: 0.010, frequency: 740, duty: 0.30, gain: 0.13),
-                Segment(duration: 0.014, frequency: 1_180, duty: 0.26, crush: 0.22, gain: 0.11)
+                Segment(duration: 0.010, frequency: 740, duty: 0.30, gain: 0.13, decay: 90, cutoff: 2600),
+                Segment(duration: 0.014, frequency: 1180, duty: 0.26, crush: 0.22, gain: 0.11, cutoff: 2600)
             ]
         case .menu:
             [
-                Segment(duration: 0.012, frequency: 960, duty: 0.32, crush: 0.14, gain: 0.10)
+                Segment(duration: 0.012, frequency: 960, duty: 0.32, crush: 0.14, gain: 0.10, cutoff: 2600)
             ]
         case .keypad:
             // A keyboard click: tiny transient over a short body. Crisper and
             // quieter than the old crushed pair — a keypress, not a modem.
             [
-                Segment(duration: 0.0025, frequency: 4200, duty: 0.5, gain: 0.05),
-                Segment(duration: 0.010, frequency: 1150, duty: 0.45, crush: 0.08, gain: 0.075)
+                Segment(duration: 0.0025, frequency: 4200, duty: 0.5, gain: 0.05, cutoff: 3000),
+                Segment(duration: 0.010, frequency: 1150, duty: 0.45, crush: 0.08, gain: 0.075, cutoff: 3000)
             ]
         case .accept:
             // An unlock: bolt thud, mechanism settle, latch note.
             [
-                Segment(duration: 0.018, frequency: 150, duty: 0.5, gain: 0.20),
+                Segment(duration: 0.018, frequency: 150, duty: 0.5, gain: 0.20, cutoff: 1400),
                 Segment(duration: 0.004, frequency: 0),
-                Segment(duration: 0.028, frequency: 96, duty: 0.55, gain: 0.17),
+                Segment(duration: 0.028, frequency: 96, duty: 0.55, gain: 0.17, cutoff: 1400),
                 Segment(duration: 0.006, frequency: 0),
-                Segment(duration: 0.055, frequency: 660, duty: 0.35, crush: 0.06, gain: 0.13)
+                Segment(duration: 0.055, frequency: 660, duty: 0.35, crush: 0.06, gain: 0.13, decay: 22, cutoff: 1800)
             ]
         case .postBeep:
+            // A bare PC speaker, not a synth beep: the tone falls away and the
+            // top end is rolled off, so the cone thuds instead of chirping.
             [
-                Segment(duration: 0.11, frequency: 988, duty: 0.5, gain: 0.2)
+                Segment(duration: 0.11, frequency: 988, duty: 0.5, gain: 0.2, decay: 7, cutoff: 2200)
             ]
         case .crash:
+            // Digital failure keeps its brightness and its ugliness: this one
+            // is supposed to sound like a picture coming apart.
             [
                 Segment(duration: 0.06, frequency: 1_760, duty: 0.3, crush: 0.7, gate: 90, gain: 0.2),
                 Segment(duration: 0.08, frequency: 0, crush: 1, gate: 60, gain: 0.22),
                 Segment(duration: 0.1, frequency: 311, duty: 0.5, crush: 0.85, gate: 120, gain: 0.2)
             ]
-        case .failure:
+        case .keyClick:
+            // Plastic over a hollow case: a filtered transient, not a hiss,
+            // over a low body that dies inside a few milliseconds.
             [
-                Segment(duration: 0.11, frequency: 494, duty: 0.5, gain: 0.13),
-                Segment(duration: 0.03, frequency: 0),
-                Segment(duration: 0.11, frequency: 392, duty: 0.45, crush: 0.12, gain: 0.11),
-                Segment(duration: 0.03, frequency: 0),
-                Segment(duration: 0.2, frequency: 294, duty: 0.4, crush: 0.3, gain: 0.09)
+                Segment(duration: 0.0016, frequency: 0, crush: 0.75, gain: 0.17, cutoff: 2600),
+                Segment(duration: 0.011, frequency: 196, duty: 0.5, crush: 0.25, gain: 0.1, decay: 230, cutoff: 2600),
+                Segment(duration: 0.008, frequency: 132, duty: 0.5, gain: 0.05, decay: 300, cutoff: 2600)
+            ]
+        case .keyClickAlt:
+            [
+                Segment(duration: 0.0013, frequency: 0, crush: 0.75, gain: 0.15, cutoff: 2600),
+                Segment(duration: 0.012, frequency: 208, duty: 0.46, crush: 0.3, gain: 0.09, decay: 240, cutoff: 2600),
+                Segment(duration: 0.007, frequency: 146, duty: 0.5, gain: 0.045, decay: 320, cutoff: 2600)
+            ]
+        case .keyReturn:
+            [
+                Segment(duration: 0.0022, frequency: 0, crush: 0.8, gain: 0.2, cutoff: 1900),
+                Segment(duration: 0.022, frequency: 118, duty: 0.5, crush: 0.3, gain: 0.16, decay: 120, cutoff: 1900),
+                Segment(duration: 0.018, frequency: 88, duty: 0.5, gain: 0.08, decay: 160, cutoff: 1900)
+            ]
+        case .systemError:
+            // Not the bright two-note jingle every 90s desktop played on
+            // failure. A dull sour fall, low and unresolving: the machine
+            // cannot continue, and that is all it says.
+            [
+                Segment(duration: 0.16, frequency: 233, duty: 0.5, gain: 0.12, decay: 5, cutoff: 950),
+                Segment(duration: 0.55, frequency: 196, duty: 0.5, crush: 0.12, gain: 0.12, decay: 4.2, cutoff: 950)
             ]
         case .error:
             // Low dissonant buzz, hard-gated. Unmistakably a refusal, and
             // held under the old level so it corrects rather than punishes.
             [
-                Segment(duration: 0.09, frequency: 196, duty: 0.5, gate: 60, gain: 0.24),
+                Segment(duration: 0.09, frequency: 196, duty: 0.5, gate: 60, gain: 0.24, cutoff: 1_200),
                 Segment(duration: 0.02, frequency: 0),
-                Segment(duration: 0.11, frequency: 174, duty: 0.5, crush: 0.3, gate: 48, gain: 0.24)
+                Segment(duration: 0.11, frequency: 174, duty: 0.5, crush: 0.3, gate: 48, gain: 0.24, cutoff: 1_200)
             ]
         }
     }
@@ -465,10 +505,14 @@ final class GVSoundEngine {
 
         var noiseState: UInt32 = 0x9E37_79B9
         var cursor = 0
+        /// One-pole filter state, kept across segments so a segment boundary
+        /// does not click.
+        var filtered: Float = 0
 
         for part in parts {
             let frames = Int(part.duration * Double(sampleRate))
             var phase: Float = 0
+            var harmonyPhase: Float = 0
             var held: Float = 0
 
             for frame in 0 ..< frames where cursor + frame < Int(frameCount) {
@@ -480,6 +524,11 @@ final class GVSoundEngine {
                     // Hard square: no interpolation, no smoothing. The abrupt
                     // edge is the whole character.
                     value = phase < part.duty ? 1 : -1
+                }
+                if part.harmony > 0 {
+                    harmonyPhase += part.harmony / sampleRate
+                    if harmonyPhase >= 1 { harmonyPhase -= 1 }
+                    value = (value + (harmonyPhase < 0.5 ? 1 : -1)) * 0.5
                 }
 
                 if part.crush > 0 {
@@ -497,6 +546,21 @@ final class GVSoundEngine {
                 if part.gate > 0 {
                     let t = Float(frame) / sampleRate
                     value *= fmod(t * part.gate, 1) < 0.5 ? 1 : 0
+                }
+
+                if part.decay > 0 {
+                    value *= exp(-part.decay * Float(frame) / sampleRate)
+                }
+
+                // One-pole low-pass. A hard square has edges no real speaker
+                // has; rolling the top off is what keeps these cues from
+                // sounding like a synth chip.
+                if part.cutoff > 0 {
+                    let coefficient = 1 - exp(-2 * Float.pi * part.cutoff / sampleRate)
+                    filtered += coefficient * (value - filtered)
+                    value = filtered
+                } else {
+                    filtered = value
                 }
 
                 // Only the last two milliseconds are ramped, purely to stop the

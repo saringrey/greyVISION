@@ -91,15 +91,11 @@ private struct WorkspaceLiveAdjustments: View {
                         onExitDepth: appModel.deactivateDepthMode
                     )
                 } else if appModel.sourceMode == .objects {
-                    ARObjectsParameterDeck(
-                        parameters: $objectsRuntime.parameters,
-                        objectCount: objectsRuntime.objects.count,
-                        status: objectsRuntime.snapshot.formatLabel,
-                        isRecording: objectsRuntime.isRecording,
+                    GVARStudioDeck(
+                        runtime: objectsRuntime,
                         onRecordToggle: {
                             recording.toggleRecording(cameraRuntime: cameraRuntime, objectsRuntime: objectsRuntime, sourceMode: appModel.sourceMode)
                         },
-                        onClear: { objectsRuntime.clearObjects() },
                         onExit: appModel.deactivateObjectMode,
                         onClose: { hidesSourceControls = true }
                     )

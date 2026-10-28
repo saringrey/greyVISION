@@ -2757,7 +2757,13 @@ fragment half4 gvCameraStillFragment(
 
 struct GVARBackgroundUniforms {
     float4 viewport;  // xy = viewport size, zw = source image size
-    uint4 options;    // y = sensor orientation (CapturedFrameOrientation raw value)
+    uint4 options;    // x = depth flags (1 scene, 2 person), y = sensor orientation
+    float4 depthProjection; // projection c2.z, c3.z, c2.w, c3.w
+};
+
+struct GVARBackgroundOut {
+    float4 color [[color(0)]];
+    float depth [[depth(any)]];
 };
 
 struct GVARBackgroundRaster {
@@ -2807,9 +2813,19 @@ vertex GVARBackgroundRaster gvARBackgroundVertex(uint vertexID [[vertex_id]]) {
 /// Maps the sensor-oriented camera image onto the viewport with the same
 /// aspect-fill crop and orientation rotation the camera preview applies, so
 /// the 3D projection lines up with the live image.
-fragment float4 gvARBackgroundFragment(
+///
+/// It also writes the real world's depth into the depth buffer — LiDAR where
+/// the device has it, and people wherever ARKit segments them — converted
+/// through the same projection the objects use. Placed objects then hide
+/// behind anything physically nearer through the ordinary depth test.
+/// Where depth is unknown the background writes the far plane, so objects
+/// draw over it as before.
+fragment GVARBackgroundOut gvARBackgroundFragment(
     GVARBackgroundRaster input [[stage_in]],
     texture2d<half, access::sample> sourceTexture [[texture(0)]],
+    texture2d<float, access::sample> sceneDepth [[texture(1)]],
+    texture2d<float, access::sample> personDepth [[texture(2)]],
+    texture2d<half, access::sample> personMask [[texture(3)]],
     constant GVARBackgroundUniforms &uniforms [[buffer(0)]]
 ) {
     const uint orientation = uniforms.options.y;
@@ -2841,7 +2857,29 @@ fragment float4 gvARBackgroundFragment(
             break;
     }
     const float4 sampled = float4(sourceTexture.sample(gvCameraLinearSampler, sensorUV));
-    return float4(sampled.xyz, 1.0);
+
+    float metres = 0.0;
+    const uint flags = uniforms.options.x;
+    if ((flags & 1u) != 0u) {
+        metres = sceneDepth.sample(gvCameraLinearSampler, sensorUV).r;
+    }
+    if ((flags & 2u) != 0u && personMask.sample(gvCameraLinearSampler, sensorUV).r > 0.5h) {
+        const float person = personDepth.sample(gvCameraLinearSampler, sensorUV).r;
+        metres = metres > 0.0 ? min(metres, person) : person;
+    }
+    float depth = 1.0;
+    if (metres > 0.05 && isfinite(metres)) {
+        // A point straight ahead at `metres`: view-space z = -metres.
+        const float4 p = uniforms.depthProjection;
+        const float clipZ = p.x * -metres + p.y;
+        const float clipW = p.z * -metres + p.w;
+        depth = saturate(clipZ / max(clipW, 1e-4));
+    }
+
+    GVARBackgroundOut output;
+    output.color = float4(sampled.xyz, 1.0);
+    output.depth = depth;
+    return output;
 }
 
 vertex GVARObjectRaster gvARObjectVertex(

@@ -118,7 +118,7 @@ struct GVSplashChoiceRail: View {
                     .minimumScaleFactor(0.7)
                 Image(systemName: !option.enabled ? "lock" : (selected ? "checkmark.circle.fill" : "circle"))
                     .font(.caption2)
-                    .foregroundStyle(selected ? GVSplashPalette.cyan : GVTheme.bone)
+                    .foregroundStyle(selected ? GVSplashPalette.glow : GVTheme.bone)
                     .opacity(selected ? 1 : 0.60)
                     .accessibilityHidden(true)
             }

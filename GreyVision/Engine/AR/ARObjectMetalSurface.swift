@@ -62,6 +62,7 @@ struct ARObjectMetalSurface: UIViewRepresentable {
         context.coordinator.renderer?.update(
             objects: runtime.objects,
             parameters: runtime.parameters,
+            occlusion: runtime.occlusionEnabled,
             selectedObjectID: runtime.selectedObjectID,
             orientation: runtime.snapshot.orientation,
             recording: runtime.activeRecordingSession
@@ -239,6 +240,7 @@ extension ARObjectMetalView: UIGestureRecognizerDelegate {
 private struct ARObjectSettings {
     let objects: [ARObjectDescriptor]
     let parameters: ARObjectParameters
+    let occlusion: Bool
     let selectedObjectID: UUID?
     let orientation: CapturedFrameOrientation
     let recording: GVRealtimeRecordingSession?
@@ -246,7 +248,11 @@ private struct ARObjectSettings {
 
 private struct ARBackgroundUniforms {
     var viewport: SIMD4<Float>
+    /// x = orientation-independent flags: 1 scene depth, 2 person depth.
     var options: SIMD4<UInt32>
+    /// The projection's depth terms (c2.z, c3.z, c2.w, c3.w), so metric depth
+    /// lands in the depth buffer exactly where the objects' own depth does.
+    var depthProjection: SIMD4<Float>
 }
 
 private struct ARObjectUniforms {
@@ -266,11 +272,18 @@ private struct ARConversionUniforms {
 private final class ARObjectFrameLease: @unchecked Sendable {
     let luma: MTLTexture
     let chroma: MTLTexture
+    let sceneDepth: MTLTexture?
+    let personDepth: MTLTexture?
+    let personMask: MTLTexture?
     let leases: [CVMetalTexture]
 
-    init(luma: MTLTexture, chroma: MTLTexture, leases: [CVMetalTexture]) {
+    init(luma: MTLTexture, chroma: MTLTexture, sceneDepth: MTLTexture?, personDepth: MTLTexture?,
+         personMask: MTLTexture?, leases: [CVMetalTexture]) {
         self.luma = luma
         self.chroma = chroma
+        self.sceneDepth = sceneDepth
+        self.personDepth = personDepth
+        self.personMask = personMask
         self.leases = leases
     }
 }
@@ -292,7 +305,22 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
 
     private var objects: [ARObjectDescriptor] = []
     private var parameters = ARObjectParameters.defaults
+    private var occlusion = true
     private var selectedObjectID: UUID?
+    /// The last frame's depth textures, kept between camera frames so the
+    /// occlusion does not flicker off on draws without a new ARFrame.
+    private var depthLease: ARObjectFrameLease?
+    /// Bound when a depth source is absent, so the shader never reads an
+    /// unbound slot; the flags tell it not to trust them.
+    private lazy var emptyDepthTexture: MTLTexture? = Self.placeholder(device: device, format: .r32Float)
+    private lazy var emptyMaskTexture: MTLTexture? = Self.placeholder(device: device, format: .r8Unorm)
+
+    private static func placeholder(device: MTLDevice, format: MTLPixelFormat) -> MTLTexture? {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: 1, height: 1, mipmapped: false)
+        descriptor.usage = .shaderRead
+        descriptor.storageMode = .shared
+        return device.makeTexture(descriptor: descriptor)
+    }
     private var orientation = CapturedFrameOrientation.portrait
     private var latestFrame: ARObjectFrame?
     private var backgroundTexture: MTLTexture?
@@ -362,7 +390,9 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
 
         let backgroundDepthDescriptor = MTLDepthStencilDescriptor()
         backgroundDepthDescriptor.depthCompareFunction = .always
-        backgroundDepthDescriptor.isDepthWriteEnabled = false
+        // The background writes the real world's depth (far where unknown),
+        // which is what lets placed objects pass behind real things.
+        backgroundDepthDescriptor.isDepthWriteEnabled = true
 
         let objectDepthDescriptor = MTLDepthStencilDescriptor()
         objectDepthDescriptor.depthCompareFunction = .lessEqual
@@ -401,6 +431,7 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
     func update(
         objects: [ARObjectDescriptor],
         parameters: ARObjectParameters,
+        occlusion: Bool,
         selectedObjectID: UUID?,
         orientation: CapturedFrameOrientation,
         recording: GVRealtimeRecordingSession?
@@ -408,6 +439,7 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         settingsLock.withLock {
             self.objects = objects
             self.parameters = parameters.sanitized
+            self.occlusion = occlusion
             self.selectedObjectID = selectedObjectID
             self.orientation = orientation
             recordingSession = recording
@@ -416,6 +448,7 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
 
     func shutdown() {
         latestFrame = nil
+        depthLease = nil
         backgroundTexture = nil
         recordingSession = nil
         meshes.removeAll()
@@ -433,6 +466,7 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
             ARObjectSettings(
                 objects: objects,
                 parameters: parameters,
+                occlusion: occlusion,
                 selectedObjectID: selectedObjectID,
                 orientation: orientation,
                 recording: recordingSession
@@ -444,6 +478,7 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
             latestFrame = frame
             if let textures = makeTextures(frame: frame) {
                 frameLease = textures
+                depthLease = textures
             }
         }
 
@@ -494,6 +529,10 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
             cameraTransform.columns.3.z
         )
 
+        // Objects take the room's light: dimmer in a dark room, a little
+        // brighter in daylight, so they sit in the scene instead of glowing
+        // at one fixed level over it. Emissive glow is left alone.
+        let roomLight = latestFrame.ambientIntensity.map { min(max($0 / 1000, 0.35), 1.25) } ?? 1
         let audioSnap = audioMailbox.latest
         let audioLevel = Float(settings.parameters.audioReactivity)
             * min(max(audioSnap.rms * 2.2, audioSnap.peak), 1.5)
@@ -506,6 +545,13 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         // Live camera background, drawn with depth always so geometry sits on top.
         encoder.setRenderPipelineState(backgroundPipeline)
         encoder.setDepthStencilState(backgroundDepthState)
+        // Occlusion: the background also writes the real world's depth, so
+        // the objects' ordinary depth test hides them behind whatever is
+        // physically nearer — a pole, a couch, a person.
+        let depthTextures = settings.occlusion ? depthLease : nil
+        var depthFlags: UInt32 = 0
+        if depthTextures?.sceneDepth != nil { depthFlags |= 1 }
+        if depthTextures?.personDepth != nil, depthTextures?.personMask != nil { depthFlags |= 2 }
         var backgroundUniforms = ARBackgroundUniforms(
             viewport: SIMD4<Float>(
                 Float(view.drawableSize.width),
@@ -513,9 +559,14 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 Float(backgroundTexture.width),
                 Float(backgroundTexture.height)
             ),
-            options: SIMD4<UInt32>(0, UInt32(settings.orientation.rawValue), 0, 0)
+            options: SIMD4<UInt32>(depthFlags, UInt32(settings.orientation.rawValue), 0, 0),
+            depthProjection: SIMD4(projection.columns.2.z, projection.columns.3.z,
+                                   projection.columns.2.w, projection.columns.3.w)
         )
         encoder.setFragmentTexture(backgroundTexture, index: 0)
+        encoder.setFragmentTexture(depthTextures?.sceneDepth ?? emptyDepthTexture, index: 1)
+        encoder.setFragmentTexture(depthTextures?.personDepth ?? emptyDepthTexture, index: 2)
+        encoder.setFragmentTexture(depthTextures?.personMask ?? emptyMaskTexture, index: 3)
         encoder.setFragmentBytes(
             &backgroundUniforms,
             length: MemoryLayout<ARBackgroundUniforms>.stride,
@@ -544,7 +595,7 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
                 glowScaled = max(object.glow * 2.4, 1.7)
                 materialRaw = ARObjectMaterialMode.solidRim.rawValue
             } else {
-                tintRGB = ARObjectPalette.resolveTint(for: object)
+                tintRGB = ARObjectPalette.resolveTint(for: object) * roomLight
                 glowScaled = object.glow
                 materialRaw = object.material.rawValue
             }
@@ -778,10 +829,25 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
         else {
             return nil
         }
+        var leases = [lumaLease.0, chromaLease.0]
+        func single(_ buffer: CVPixelBuffer?, _ format: MTLPixelFormat) -> MTLTexture? {
+            guard let buffer,
+                  let made = makeTexture(pixelBuffer: buffer, pixelFormat: format, plane: 0,
+                                         width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+            else { return nil }
+            leases.append(made.0)
+            return made.1
+        }
+        let sceneDepth = single(frame.sceneDepth, .r32Float)
+        let personDepth = single(frame.personDepth, .r32Float)
+        let personMask = single(frame.personMask, .r8Unorm)
         return ARObjectFrameLease(
             luma: lumaLease.1,
             chroma: chromaLease.1,
-            leases: [lumaLease.0, chromaLease.0]
+            sceneDepth: sceneDepth,
+            personDepth: personDepth,
+            personMask: personMask,
+            leases: leases
         )
     }
 

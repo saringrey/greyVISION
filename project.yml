@@ -107,6 +107,23 @@ targets:
         NSPhotoLibraryAddUsageDescription: grey//VISION saves your captures straight to your photo library.
         NSPhotoLibraryUsageDescription: grey//VISION saves your captures straight to your photo library.
         ITSAppUsesNonExemptEncryption: false
+        # 3D models open straight into the AR studio from Files, Safari
+        # downloads, AirDrop and Mail. Files are copied into the app's model
+        # library, never edited in place.
+        LSSupportsOpeningDocumentsInPlace: false
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: 3D Model
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.pixar.universal-scene-description-mobile
+              - com.pixar.universal-scene-description
+              - public.geometry-definition-format
+              - public.standard-tesselated-geometry-format
+              - public.polygon-file-format
+              - com.apple.scenekit.scene
+              - org.khronos.collada.digital-asset-exchange
+              - public.3d-content
     settings:
       base:
         PRODUCT_NAME: GreyVision

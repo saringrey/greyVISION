@@ -28,7 +28,7 @@ struct GVEffectDashboardSelector: View {
 
     static let scopes: [WorkspaceDockCategory] = [.all, .active, .favorites, .recents]
     static let families: [WorkspaceDockCategory] = WorkspaceDockCategory.shelfCategories
-    static let modes: [WorkspaceDockCategory] = [.blobs, .spatial]
+    static let modes: [WorkspaceDockCategory] = [.objects, .spatial, .blobs]
     private static let rowHeight: CGFloat = 32
 
     var body: some View {
@@ -157,27 +157,12 @@ struct GVEffectDashboardSelector: View {
     }
 
     private func modeButton(_ mode: WorkspaceDockCategory) -> some View {
-        let isSelected = mode == selected
-        let readout = readouts[mode] ?? GVEffectShelfReadout(count: 0, live: false)
-        return Button { onSelect(mode) } label: {
-            HStack(spacing: 6) {
-                Image(systemName: mode.symbol ?? "circle")
-                    .font(.system(size: 11, weight: .semibold))
-                Text(mode.displayLabel.uppercased())
-                    .font(GVTheme.mono(10, isSelected ? .semibold : .medium))
-                if readout.live {
-                    Circle().fill(isSelected ? Color.black : Color.mint).frame(width: 4, height: 4)
-                }
-            }
-            .foregroundStyle(isSelected ? Color.black : GVTheme.bone.opacity(0.74))
-            .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
-            .background { plate(selected: isSelected) }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(GVPressStyle(scale: 0.94))
-        .accessibilityLabel(mode.displayLabel)
-        .accessibilityValue(isSelected ? "selected" : "")
-        .accessibilityIdentifier("workspace.browser.category.\(mode.rawValue)")
+        GVSpecialModeButton(
+            mode: mode,
+            selected: mode == selected,
+            readout: readouts[mode] ?? GVEffectShelfReadout(count: 0, live: false),
+            action: { onSelect(mode) }
+        )
     }
 
     /// One sliding bone plate marks the selection across the segment and the
@@ -195,5 +180,67 @@ struct GVEffectDashboardSelector: View {
                 .fill(Color.white.opacity(0.04))
                 .overlay(shape.strokeBorder(Color.white.opacity(0.07), lineWidth: 0.75))
         }
+    }
+}
+
+/// Tracking, LiDAR and AR are capture modes, not effects — the heavy
+/// hitters. They share one size and say what they are quietly: each carries
+/// its own colour in its glyph, a thin coloured edge and a faint tint, and a
+/// live dot when running. Selected, they take the same white plate as every
+/// other selector key, with the glyph keeping its colour.
+private struct GVSpecialModeButton: View {
+    let mode: WorkspaceDockCategory
+    let selected: Bool
+    let readout: GVEffectShelfReadout
+    let action: () -> Void
+
+    /// Acid for tracking (the instrument's "armed"), scanner blue for LiDAR,
+    /// violet for AR — distinct, and never louder than the white type.
+    private var accent: Color {
+        switch mode {
+        case .blobs: GVTheme.acid
+        case .spatial: Color(red: 0.32, green: 0.78, blue: 1.0)
+        default: Color(red: 0.76, green: 0.52, blue: 1.0)
+        }
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: mode.symbol ?? "circle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(selected ? accent.mix(with: .black, by: 0.35) : accent)
+                Text(mode.displayLabel.uppercased())
+                    .font(GVTheme.mono(10.5, selected ? .bold : .semibold))
+                    .tracking(0.8)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .foregroundStyle(selected ? Color.black : GVTheme.bone.opacity(0.85))
+                if readout.live {
+                    Circle()
+                        .fill(accent)
+                        .frame(width: 5, height: 5)
+                        .shadow(color: accent.opacity(0.8), radius: 3)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background {
+                if selected {
+                    shape.fill(GVTheme.bone).shadow(color: .white.opacity(0.25), radius: 8)
+                } else {
+                    shape.fill(accent.opacity(0.07))
+                }
+            }
+            .overlay {
+                shape.strokeBorder(accent.opacity(selected ? 0 : 0.42), lineWidth: 0.9)
+            }
+            .contentShape(shape)
+        }
+        .buttonStyle(GVPressStyle(scale: 0.95))
+        .accessibilityLabel(mode.displayLabel)
+        .accessibilityValue([selected ? "selected" : nil, readout.live ? "live" : nil].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityIdentifier("workspace.browser.category.\(mode.rawValue)")
     }
 }

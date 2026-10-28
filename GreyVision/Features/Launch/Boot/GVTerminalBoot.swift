@@ -3,8 +3,8 @@ import SwiftUI
 /// The cold-start sequence: a lone dot beeps three times, a CRT terminal
 /// powers on and POSTs the device, a Win95-style setup dialog stalls loading
 /// codec drivers and quietly reports it cannot continue, the picture
-/// glitches out in a flinch and cuts to black, and after five seconds the
-/// codec selection splash fades up.
+/// digitally decays to black in a flinch, and after a second of black the
+/// codec selection splash fades slowly up.
 ///
 /// Everything on screen — type, HUD and black field — is one layer run
 /// through `terminalBoot` in TerminalBootShaders.metal, so power-on, tears,
@@ -48,7 +48,7 @@ struct GVTerminalBoot: View {
                     content.layerEffect(
                         ShaderLibrary.terminalBoot(
                             .float2(proxy.size), .float(Float(time)), .float(Float(frame.power)),
-                            .float(seed), .float(Float(frame.dot)), .float(Float(frame.glitch))
+                            .float(seed), .float(Float(frame.dot)), .float(Float(frame.decay))
                         ),
                         maxSampleOffset: .zero
                     )
@@ -66,8 +66,17 @@ struct GVTerminalBoot: View {
                 .onChange(of: frame.beeps) { _, beeps in
                     if beeps > 0 { GVSoundEngine.shared.play(.postBeep) }
                 }
+                // A mechanical key every few characters typed: sparse enough to
+                // read as someone working a keyboard rather than as a toy
+                // machine-gun, and slow enough to stay under the log.
+                .onChange(of: Self.typedCount(frame, lengths: lengths) / 4) { _, stroke in
+                    GVSoundEngine.shared.play(stroke.isMultiple(of: 2) ? .keyClick : .keyClickAlt)
+                }
+                .onChange(of: frame.statusCount) { _, count in
+                    if count > 0 { GVSoundEngine.shared.play(.keyReturn) }
+                }
                 .onChange(of: frame.phase) { _, phase in
-                    if phase == .fail { GVSoundEngine.shared.play(.failure) }
+                    if phase == .fail { GVSoundEngine.shared.play(.systemError) }
                     if phase == .crash { GVSoundEngine.shared.play(.crash) }
                 }
         }
@@ -165,6 +174,9 @@ struct GVTerminalBoot: View {
                         .foregroundStyle(color(line.status))
                 }
             }
+            // The masthead sits centred over the left-aligned log, the way a
+            // BIOS banner heads its POST.
+            .frame(maxWidth: .infinity, alignment: line.style == .title || line.style == .subtitle ? .center : .leading)
         }
     }
 
@@ -236,6 +248,11 @@ struct GVTerminalBoot: View {
             .padding(.bottom, bottom + 8)
         }
         .frame(width: size.width, height: size.height)
+    }
+
+    /// Characters on screen across the whole log, for the key sounds.
+    static func typedCount(_ frame: GVTerminalBootTimeline.Frame, lengths: [Int]) -> Int {
+        zip(frame.revealed, lengths).reduce(0) { $0 + min($1.0, $1.1) }
     }
 
     static func timecode(_ time: Double) -> String {

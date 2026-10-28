@@ -608,6 +608,11 @@ struct WorkspaceView: View {
         .environmentObject(decay)
         .environmentObject(toasts)
         .environmentObject(audioArmPolicy)
+        .onChange(of: appModel.sharedModelNotice, initial: true) { _, notice in
+            guard let notice else { return }
+            toasts.show(notice)
+            appModel.sharedModelNotice = nil
+        }
         .onAppear {
             refreshAmbientSampling()
             if !preferences.coachSeen {
@@ -1207,7 +1212,7 @@ private extension WorkspaceView {
         usesCharcoalPlate _: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        let glyph: Color = active ? Color.white : GVTheme.bone.opacity(0.62)
+        let glyph: Color = active ? Color.black : GVTheme.bone.opacity(0.8)
 
         return Button {
             action()
@@ -1230,14 +1235,17 @@ private extension WorkspaceView {
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
         func makeBody(configuration: Configuration) -> some View {
+            let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+            // The same dithered black-and-white plate as the dock; on, it
+            // fills white like every other selected control.
             configuration.label
-                .gvGlassChip(radius: 12, active: active || configuration.isPressed, tint: .white)
-                .frame(width: 45, height: 44)
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(active ? Color.white.opacity(0.55) : Color.white.opacity(0.06))
-                        .frame(height: active ? 1 : GVMetrics.hairline)
+                .background {
+                    if active {
+                        shape.fill(GVTheme.bone).shadow(color: .white.opacity(0.35), radius: 8)
+                    }
                 }
+                .gvChromePlate(shape)
+                .frame(width: 45, height: 44)
                 .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
                 .brightness(configuration.isPressed ? 0.02 : 0)
                 .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
@@ -1293,268 +1301,177 @@ private extension WorkspaceView {
 
     func cameraControlDeck(geometry: GeometryProxy) -> some View {
         let availableWidth = geometry.size.width - 20
-        let alternateMode = appModel.sourceMode == .lidar || appModel.sourceMode == .objects
-        let deckWidth = alternateMode ? min(260, availableWidth) : min(360, availableWidth)
-
-        return VStack(spacing: 0) {
+        return Group {
             if appModel.sourceMode == .lidar {
-                VStack(spacing: 10) {
-                    Text("LiDAR Active · Camera controls locked")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(GVTheme.bone.opacity(0.75))
-                        .multilineTextAlignment(.center)
-                    topActionButton("Return to Camera", symbol: "camera.aperture", detail: "STOP ARKIT") {
-                        appModel.deactivateDepthMode()
-                    }
+                alternateSourceConsole(title: "LIDAR", status: "CAMERA CONTROLS LOCKED") {
+                    appModel.deactivateDepthMode()
                 }
-                .padding(13)
             } else if appModel.sourceMode == .objects {
-                VStack(spacing: 10) {
-                    Text("AR Objects Active · Tap preview to place")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(GVTheme.bone.opacity(0.75))
-                        .multilineTextAlignment(.center)
-                    topActionButton("Return to Camera", symbol: "camera.aperture", detail: "STOP ARKIT") {
-                        appModel.deactivateObjectMode()
-                    }
+                alternateSourceConsole(title: "AR OBJECTS", status: "TAP PREVIEW TO PLACE") {
+                    appModel.deactivateObjectMode()
                 }
-                .padding(13)
             } else {
                 CameraControlsView()
-                    .frame(width: max(0, deckWidth - 20))
-                    .padding(.horizontal, 10)
             }
         }
-        .gvGlassPanel(radius: 14, tint: Color.black.opacity(0.34))
-        .frame(width: deckWidth, alignment: .center)
+        .frame(width: min(380, availableWidth), alignment: .center)
         .frame(maxWidth: 620, alignment: .center)
         .accessibilityIdentifier("workspace.camera.deck")
     }
 
+    /// While LiDAR or AR Objects own the camera, the camera console offers
+    /// the one thing that makes sense: going back.
+    private func alternateSourceConsole(title: String, status: String, onReturn: @escaping () -> Void) -> some View {
+        GVConsolePanel(title: title, status: status) {
+            GVConsoleSection(label: "SOURCE") {
+                GVConsoleKey(symbol: "camera.aperture", label: "Camera", value: "Return", action: onReturn)
+            }
+        }
+    }
+
     /// System switches. Capture actions live on the primary row / floating pair.
-    /// Kept to what is necessary and purposeful: the creative reset, the two
-    /// recording-relevant switches, the effect-family gate, the developer
-    /// gate, and help. Ambience toggles and stubs live elsewhere or nowhere.
+    /// Kept to what is necessary and purposeful: the session's edits, the
+    /// recording-relevant switches, the feature gates, and help.
     func captureSettingsDeck(availableWidth: CGFloat) -> some View {
-        let columnCount = availableWidth > 500 ? 3 : 2
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: columnCount)
-
-        return LazyVGrid(columns: columns, spacing: 10) {
-            ForEach(GVCollectionPlate.allCases) { plate in
-                captureActionButton(symbol: plate.symbol, label: plate.label, tint: GVTheme.bone) {
-                    activeTopDeck = nil
-                    toggleCollectionPlate(plate)
+        GVConsolePanel(title: "SYSTEM", status: effectEditor.isGlobalBypassed ? "EFFECTS BYPASSED" : nil) {
+            GVConsoleSection(label: "SESSION") {
+                ForEach(GVCollectionPlate.allCases) { plate in
+                    GVConsoleKey(symbol: plate.symbol, label: plate.label, active: collectionPlatePresented) {
+                        if collectionPlatePresented {
+                            dismissCollectionPlates()
+                        } else {
+                            activeTopDeck = nil
+                            toggleCollectionPlate(plate)
+                        }
+                    }
+                    .accessibilityIdentifier(plate.identifier)
                 }
-                .accessibilityIdentifier(plate.identifier)
-            }
-            if collectionPlatePresented {
-                captureActionButton(symbol: "xmark", label: "Close collection", tint: GVTheme.bone) {
-                    dismissCollectionPlates()
+
+                GVConsoleKey(symbol: "eraser", label: "Clear") { clearEffects() }
+                    .accessibilityIdentifier("workspace.clear-effects")
+
+                GVConsoleKey(symbol: effectEditor.isGlobalBypassed ? "eye.slash.fill" : "eye",
+                             label: "Bypass", active: effectEditor.isGlobalBypassed) {
+                    let bypassed = !effectEditor.isGlobalBypassed
+                    effectEditor.setGlobalBypassed(bypassed)
+                    showTopNotice(bypassed ? "Effects bypassed" : "Effects restored")
                 }
-            }
-            captureActionButton(symbol: "eraser", label: "Clear Effects", tint: GVTheme.bone.opacity(0.75)) {
-                clearEffects()
-            }
-            .accessibilityIdentifier("workspace.clear-effects")
+                .accessibilityIdentifier("workspace.global-bypass")
 
-            captureActionButton(
-                symbol: effectEditor.isGlobalBypassed ? "eye.fill" : "eye.slash",
-                label: effectEditor.isGlobalBypassed ? "Show Effects" : "Bypass All",
-                tint: effectEditor.isGlobalBypassed ? Color.white : GVTheme.bone.opacity(0.7)
-            ) {
-                let bypassed = !effectEditor.isGlobalBypassed
-                effectEditor.setGlobalBypassed(bypassed)
-                showTopNotice(bypassed ? "Effects bypassed" : "Effects restored")
-            }
-            .accessibilityIdentifier("workspace.global-bypass")
-
-            // #25. The session has kept a forty-step history since the
-            // editor was written, and until now nothing in the app called
-            // `undo()` or `redo()` — the whole thing was unreachable. These
-            // two are the discoverable half; the three-finger swipe in
-            // `viewport` is the fast half.
-            captureActionButton(
-                symbol: effectEditor.canUndo ? "arrow.uturn.backward" : "arrow.uturn.backward",
-                label: effectEditor.canUndo ? "Undo" : "Nothing to Undo",
-                tint: effectEditor.canUndo ? GVTheme.acid : GVTheme.bone.opacity(0.4)
-            ) {
-                undoComposition()
-            }
-            .disabled(!effectEditor.canUndo)
-            .accessibilityIdentifier("workspace.undo")
-
-            captureActionButton(
-                symbol: "arrow.uturn.forward",
-                label: effectEditor.canRedo ? "Redo" : "Nothing to Redo",
-                tint: effectEditor.canRedo ? GVTheme.acid : GVTheme.bone.opacity(0.4)
-            ) {
-                redoComposition()
-            }
-            .disabled(!effectEditor.canRedo)
-            .accessibilityIdentifier("workspace.redo")
-
-            captureActionButton(
-                symbol: "lock",
-                label: "Control Lock",
-                tint: GVTheme.bone.opacity(0.6)
-            ) {
-                showControlLockSheet = true
-            }
-            .accessibilityIdentifier("workspace.control-lock")
-
-            captureActionButton(
-                symbol: broadcastRuntime.isArmed
-                    ? (broadcastRuntime.isConnected ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                    : "display.and.arrow.down",
-                label: broadcastRuntime.isArmed
-                    ? "Mac Camera · Paired"
-                    : "Mac Camera",
-                tint: broadcastRuntime.isConnected ? GVTheme.acid : GVTheme.bone.opacity(0.65)
-            ) {
-                if broadcastRuntime.isArmed {
-                    broadcastRuntime.stop()
-                    showTopNotice("Mac Camera link stopped")
-                } else {
-                    broadcastRuntime.start()
-                    showTopNotice("Mac Camera listening for a paired Mac")
+                GVConsoleKey(symbol: preferences.captureCountdownSeconds == 0 ? "timer" : "timer.circlepath",
+                             label: "Timer",
+                             value: preferences.captureCountdownSeconds == 0 ? "OFF" : "\(preferences.captureCountdownSeconds)S",
+                             active: preferences.captureCountdownSeconds > 0) {
+                    let delays = [0, 3, 10, 30]
+                    let current = delays.firstIndex(of: preferences.captureCountdownSeconds) ?? 0
+                    let next = delays[(current + 1) % delays.count]
+                    preferences.captureCountdownSeconds = next
+                    showTopNotice(next == 0 ? "Shutter fires immediately" : "Shutter fires in \(next)s")
                 }
-            }
-            .accessibilityIdentifier("workspace.broadcast")
-            .accessibilityValue(broadcastRuntime.statusLine)
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                    showPairingSheet = true
-                }
-            )
+                .accessibilityIdentifier("workspace.countdown")
 
-            captureActionButton(
-                symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
-                label: "Audio",
-                tint: audioRuntime.isEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-            ) {
-                Task { @MainActor in
-                    // The manual latch is what distinguishes "I want audio"
-                    // from "an effect happens to need it", so the toolbar
-                    // toggle has to write through the policy rather than
-                    // toggling the runtime directly — otherwise the next stack
-                    // edit would close a microphone the operator opened.
-                    if audioRuntime.isEnabled {
-                        audioArmPolicy.setManualArm(false)
-                        showTopNotice(audioNotice)
-                    } else {
-                        audioArmPolicy.setManualArm(true)
-                        await audioRuntime.start()
+                // The session has kept a forty-step history since the editor
+                // was written; these two are the discoverable half, the
+                // three-finger swipe in `viewport` is the fast half.
+                GVConsoleKey(symbol: "arrow.uturn.backward", label: "Undo", enabled: effectEditor.canUndo) {
+                    undoComposition()
+                }
+                .accessibilityIdentifier("workspace.undo")
+
+                GVConsoleKey(symbol: "arrow.uturn.forward", label: "Redo", enabled: effectEditor.canRedo) {
+                    redoComposition()
+                }
+                .accessibilityIdentifier("workspace.redo")
+            }
+
+            GVConsoleSection(label: "SYSTEM") {
+                GVConsoleKey(symbol: audioRuntime.isEnabled ? "waveform.badge.mic" : "waveform",
+                             label: "Audio", value: audioRuntime.isEnabled ? "LIVE" : "OFF",
+                             active: audioRuntime.isEnabled) {
+                    Task { @MainActor in
+                        // The manual latch is what distinguishes "I want
+                        // audio" from "an effect happens to need it", so this
+                        // writes through the policy rather than toggling the
+                        // runtime directly.
+                        if audioRuntime.isEnabled {
+                            audioArmPolicy.setManualArm(false)
+                        } else {
+                            audioArmPolicy.setManualArm(true)
+                            await audioRuntime.start()
+                        }
                         showTopNotice(audioNotice)
                     }
                 }
-            }
-            .accessibilityIdentifier("workspace.audio")
+                .accessibilityIdentifier("workspace.audio")
 
-            // Two switches, not one.
-            //
-            // This used to compute `!(experimental && developer)` and write
-            // that single value back to both flags. Once either was on the
-            // expression was permanently true, so tapping the button again set
-            // both to `true` — the badge stayed lit and nothing appeared to
-            // happen. It also conflated two unrelated settings: developer mode
-            // is what reveals the Restart Engine control, and experimental has
-            // nothing to do with it.
-            captureActionButton(
-                symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
-                label: preferences.experimentalEnabled ? "Experimental On" : "Experimental",
-                tint: preferences.experimentalEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-            ) {
-                preferences.experimentalEnabled.toggle()
-                showTopNotice(preferences.experimentalEnabled
-                    ? "Experimental features on"
-                    : "Experimental features off")
-            }
-            .accessibilityIdentifier("workspace.experimental")
-
-            captureActionButton(
-                symbol: preferences.developerEnabled ? "wrench.and.screwdriver.fill" : "wrench.and.screwdriver",
-                label: preferences.developerEnabled ? "Developer On" : "Developer",
-                tint: preferences.developerEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-            ) {
-                preferences.developerEnabled.toggle()
-                showTopNotice(preferences.developerEnabled
-                    ? "Developer tools shown"
-                    : "Developer tools hidden")
-            }
-            .accessibilityIdentifier("workspace.developer")
-
-            // #21. The render-quality ladder the governor walks, plus the
-            // frame time that drives it. Auto is the default; the pinned
-            // rungs are promises the governor will not break on its own.
-            renderQualityButton
-
-            captureActionButton(
-                symbol: preferences.startupAnimationEnabled ? "sparkles" : "forward.end.fill",
-                label: "Launch Motion",
-                tint: preferences.startupAnimationEnabled ? GVTheme.acid : GVTheme.bone.opacity(0.6)
-            ) {
-                preferences.startupAnimationEnabled.toggle()
-                showTopNotice(
-                    preferences.startupAnimationEnabled
-                        ? "Launch artwork animated"
-                        : "Launch artwork static"
+                GVConsoleKey(symbol: broadcastRuntime.isArmed
+                                ? (broadcastRuntime.isConnected ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
+                                : "display.and.arrow.down",
+                             label: "Mac Cam",
+                             value: broadcastRuntime.isConnected ? "LINKED" : (broadcastRuntime.isArmed ? "WAITING" : "OFF"),
+                             active: broadcastRuntime.isArmed) {
+                    if broadcastRuntime.isArmed {
+                        broadcastRuntime.stop()
+                        showTopNotice("Mac Camera link stopped")
+                    } else {
+                        broadcastRuntime.start()
+                        showTopNotice("Mac Camera listening for a paired Mac")
+                    }
+                }
+                .accessibilityIdentifier("workspace.broadcast")
+                .accessibilityValue(broadcastRuntime.statusLine)
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                        showPairingSheet = true
+                    }
                 )
-            }
-            .accessibilityIdentifier("workspace.startup")
 
-            if preferences.developerEnabled {
-                captureActionButton(symbol: "arrow.clockwise", label: "Restart Engine", tint: GVTheme.acid) {
-                    appModel.restartEngine()
-                    showTopNotice("Restarting camera pipeline")
+                renderQualityKey
+
+                GVConsoleKey(symbol: "lock", label: "Lock") { showControlLockSheet = true }
+                    .accessibilityIdentifier("workspace.control-lock")
+
+                GVConsoleKey(symbol: preferences.startupAnimationEnabled ? "sparkles" : "forward.end",
+                             label: "Intro", value: preferences.startupAnimationEnabled ? "ON" : "OFF",
+                             active: preferences.startupAnimationEnabled) {
+                    preferences.startupAnimationEnabled.toggle()
+                    showTopNotice(preferences.startupAnimationEnabled ? "Launch sequence on" : "Launch sequence off")
                 }
-                .accessibilityIdentifier("workspace.restart")
-            }
+                .accessibilityIdentifier("workspace.startup")
 
-            // Self-timer. Three fixed stops rather than a slider: the point is
-            // "get in frame", and an operator setting up a shot needs to hear
-            // one number, not read a scale.
-            captureActionButton(
-                symbol: preferences.captureCountdownSeconds == 0 ? "timer" : "timer.circlepath",
-                label: preferences.captureCountdownSeconds == 0
-                    ? "Self Timer · Off"
-                    : "Self Timer · \(preferences.captureCountdownSeconds)s",
-                tint: preferences.captureCountdownSeconds == 0 ? GVTheme.bone.opacity(0.6) : GVTheme.acid
-            ) {
-                let delays = [0, 3, 10, 30]
-                let current = delays.firstIndex(of: preferences.captureCountdownSeconds) ?? 0
-                let next = delays[(current + 1) % delays.count]
-                preferences.captureCountdownSeconds = next
-                showTopNotice(next == 0 ? "Shutter fires immediately" : "Shutter fires in \(next)s")
-            }
-            .accessibilityIdentifier("workspace.countdown")
-
-            captureActionButton(symbol: "questionmark.circle", label: "Help & Guide", tint: GVTheme.bone.opacity(0.75)) {
-                withAnimation(GVMotion.resolved(GVMotion.tear, reduceMotion: reduceMotion)) {
-                    coachPresented = true
+                // Two switches, not one: developer reveals Restart Engine,
+                // experimental has nothing to do with it.
+                GVConsoleKey(symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
+                             label: "Labs", active: preferences.experimentalEnabled) {
+                    preferences.experimentalEnabled.toggle()
+                    showTopNotice(preferences.experimentalEnabled ? "Experimental features on" : "Experimental features off")
                 }
+                .accessibilityIdentifier("workspace.experimental")
+
+                GVConsoleKey(symbol: "wrench.and.screwdriver", label: "Dev", active: preferences.developerEnabled) {
+                    preferences.developerEnabled.toggle()
+                    showTopNotice(preferences.developerEnabled ? "Developer tools shown" : "Developer tools hidden")
+                }
+                .accessibilityIdentifier("workspace.developer")
+
+                if preferences.developerEnabled {
+                    GVConsoleKey(symbol: "arrow.clockwise", label: "Restart") {
+                        appModel.restartEngine()
+                        showTopNotice("Restarting camera pipeline")
+                    }
+                    .accessibilityIdentifier("workspace.restart")
+                }
+
+                GVConsoleKey(symbol: "questionmark.circle", label: "Help") {
+                    withAnimation(GVMotion.resolved(GVMotion.tear, reduceMotion: reduceMotion)) {
+                        coachPresented = true
+                    }
+                }
+                .accessibilityIdentifier("workspace.help")
             }
-            .accessibilityIdentifier("workspace.help")
         }
-        .padding(14)
-        .gvGlass(.primary, radius: 22)
-        .frame(width: min(680, availableWidth), alignment: .center)
-        .accessibilityElement(children: .contain)
+        .frame(width: min(380, availableWidth), alignment: .center)
         .accessibilityIdentifier("workspace.settings.deck")
-    }
-
-    func topActionButton(_ label: String, symbol: String, detail _: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .medium))
-                Text(label)
-                    .font(.system(size: 13, weight: .semibold))
-            }
-            .foregroundStyle(GVTheme.bone)
-            .padding(.horizontal, 16)
-            .frame(minHeight: 44)
-        }
-        .buttonStyle(GVGlassActionButtonStyle())
     }
 
     private struct GVGlassActionButtonStyle: ButtonStyle {
@@ -1580,23 +1497,23 @@ private extension WorkspaceView {
 
     /// Cycles the render-quality ladder and mirrors the choice into the
     /// camera runtime, which is what the Metal surface reads to cap the
-    /// refresh rate. The label carries the live GPU frame time so the control
-    /// explains itself: an operator who steps down a rung can see whether it
-    /// bought anything.
-    private var renderQualityButton: some View {
+    /// refresh rate. The value line carries the live GPU frame time so the
+    /// control explains itself.
+    private var renderQualityKey: some View {
         let requested = preferences.renderQuality
         let live = GVRenderQuality.resolve(
             requested,
             isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled
         )
-        let isAutomatic = requested == .automatic
         let frameTime = renderStats.latest.gpuMilliseconds
-        let frameTimeText = frameTime > 0 ? String(format: " %.1fms", frameTime) : ""
-        let suffix = isAutomatic && live != requested ? " \u{2014} \(live.displayName)" : ""
-        return captureActionButton(
-            symbol: isAutomatic ? "gauge.with.dots.needle.33percent" : "gauge.with.dots.needle.67percent",
-            label: "Render \(requested.displayName)\(suffix)\(frameTimeText)",
-            tint: live == .high ? GVTheme.bone.opacity(0.6) : GVTheme.warn
+        let value = frameTime > 0
+            ? String(format: "%@ %.1fMS", live.displayName, frameTime)
+            : live.displayName
+        return GVConsoleKey(
+            symbol: requested == .automatic ? "gauge.with.dots.needle.33percent" : "gauge.with.dots.needle.67percent",
+            label: "Render",
+            value: value,
+            active: requested != .automatic
         ) {
             let order = GVRenderQuality.allCases
             let current = order.firstIndex(of: requested) ?? 0
@@ -1607,45 +1524,6 @@ private extension WorkspaceView {
         }
         .accessibilityIdentifier("workspace.render-quality")
         .accessibilityValue(live.displayName)
-    }
-
-    func captureActionButton(
-        symbol: String,
-        label: String,
-        tint: Color,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 15, weight: .medium))
-                Text(label)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(tint)
-            .padding(.horizontal, 15)
-            .frame(maxWidth: .infinity, minHeight: 50)
-        }
-        .buttonStyle(GVGlassCaptureActionStyle(tint: tint))
-        .accessibilityLabel(label)
-    }
-
-    private struct GVGlassCaptureActionStyle: ButtonStyle {
-        let tint: Color
-
-        @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-        func makeBody(configuration: Configuration) -> some View {
-            configuration.label
-                .gvGlassChip(radius: 16, active: configuration.isPressed, tint: tint)
-                .frame(maxWidth: .infinity, minHeight: 50)
-                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.99 : 1))
-                .brightness(configuration.isPressed ? 0.02 : 0)
-                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
-        }
     }
 
     func dismissWorkspaceSelection() {

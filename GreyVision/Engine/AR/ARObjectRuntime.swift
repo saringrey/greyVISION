@@ -1120,19 +1120,35 @@ struct ARObjectFrame: @unchecked Sendable {
     let cameraTransform: simd_float4x4
     let orientation: CapturedFrameOrientation
     let timestamp: TimeInterval
+    /// Metres from the camera per pixel, from LiDAR. Nil without a scanner.
+    let sceneDepth: CVPixelBuffer?
+    /// Metres to people in frame, and the mask of where they are. Nil where
+    /// the device cannot segment people.
+    let personDepth: CVPixelBuffer?
+    let personMask: CVPixelBuffer?
+    /// ARKit's estimate of the room's light, in lumens; ~1000 is neutral.
+    let ambientIntensity: Float?
 
     init(
         capturedImage: CVPixelBuffer,
         camera: ARCamera?,
         cameraTransform: simd_float4x4? = nil,
         orientation: CapturedFrameOrientation,
-        timestamp: TimeInterval
+        timestamp: TimeInterval,
+        sceneDepth: CVPixelBuffer? = nil,
+        personDepth: CVPixelBuffer? = nil,
+        personMask: CVPixelBuffer? = nil,
+        ambientIntensity: Float? = nil
     ) {
         self.capturedImage = capturedImage
         self.camera = camera
         self.cameraTransform = cameraTransform ?? camera?.transform ?? matrix_identity_float4x4
         self.orientation = orientation
         self.timestamp = timestamp
+        self.sceneDepth = sceneDepth
+        self.personDepth = personDepth
+        self.personMask = personMask
+        self.ambientIntensity = ambientIntensity
     }
 }
 
@@ -1268,8 +1284,21 @@ final class ARObjectSource: NSObject, @unchecked Sendable {
                 configuration.worldAlignment = .gravity
                 configuration.planeDetection = [.horizontal, .vertical]
                 configuration.environmentTexturing = .none
+                configuration.isLightEstimationEnabled = true
                 configuration.providesAudioData = false
-                configuration.frameSemantics = []
+                // Occlusion: LiDAR depth lets objects hide behind poles and
+                // couches; person segmentation lets them pass behind people.
+                // Each is asked for only where the device can provide it.
+                var semantics: ARConfiguration.FrameSemantics = []
+                if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+                    semantics.insert(.smoothedSceneDepth)
+                } else if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+                    semantics.insert(.sceneDepth)
+                }
+                if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+                    semantics.insert(.personSegmentationWithDepth)
+                }
+                configuration.frameSemantics = semantics
 
                 stateLock.withLock {
                     isRunning = true
@@ -1644,7 +1673,11 @@ extension ARObjectSource: ARSessionDelegate {
             camera: frame.camera,
             cameraTransform: frame.camera.transform,
             orientation: state.orientation,
-            timestamp: frame.timestamp
+            timestamp: frame.timestamp,
+            sceneDepth: (frame.smoothedSceneDepth ?? frame.sceneDepth)?.depthMap,
+            personDepth: frame.estimatedDepthData,
+            personMask: frame.segmentationBuffer,
+            ambientIntensity: frame.lightEstimate.map { Float($0.ambientIntensity) }
         ))
 
         let quality = Self.qualityLabel(frame.camera.trackingState)
@@ -1726,6 +1759,21 @@ final class ARObjectRuntime: ObservableObject {
         }
     }
     @Published var spawnSource: ARObjectSpawnSource = .cycle
+    /// Objects hide behind real things nearer the camera: scene depth on
+    /// LiDAR devices, people on devices that can segment them.
+    @Published var occlusionEnabled = true
+
+    /// What this device can hide objects behind, for the studio's label.
+    static var occlusionSupport: String {
+        let scene = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+        let people = ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth)
+        switch (scene, people) {
+        case (true, true): return "SCENE + PEOPLE"
+        case (true, false): return "SCENE"
+        case (false, true): return "PEOPLE"
+        case (false, false): return "UNSUPPORTED"
+        }
+    }
     @Published var selectedObjectID: UUID?
     @Published private(set) var userModels: [ARUserModel] = []
     @Published private(set) var recordingState = ARObjectRecordingState.idle

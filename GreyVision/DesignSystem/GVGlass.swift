@@ -333,17 +333,29 @@ private struct GVChromePlate<S: InsettableShape>: ViewModifier {
     let shape: S
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    /// Black and white, like the splash: a near-black plate carrying the
+    /// same ordered white dither, edged in a white glow. The camera's colour
+    /// no longer bleeds through the chrome, so the picture is the only colour
+    /// on screen.
     func body(content: Content) -> some View {
         content
             .background {
                 if reduceTransparency {
-                    shape.fill(Color(white: 0.08))
+                    shape.fill(Color(white: 0.06))
                 } else {
-                    shape.fill(.ultraThinMaterial)
-                        .overlay { shape.fill(Color.black.opacity(0.38)) }
+                    GVSplashPlate()
+                        .clipShape(shape)
+                        .opacity(0.94)
                 }
             }
-            .overlay { shape.strokeBorder(Color.white.opacity(0.13), lineWidth: 0.5) }
-            .shadow(color: .black.opacity(0.28), radius: 10, y: 4)
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(colors: [.white.opacity(0.42), .white.opacity(0.1), .white.opacity(0.28)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: 0.8
+                )
+            }
+            .shadow(color: .white.opacity(0.07), radius: 8)
+            .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
     }
 }

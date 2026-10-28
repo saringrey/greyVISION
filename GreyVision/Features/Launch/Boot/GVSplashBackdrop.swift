@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// A dithered nebula responds to tilt and background touches without audio input.
+/// A dithered black-and-white nebula responds to tilt and background touches
+/// without audio input.
 struct GVSplashBackdrop: View {
     var animated = true
     var tilt: CGSize = .zero
@@ -26,8 +27,8 @@ struct GVSplashBackdrop: View {
                             .float2(proxy.size), .float(input.time),
                             .float2(input.tilt.x, input.tilt.y),
                             .float3(input.touch.x, input.touch.y, input.touch.z), .float(input.touchAge),
-                            .float3(GVSplashPalette.cyanRGB.x, GVSplashPalette.cyanRGB.y, GVSplashPalette.cyanRGB.z),
-                            .float3(GVSplashPalette.violetRGB.x, GVSplashPalette.violetRGB.y, GVSplashPalette.violetRGB.z)
+                            .float3(GVSplashPalette.glowRGB.x, GVSplashPalette.glowRGB.y, GVSplashPalette.glowRGB.z),
+                            .float3(GVSplashPalette.shadeRGB.x, GVSplashPalette.shadeRGB.y, GVSplashPalette.shadeRGB.z)
                         ))
                     }
             }
@@ -55,13 +56,18 @@ struct GVSplashBackdrop: View {
 }
 
 /// One palette feeds the nebula, ASCII highlights, and control borders.
+///
+/// Black and white only: colour on the splash competed with the codec
+/// choices, and a monochrome field makes the white glow read as light.
 enum GVSplashPalette {
-    static let cyanRGB = SIMD3<Float>(0.20, 0.68, 0.75)
-    static let violetRGB = SIMD3<Float>(0.46, 0.35, 0.78)
-    static let cyan = Color(red: Double(cyanRGB.x), green: Double(cyanRGB.y), blue: Double(cyanRGB.z))
-    static let violet = Color(red: Double(violetRGB.x), green: Double(violetRGB.y), blue: Double(violetRGB.z))
+    /// The glowing white of dithered highlights, borders and the wordmark.
+    static let glowRGB = SIMD3<Float>(1.0, 1.0, 1.0)
+    /// The neutral grey the field falls off into.
+    static let shadeRGB = SIMD3<Float>(0.46, 0.46, 0.48)
+    static let glow = Color(red: Double(glowRGB.x), green: Double(glowRGB.y), blue: Double(glowRGB.z))
+    static let shade = Color(red: Double(shadeRGB.x), green: Double(shadeRGB.y), blue: Double(shadeRGB.z))
     static let border = LinearGradient(
-        colors: [cyan.opacity(0.85), violet.opacity(0.65), cyan.opacity(0.45)],
+        colors: [glow.opacity(0.9), shade.opacity(0.55), glow.opacity(0.6)],
         startPoint: .topLeading, endPoint: .bottomTrailing
     )
 }
@@ -74,8 +80,8 @@ struct GVSplashPlate: View {
             .visualEffect { content, proxy in
                 content.colorEffect(ShaderLibrary.splashPlate(
                     .float2(proxy.size), .float(active ? 1 : 0),
-                    .float3(GVSplashPalette.cyanRGB.x, GVSplashPalette.cyanRGB.y, GVSplashPalette.cyanRGB.z),
-                    .float3(GVSplashPalette.violetRGB.x, GVSplashPalette.violetRGB.y, GVSplashPalette.violetRGB.z)
+                    .float3(GVSplashPalette.glowRGB.x, GVSplashPalette.glowRGB.y, GVSplashPalette.glowRGB.z),
+                    .float3(GVSplashPalette.shadeRGB.x, GVSplashPalette.shadeRGB.y, GVSplashPalette.shadeRGB.z)
                 ))
             }
             .allowsHitTesting(false)
@@ -92,7 +98,7 @@ struct GVSplashBorder: ViewModifier {
         content.overlay {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .strokeBorder(GVSplashPalette.border, lineWidth: active || contrast == .increased ? 1.5 : 0.8)
-                .shadow(color: GVSplashPalette.cyan.opacity(active ? 0.5 : 0.22), radius: active ? 7 : 3)
+                .shadow(color: GVSplashPalette.glow.opacity(active ? 0.5 : 0.22), radius: active ? 7 : 3)
                 .allowsHitTesting(false)
         }
     }

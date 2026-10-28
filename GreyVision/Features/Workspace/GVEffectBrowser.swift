@@ -61,8 +61,8 @@ enum WorkspaceDockCategory: String, CaseIterable, Identifiable {
         case .warp: "Warp"
         case .generative: "Generative"
         case .audio: "Audio"
-        case .spatial: "Depth"
-        case .objects: "Objects"
+        case .spatial: "LiDAR"
+        case .objects: "AR"
         case .blobs: "Tracking"
         case .lidar: "LiDAR"
         }
@@ -85,6 +85,7 @@ enum WorkspaceDockCategory: String, CaseIterable, Identifiable {
         case .audio: "waveform"
         case .spatial: "sensor.tag.radiowaves.forward"
         case .blobs: "scope"
+        case .objects: "cube.transparent"
         default: nil
         }
     }
@@ -375,8 +376,7 @@ struct GVEffectBrowser: View {
                     toasts.show(appModel.objects.capability.reason)
                     return
                 }
-                editor.commitPreview()
-                editor.disableAll()
+                                editor.disableAll()
                 appModel.deactivateDepthMode()
                 appModel.activateObjectMode()
                 dismiss()
@@ -407,63 +407,6 @@ struct GVEffectBrowser: View {
             .padding(10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .gvLiquidGlass(radius: Self.panelRadius)
-            .overlay(alignment: .bottom) {
-                if editor.isPreviewing {
-                    auditionBar
-                }
-            }
-            .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: editor.isPreviewing)
-    }
-
-    /// The verdict on an audition: the composition is live behind the glass,
-    /// but it is not the operator's edit yet. Keep commits it as one undo
-    /// step and leaves; Revert restores the stash and browsing continues.
-    private var auditionBar: some View {
-        HStack(spacing: 8) {
-            Text("AUDITION")
-                .font(GVTheme.mono(9, .semibold))
-                .foregroundStyle(GVTheme.bone.opacity(0.55))
-            Text(editor.selectedEffect.map { displayName($0).uppercased() } ?? "COMPOSITION")
-                .font(GVTheme.mono(11, .semibold))
-                .foregroundStyle(GVTheme.bone)
-                .lineLimit(1)
-                .contentTransition(.opacity)
-            Spacer(minLength: 10)
-            Button("Revert") {
-                editor.endPreview()
-            }
-            .font(GVTheme.mono(12, .semibold))
-            .foregroundStyle(GVTheme.bone.opacity(0.75))
-            .padding(.horizontal, 6)
-            .buttonStyle(GVPressStyle())
-            .accessibilityIdentifier("workspace.browser.audition.revert")
-            Button("Keep") {
-                editor.commitPreview()
-                dismiss()
-            }
-            .font(GVTheme.mono(12, .bold))
-            .foregroundStyle(Color.black)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(GVTheme.bone, in: Capsule())
-            .buttonStyle(GVPressStyle())
-            .accessibilityIdentifier("workspace.browser.audition.keep")
-        }
-        .padding(.leading, 14)
-        .padding(.trailing, 6)
-        .frame(height: 44)
-        .background(Color.black.opacity(0.62), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75))
-        .padding(10)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Auditioning \(auditionName)")
-        .accessibilityIdentifier("workspace.browser.audition")
-    }
-
-    /// The auditioning look, for both the bar's caption and VoiceOver.
-    private var auditionName: String {
-        editor.selectedEffect.map(\.label) ?? "a composition"
     }
 
     @ViewBuilder
@@ -474,8 +417,7 @@ struct GVEffectBrowser: View {
             GVTrackingPane(runtime: appModel.blobs, tileMinimum: 100, spacing: Self.spacing) { preset in
                 appModel.deactivateDepthMode()
                 appModel.deactivateObjectMode()
-                editor.commitPreview()
-                editor.focus(nil)
+                                editor.focus(nil)
                 appModel.blobs.apply(preset)
                 GVInteractionHaptics.select()
                 dismiss()
@@ -556,8 +498,7 @@ struct GVEffectBrowser: View {
             }
             Button("Adjust effect") {
                 select(effect)
-                editor.commitPreview()
-                dismiss()
+                                dismiss()
             }
             Text(effect.detail.capitalized)
             Text("Render cost \(effect.gpuCost.rawValue) of 3")
@@ -576,7 +517,7 @@ struct GVEffectBrowser: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: Self.spacing) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Depth")
+                    Text("LiDAR")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(GVTheme.bone)
                     Spacer()
@@ -665,15 +606,32 @@ struct GVEffectBrowser: View {
             toasts.show("\(mode.label): \(appModel.depth.capability.reason)")
             return
         }
-        editor.commitPreview()
-        editor.disableAll()
+                editor.disableAll()
         appModel.deactivateObjectMode()
         appModel.activateDepthEffect(mode)
         GVInteractionHaptics.select()
         dismiss()
     }
 
+    /// AR is a capture mode with its own studio deck, so choosing it leaves
+    /// the browser rather than opening a shelf.
+    private func enterAR() {
+        guard appModel.objects.capability.isSupported else {
+            toasts.show(appModel.objects.capability.reason)
+            return
+        }
+        editor.disableAll()
+        appModel.deactivateDepthMode()
+        appModel.activateObjectMode()
+        GVInteractionHaptics.select()
+        dismiss()
+    }
+
     private func changeCategory(_ item: WorkspaceDockCategory) {
+        if item == .objects {
+            enterAR()
+            return
+        }
         searchFocused = false
         withAnimation(GVMotion.resolved(.spring(response: 0.38, dampingFraction: 0.82), reduceMotion: reduceMotion)) {
             category = item
@@ -699,6 +657,7 @@ struct GVEffectBrowser: View {
             .favorites: .init(count: WorkspaceAdjustableEffect.allCases.count { preferences.isFavorite($0.rawValue) }, live: false),
             .recents: .init(count: preferences.recentEffects.count, live: false),
             .blobs: .init(count: GVTrackingPreset.all.count, live: appModel.blobs.isEnabled),
+            .objects: .init(count: appModel.objects.objects.count, live: appModel.sourceMode == .objects),
             .spatial: .init(count: DepthEffectMode.allCases.count, live: appModel.sourceMode == .lidar && appModel.depth.isActive),
         ]
         for shelf in WorkspaceDockCategory.shelfCategories {
@@ -750,20 +709,19 @@ struct GVEffectBrowser: View {
     /// exactly the contract `EffectEditingSession.selectFamily` already keeps
     /// for the rail, so nothing about stacking policy moves here.
     ///
-    /// A tap *auditions*: the look renders behind the glass and the browser
-    /// stays open, and it only becomes the operator's edit through the
-    /// verdict bar's Keep (or an Adjust from the context menu). Closing any
-    /// other way restores the stash through `endPreview`.
+    /// A tap applies the look and closes the browser: the menu covers most
+    /// of the picture, so auditioning behind it showed too little to judge.
     private func select(_ effect: WorkspaceAdjustableEffect) {
         appModel.deactivateDepthMode()
         appModel.deactivateObjectMode()
         armAudioIfNeeded(for: effect)
-        editor.auditionFromBrowser(effect)
+        editor.applyFromBrowser(effect)
         if editor.selectedEffect != nil {
             preferences.noteEffectUsed((editor.selectedEffect ?? effect).rawValue)
             decay.fire(.effectActivated)
         }
         GVInteractionHaptics.select()
+        dismiss()
     }
 
     private func armAudioIfNeeded(for effect: WorkspaceAdjustableEffect) {

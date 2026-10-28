@@ -22,6 +22,9 @@ struct GreyVisionApp: App {
                 .environmentObject(appModel.blobs)
                 .environmentObject(appModel.broadcast)
                 .environmentObject(appModel.preferences)
+                // A 3D file shared to the app — "Open in greyVISION" from
+                // Files, Safari, AirDrop or Mail — goes into the AR library.
+                .onOpenURL { url in appModel.importSharedModel(url) }
         }
     }
 }

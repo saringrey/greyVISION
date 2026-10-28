@@ -103,19 +103,7 @@ private struct GVLaunchControls: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            SplashCaptureDock(setup: $setup)
-            Button(action: onOpen) {
-                GVEncryptButtonFace(target: "OPEN CAMERA", engaged: isOpening, opening: isOpening, compact: true)
-                    .frame(maxWidth: 220)
-                    // The plate is half size; the hit area is not.
-                    .frame(minHeight: GVMetrics.touchTarget)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(GVPressStyle())
-            .disabled(isOpening)
-            .accessibilityLabel("Open camera")
-            .accessibilityIdentifier("boot.launch")
-            .accessibilityHint("Starts the camera using the selected capture format.")
+            SplashCaptureDock(setup: $setup, isOpening: isOpening, onOpen: onOpen)
 
             Text("MADE WITH LOVE BY GREY")
                 .font(GVTheme.mono(11, .medium))
@@ -148,23 +136,28 @@ private struct GVLaunchIdentity: View {
                     GVASCIIWordmark(
                         text: "grey", glyphSize: glyphSize * 0.52, columns: 48,
                         enableWaves: false, animated: false, interactive: false,
-                        accent: GVSplashPalette.cyan,
+                        accent: GVSplashPalette.glow,
                         decryption: decryption?.forWord(start: 0, length: 4)
                     )
                     GVASCIIWordmark(
                         text: "VISION", glyphSize: glyphSize, columns: 96,
                         enableWaves: false, animated: false, interactive: false,
-                        accent: GVSplashPalette.cyan,
+                        accent: GVSplashPalette.glow,
                         decryption: decryption?.forWord(start: 4, length: 6)
                     )
-                    Text("LIVE VISUAL INSTRUMENT")
-                        .font(GVTheme.mono(11, .medium))
-                        .tracking(2)
-                        .foregroundStyle(GVTheme.bone.opacity(0.72))
-                        .padding(.top, 8)
                 }
                 .frame(width: width, alignment: .center)
                 .padding(.vertical, 12)
+                // A pool of black under the title, so the white wordmark
+                // glows against dark instead of sinking into the bright cloud.
+                .background {
+                    // Larger than the title so the ellipse fades to nothing
+                    // before any edge; clipped, it drew a hard line.
+                    EllipticalGradient(colors: [.black.opacity(0.82), .black.opacity(0.42), .clear],
+                                       center: .center, startRadiusFraction: 0, endRadiusFraction: 0.5)
+                        .frame(width: width * 1.35, height: width * 1.0)
+                        .allowsHitTesting(false)
+                }
                 .contentShape(Rectangle())
             }
         }
@@ -181,6 +174,8 @@ private struct SplashCaptureDock: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Binding var setup: CaptureSetupDraft
+    let isOpening: Bool
+    let onOpen: () -> Void
 
     @State private var activeSection: SplashDockSection?
     /// Leading visible card of the open format rail. Every submenu opens from
@@ -207,8 +202,9 @@ private struct SplashCaptureDock: View {
                 dockButton(.codec, value: setup.videoCodec.compactLabel)
                 dockButton(.frameRate, value: "\(setup.frameRate.rawValue)")
                 dockButton(.resolution, value: setup.resolution.rawValue)
+                openButton
             }
-            .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : 300)
+            .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : 400)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                 if abs(rowHeight - height) > 0.5 { rowHeight = height }
             }
@@ -356,6 +352,49 @@ private struct SplashCaptureDock: View {
         .accessibilityValue(isActive ? "Expanded" : "Collapsed")
         .accessibilityHint(isActive ? "Closes the format chooser." : "Opens the format chooser.")
         .accessibilityIdentifier("boot.\(section.rawValue)")
+    }
+
+    /// Open Camera sits in the format row as its fourth plate, built like
+    /// the other three — a caption over a value — but solid white with black
+    /// type, so the one action on the screen is unmistakable.
+    private var openButton: some View {
+        Button {
+            activeSection = nil
+            onOpen()
+        } label: {
+            VStack(spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(isOpening ? "OPENING" : "OPEN")
+                        .tracking(0.8)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                    Image(systemName: isOpening ? "lock.open" : "arrow.up.right")
+                        .contentTransition(.symbolEffect(.replace))
+                        .accessibilityHidden(true)
+                }
+                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                Text("CAMERA")
+                    .font(.system(.caption, design: .monospaced).weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            }
+            .foregroundStyle(Color.black)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .frame(minHeight: minimumRowHeight)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white)
+                    .shadow(color: .white.opacity(isOpening ? 0.7 : 0.4), radius: isOpening ? 14 : 9)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle())
+        .disabled(isOpening)
+        .accessibilityLabel("Open camera")
+        .accessibilityIdentifier("boot.launch")
+        .accessibilityHint("Starts the camera using the selected capture format.")
     }
 
     /// First option of a section, because opening one always starts at its
