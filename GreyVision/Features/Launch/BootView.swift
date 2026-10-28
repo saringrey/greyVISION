@@ -105,7 +105,11 @@ private struct GVLaunchControls: View {
         VStack(spacing: 20) {
             SplashCaptureDock(setup: $setup)
             Button(action: onOpen) {
-                GVEncryptButtonFace(target: "OPEN CAMERA", engaged: isOpening, opening: isOpening)
+                GVEncryptButtonFace(target: "OPEN CAMERA", engaged: isOpening, opening: isOpening, compact: true)
+                    .frame(maxWidth: 220)
+                    // The plate is half size; the hit area is not.
+                    .frame(minHeight: GVMetrics.touchTarget)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(GVPressStyle())
             .disabled(isOpening)

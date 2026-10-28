@@ -28,6 +28,11 @@ final class GVSoundEngine {
         case keypad
         /// Correct code. The one unambiguously good sound in the instrument.
         case accept
+        /// Cold-start POST beep: one bare PC-speaker tone.
+        case postBeep
+        /// The cold start's fake fatal exception: a crushed burst, then a
+        /// buzz that sags in pitch, the sound of a machine falling over.
+        case crash
     }
 
     var isEnabled = true {
@@ -412,6 +417,17 @@ final class GVSoundEngine {
                 Segment(duration: 0.028, frequency: 96, duty: 0.55, gain: 0.17),
                 Segment(duration: 0.006, frequency: 0),
                 Segment(duration: 0.055, frequency: 660, duty: 0.35, crush: 0.06, gain: 0.13)
+            ]
+        case .postBeep:
+            [
+                Segment(duration: 0.11, frequency: 988, duty: 0.5, gain: 0.2)
+            ]
+        case .crash:
+            [
+                Segment(duration: 0.07, frequency: 0, crush: 1, gain: 0.3),
+                Segment(duration: 0.12, frequency: 233, duty: 0.5, crush: 0.35, gate: 72, gain: 0.26),
+                Segment(duration: 0.16, frequency: 185, duty: 0.42, crush: 0.45, gate: 54, gain: 0.24),
+                Segment(duration: 0.22, frequency: 139, duty: 0.36, crush: 0.6, gate: 38, gain: 0.22)
             ]
         case .error:
             // Low dissonant buzz, hard-gated. Unmistakably a refusal, and

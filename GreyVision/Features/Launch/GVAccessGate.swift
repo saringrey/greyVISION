@@ -152,6 +152,8 @@ struct GVEncryptButtonFace: View {
     let target: String
     let engaged: Bool
     let opening: Bool
+    /// Half-height plate for screens where the button is not the subject.
+    var compact = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var startedAt = Date.now
@@ -162,20 +164,20 @@ struct GVEncryptButtonFace: View {
             let elapsed = max(timeline.date.timeIntervalSince(startedAt), 0)
             HStack(spacing: 12) {
                 Image(systemName: opening ? "lock.open" : "lock")
-                    .font(.subheadline.weight(.medium))
+                    .font(compact ? .caption2.weight(.medium) : .subheadline.weight(.medium))
                 Text(GVEncryptText.frame(target: target, elapsed: elapsed, animated: engaged && !reduceMotion))
-                    .font(GVTheme.mono(textSize, .medium))
+                    .font(GVTheme.mono(compact ? textSize * 0.85 : textSize, .medium))
                     .tracking(0.6)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 Image(systemName: "arrow.up.right")
-                    .font(.caption.weight(.medium))
+                    .font(compact ? .caption2.weight(.medium) : .caption.weight(.medium))
             }
             .foregroundStyle(engaged ? GVSplashPalette.cyan : GVTheme.bone)
-            .padding(.horizontal, 18)
-            .frame(maxWidth: .infinity, minHeight: 58)
+            .padding(.horizontal, compact ? 11 : 18)
+            .frame(maxWidth: .infinity, minHeight: compact ? 29 : 58)
             .background {
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: compact ? 8 : 12)
                     .fill(Color.black.opacity(0.88))
                     .overlay {
                         GeometryReader { geometry in
@@ -190,9 +192,9 @@ struct GVEncryptButtonFace: View {
                         }
                         .opacity(engaged && !reduceMotion ? 1 : 0)
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: compact ? 8 : 12))
             }
-            .modifier(GVSplashBorder(active: engaged))
+            .modifier(GVSplashBorder(active: engaged, radius: compact ? 8 : 12))
         }
         .onChange(of: engaged, initial: true) { _, _ in startedAt = .now }
     }

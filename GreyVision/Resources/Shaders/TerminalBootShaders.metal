@@ -15,15 +15,25 @@ static inline float terminalHash(float2 p) {
 /// scanlines, rolling sync bar, grain, and finally the digital
 /// decay that breaks the screen into dropping blocks.
 ///
+/// `dot` is the centre dot's brightness while `power` is still 0.
 /// `power` 0→1 opens the raster from a dot to a line to the full screen.
 /// `tear` 0→1 scales the tears. `decay` 0→1 grows the pixel
 /// blocks and drops them out. The layer is opaque: the terminal draws its own
 /// black field.
 [[ stitchable ]]
 half4 terminalBoot(float2 position, SwiftUI::Layer layer, float2 size, float time,
-                   float power, float tear, float decay, float seed) {
+                   float power, float tear, float decay, float seed, float dot) {
     float2 extent = max(size, float2(1.0));
     float2 uv = position / extent;
+
+    // Before the raster opens: one phosphor dot at centre, flaring on each
+    // POST beep. A tight core and a wide halo, broken by the scanlines.
+    if (power <= 0.0) {
+        float d = length(position - extent * 0.5);
+        float glow = exp(-d * d / 18.0) + exp(-d / 26.0) * 0.35 * dot;
+        float scan = 0.7 + 0.3 * (0.5 + 0.5 * sin(position.y * 2.094));
+        return half4(half3(0.92, 0.98, 1.0) * half(saturate(glow * dot * scan)), 1.0);
+    }
 
     // Power-on: a bright dot stretches into a line, the line opens vertically.
     float openWidth = max(saturate(power * 7.0), 0.002);

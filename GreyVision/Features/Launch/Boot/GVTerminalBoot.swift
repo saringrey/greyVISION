@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// The cold-start sequence: a CRT terminal powers on, POSTs the device, and
-/// decays into the splash.
+/// The cold-start sequence: a lone dot beeps three times, a CRT terminal
+/// powers on and POSTs the device, a Win95-style setup dialog stalls loading
+/// codec drivers, the machine "crashes" to a fatal-exception screen, and the
+/// wreckage decays into the codec selection splash.
 ///
 /// Everything on screen — type, HUD and black field — is one layer run
 /// through `terminalBoot` in TerminalBootShaders.metal, so power-on, tears,
@@ -20,7 +22,6 @@ struct GVTerminalBoot: View {
     @State private var seed = Float.random(in: 0 ... 64)
 
     private static let glow = Color(red: 0.55, green: 0.93, blue: 1.0)
-    private static let scramble = Array("░▒▓█#%&@$/\\<>_=+*01")
 
     var body: some View {
         let timeline = GVTerminalBootTimeline(lineCount: report.lines.count, skippedAt: skippedAt)
@@ -34,13 +35,22 @@ struct GVTerminalBoot: View {
                     content.layerEffect(
                         ShaderLibrary.terminalBoot(
                             .float2(proxy.size), .float(Float(time)), .float(Float(frame.power)),
-                            .float(Float(frame.tear)), .float(Float(frame.decay)), .float(seed)
+                            .float(Float(frame.tear)), .float(Float(frame.decay)), .float(seed),
+                            .float(Float(frame.dot))
                         ),
                         maxSampleOffset: CGSize(width: 64, height: 0)
                     )
                 }
                 .opacity(frame.opacity)
                 .sensoryFeedback(.impact(weight: .light, intensity: 0.5), trigger: frame.statusCount)
+                .sensoryFeedback(.impact(flexibility: .rigid, intensity: 0.8), trigger: frame.beeps)
+                .sensoryFeedback(trigger: frame.phase) { _, phase in phase == .crash ? .error : nil }
+                .onChange(of: frame.beeps) { _, beeps in
+                    if beeps > 0 { GVSoundEngine.shared.play(.postBeep) }
+                }
+                .onChange(of: frame.phase) { _, phase in
+                    if phase == .crash { GVSoundEngine.shared.play(.crash) }
+                }
         }
         .ignoresSafeArea()
         .contentShape(Rectangle())
@@ -67,9 +77,15 @@ struct GVTerminalBoot: View {
     private func chroma(_ frame: GVTerminalBootTimeline.Frame, time: Double) -> some View {
         let split = 0.8 + frame.tear * 5 + frame.decay * 9
         return ZStack {
-            screen(frame, time: time).colorMultiply(Color(red: 1, green: 0, blue: 0)).offset(x: split)
-            screen(frame, time: time).colorMultiply(Color(red: 0, green: 1, blue: 0)).blendMode(.plusLighter)
-            screen(frame, time: time).colorMultiply(Color(red: 0, green: 0, blue: 1)).offset(x: -split).blendMode(.plusLighter)
+            // Each copy is flattened before it is blended: unflattened, the
+            // additive blend applies per element, so dark type and fills add
+            // onto whatever is under them instead of covering it.
+            screen(frame, time: time).colorMultiply(Color(red: 1, green: 0, blue: 0)).compositingGroup()
+                .offset(x: split)
+            screen(frame, time: time).colorMultiply(Color(red: 0, green: 1, blue: 0)).compositingGroup()
+                .blendMode(.plusLighter)
+            screen(frame, time: time).colorMultiply(Color(red: 0, green: 0, blue: 1)).compositingGroup()
+                .offset(x: -split).blendMode(.plusLighter)
         }
         .compositingGroup()
         .background(Color.black)
@@ -80,15 +96,28 @@ struct GVTerminalBoot: View {
             let compact = geometry.size.height < 500
             ZStack(alignment: .topLeading) {
                 Color.black
-                VStack(alignment: .leading, spacing: compact ? 3 : 6) {
-                    ForEach(report.lines) { line in
-                        lineView(line, frame: frame, time: time)
+                switch frame.phase {
+                case .dot:
+                    EmptyView()
+                case .post:
+                    VStack(alignment: .leading, spacing: compact ? 3 : 6) {
+                        ForEach(report.lines) { line in
+                            lineView(line, frame: frame, time: time)
+                        }
                     }
+                    .padding(.horizontal, compact ? 64 : 24)
+                    .padding(.top, compact ? 40 : 112)
+                    .shadow(color: Self.glow.opacity(0.5), radius: 5)
+                    hud(frame, time: time, size: geometry.size, compact: compact)
+                case .loading:
+                    GVBootSetupDialog(load: frame.load)
+                        .padding(.horizontal, 28)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                    hud(frame, time: time, size: geometry.size, compact: compact)
+                case .crash:
+                    GVBootFatalException(corruption: max(frame.corruption, frame.decay * 0.9),
+                                         cursorOn: frame.cursorOn, time: time)
                 }
-                .padding(.horizontal, compact ? 64 : 24)
-                .padding(.top, compact ? 40 : 112)
-                .shadow(color: Self.glow.opacity(0.5), radius: 5)
-                hud(frame, time: time, size: geometry.size, compact: compact)
             }
         }
     }
@@ -101,7 +130,7 @@ struct GVTerminalBoot: View {
             let count = min(shown, full.count)
             let typing = count < full.count
             let isLast = line.id == report.lines.count - 1
-            let text = decayed(Array(full.prefix(count)), line: line.id, decay: frame.decay, time: time)
+            let text = GVGlyphCorruption.apply(String(full.prefix(count)), amount: frame.decay * 0.9, salt: line.id, time: time)
             let key = String(text.prefix(line.keyLength))
             let rest = String(text.dropFirst(line.keyLength))
             let cursor = (typing || isLast) && frame.cursorOn ? "█" : ""
@@ -120,19 +149,6 @@ struct GVTerminalBoot: View {
                 }
             }
         }
-    }
-
-    /// Digital decay at the glyph level: as the raster breaks up, characters
-    /// are swapped for block and symbol glyphs, re-rolled at 20 Hz.
-    private func decayed(_ characters: [Character], line: Int, decay: Double, time: Double) -> String {
-        guard decay > 0 else { return String(characters) }
-        let tick = (time * 20).rounded(.down)
-        return String(characters.enumerated().map { index, character in
-            guard character != " " else { return character }
-            let roll = GVTerminalBootTimeline.hash(Double(line * 97 + index) + tick * 13.1)
-            guard roll < decay * 0.9 else { return character }
-            return Self.scramble[Int(roll * 1000) % Self.scramble.count]
-        })
     }
 
     private func font(_ style: GVTerminalBootReport.Style) -> Font {
