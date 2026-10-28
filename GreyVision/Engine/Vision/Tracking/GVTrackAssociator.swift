@@ -26,6 +26,7 @@ final class GVTrackAssociator {
         var confidence: Float
         var joints: [CGPoint]
         var bones: [[Int]]
+        var kind: String?
         var hits: Int
         var confirmed: Bool
         var born: Double
@@ -93,6 +94,7 @@ final class GVTrackAssociator {
             track.area += Float(alpha) * (detection.area - track.area)
             track.confidence = detection.confidence
             track.joints = Self.blend(track.joints, toward: detection.joints, alpha: alpha)
+            track.kind = detection.kind ?? track.kind
             track.bones = detection.bones
             track.hits += 1
             track.lastSeen = time
@@ -127,6 +129,7 @@ final class GVTrackAssociator {
                 confidence: detection.confidence,
                 joints: detection.joints,
                 bones: detection.bones,
+                kind: detection.kind,
                 hits: 1,
                 confirmed: parameters.confirm <= 1,
                 born: time,
@@ -162,7 +165,8 @@ final class GVTrackAssociator {
                     color: track.color,
                     area: track.area,
                     confidence: track.confidence,
-                    label: EsotericLabelGenerator.label(for: seed, index: Int(track.id)),
+                    label: track.kind.map { "\($0)-\(String(format: "%02d", track.id % 100))" }
+                        ?? EsotericLabelGenerator.label(for: seed, index: Int(track.id)),
                     age: time - track.born,
                     isCoasting: track.lastSeen < time,
                     trail: track.trail,

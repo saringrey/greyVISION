@@ -615,8 +615,6 @@ struct WorkspaceView: View {
                     coachPresented = true
                 }
             }
-            // Ensure vignette is disabled on the preview screen
-            effectEditor.setEnabled(.vignette, false)
             // The beat detector attaches on appear and detaches on disappear,
             // so a workspace transition never leaks a callback.
             beatDetector.attach(audio: audioRuntime)

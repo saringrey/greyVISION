@@ -137,3 +137,44 @@ frames, drew boxes only, and exposed four sliders. It is now a suite:
   on some simulators; faces and saliency run anywhere.
 - `TrackingSuiteTests` and `EffectLivenessTests` build but were not executed: the
   XCTest runner still cannot attach to simulators in this environment.
+
+## Consolidation (28 October)
+
+A second pass over every effect, live through the production graph over the
+photograph, kept only what visibly transforms the frame at its defaults and
+is not a weaker sibling of something else. 160 effects became 75 (74 browser
+cards; Kaleidoscope 6 is a variant of Kaleidoscope). The fourteen shelves
+became eight families, shown in the browser as picture cards previewed on the
+live frame through each family's signature effect.
+
+| Family | Effects |
+| --- | --- |
+| GLITCH | datamosh, liquidMosh, heavyMosh, predictionDrift, sort, radialSort, pointCloudSmear, pixelShift, dataBend, frameTear, rgbSplit, pixelMelt, burnThrough, bitRot |
+| TIME | feedback, trails, echo, slitScan, feedbackTunnel, frameHoldSmear, timeFracture, antiCamera |
+| ANALOG | vhs, crt, super8, grain, hologram, sensorSmear |
+| LOOK | thermal, falseColor, threshold, edge, contourLines, posterize, dither, pixelate, asciiMosaic, cmykPress, kuwahara, monochrome, invert |
+| LENS | lightLeak, anamorphicFlare, tiltShift, fisheye |
+| WARP | kaleidoscope, kaleido6, quadMirror, polarWarp, spiralWarp, shatter, hexTile, fold, flowField, water, fluid |
+| GENERATIVE | cyberGrid, quantumRaymarch, liquidChroma, holoAurora, eventHorizon, nebulaDrift, singularityWeave, fractalBurst, hologramMatrix, pixelConfetti |
+| AUDIO | audioTunnel, audioScanBend, audioBandSlice, audioKick, audioRepair, audioDisplace, waveformTunnel, spectrumBars, radialSpectrum |
+
+Retired, each resolving to the survivor nearest in look (the frame scopes,
+which have no look equivalent, resolve to Spectrum Bars):
+
+temporalPixelSort → sort, freezeBrush → frameHoldSmear, sortBrush → sort, pixelGravity → frameHoldSmear, motionBloom → trails, prismStreak → lightLeak, vectorWarp → flowField, audioSpectral → audioTunnel, audioWaveform → spectrumBars, audioBloom → audioKick, bufferUnderrun → frameTear, packetLoss → frameTear, chromaFailure → rgbSplit, causalSmear → timeFracture, realityCavitation → antiCamera, memoryBurnIn → echo, spectralDepth → echo, vectorNecromancy → trails, worldFeedback → feedback, timeGraffiti → trails, freeze → echo, ripple → water, signalTear → frameTear, vignette → super8, emboss → edge, solarize → posterize, hueShift → falseColor, sharpen → edge, touchWarp → water, hatch → dither, phosphor → crt, lensDirt → lightLeak, starFilter → anamorphicFlare, softFocus → tiltShift, halation → lightLeak, vhsTracking → vhs, chromaBleed → vhs, dropout → vhs, colorBarTear → frameTear, degauss → crt, shearStack → dataBend, lensArray → hexTile, plasma → flowField, gradientMap → falseColor, edgeGlow → contourLines, reactionBands → contourLines, ashDrift → burnThrough, audioMacroblock → audioRepair, audioFracture → audioRepair, audioStretch → audioScanBend, spectralTint → audioTunnel, mirror → quadMirror, lensWarp → fisheye, frostedGlass → hexTile, domainWarp → flowField, lissajous → radialSpectrum, vectorscope → spectrumBars, waveformMonitor → spectrumBars, rgbParade → spectrumBars, moshBrush → datamosh, timeMap → slitScan, neuralFlow → cyberGrid, spectralFlower → waveformTunnel, glitchWeave → hologramMatrix, causticReactor → liquidChroma, prismPortal → eventHorizon, neonOrbit → singularityWeave, chromeRipple → singularityWeave, laserGarden → cyberGrid, hyperBloom → holoAurora, solarFlare → holoAurora, candyMesh → cyberGrid, auroraGlass → liquidChroma, cosmicKnot → singularityWeave, quantumBloom → singularityWeave, plasmaRipple → singularityWeave, chromascrape → hologramMatrix, vortexPulse → singularityWeave, ionStorm → nebulaDrift, opalWave → liquidChroma, spectralDiffraction → anamorphicFlare, reactionGarden → fluid, vectorCodebook → datamosh, motionTransplant → datamosh, bitplaneLatch → bitRot.
+
+Removed with them: 84 kernel arms (62 style, 22 temporal), the
+reaction-diffusion solver and its shader file (Reaction Garden was its only
+user), and the world-anchor attitude sensor (World Feedback and Time Graffiti
+were its only users). The world-reprojection uniform stays in the shader ABI
+as identity.
+
+### Debt from this pass
+
+- The lens family is highlight-gated and reads as quiet on a flat, dim scene;
+  that is the optics it models, but it means the family card can look plain
+  indoors.
+- Audio effects were judged against the synthetic 120 BPM signal; transient
+  looks (Audio Kick) only show on a beat and may deserve a stronger idle state.
+- Touch brushes (Freeze, Sort, Mosh) were retired as idle-until-touched. Fluid
+  is the one remaining touch-driven effect.

@@ -35,6 +35,11 @@ final class CameraRuntime: ObservableObject {
     @Published private(set) var recordingMessage: String?
     @Published private(set) var screenshotMessage: String?
     @Published private(set) var isFrameFrozen = false
+    @Published private(set) var datamoshTransport = GVDatamoshTransport()
+
+    func sendDatamosh(_ action: GVDatamoshTransport.Action) {
+        datamoshTransport.send(action)
+    }
 
     let recordingMailbox = CameraRecordingMailbox()
     /// Where the recording transaction hears the outcome of a finished take —
@@ -247,6 +252,7 @@ final class CameraRuntime: ObservableObject {
     func start(configuration: CaptureConfiguration) async -> Bool {
         activeConfiguration = configuration
         isFrameFrozen = false
+        datamoshTransport.send(.reset)
         torchPulseTask?.cancel()
         torchPulseTask = nil
         if snapshot.torchEnabled {
@@ -337,6 +343,7 @@ final class CameraRuntime: ObservableObject {
         #endif
         activeConfiguration = nil
         isFrameFrozen = false
+        datamoshTransport.send(.reset)
         torchPulseTask?.cancel()
         torchPulseTask = nil
         snapshot = .idle
@@ -348,6 +355,7 @@ final class CameraRuntime: ObservableObject {
         #endif
         activeConfiguration = nil
         isFrameFrozen = false
+        datamoshTransport.send(.reset)
         torchPulseTask?.cancel()
         torchPulseTask = nil
         snapshot = .idle

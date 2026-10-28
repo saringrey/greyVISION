@@ -25,7 +25,7 @@ final class CameraEffectTests: XCTestCase {
         XCTAssertEqual(Set(temporalModes).count, temporalModes.count, "Two temporal effects share a shader mode")
         for effect in WorkspaceAdjustableEffect.allCases {
             XCTAssertTrue(effect.styleMode != nil || effect.temporalMode != nil ||
-                          [.rgbSplit, .fluid, .reactionGarden].contains(effect), effect.rawValue)
+                          [.rgbSplit, .fluid].contains(effect), effect.rawValue)
         }
 
         for effect in styleEffects + temporalEffects {
@@ -39,35 +39,16 @@ final class CameraEffectTests: XCTestCase {
         }
     }
 
-    /// The generative shader block is modes 104...139, and it is filed across two
-    /// shelves on purpose: the finished looks under GENERATIVE, the interactive,
-    /// audio-reactive and touch-responsive block under SOLVERS. What has to hold is
-    /// that the block is contiguous and every mode in it is reachable — a gap
-    /// silently routes an effect to the shader's default arm, and an unlisted mode
-    /// is an effect the browser cannot open.
-    func testShaderShowcaseIsACompleteStandaloneFamily() {
-        let shaders = WorkspaceAdjustableEffect.shaderCategoryEffects
-        XCTAssertEqual(shaders.first, .cyberGrid, "The first shader mode must be reachable from GENERATIVE")
+    /// Every generative effect owns a distinct shader mode and sits on the
+    /// GENERATIVE shelf. A shared mode silently renders one effect as another;
+    /// an unfiled one is an effect the browser cannot open.
+    func testGenerativeFamilyOwnsDistinctModesAndIsFiled() {
+        let shaders = WorkspaceAdjustableEffect.generativeFamily
         XCTAssertEqual(Set(shaders).count, shaders.count)
-        XCTAssertTrue(
-            Set(shaders).isDisjoint(with: WorkspaceAdjustableEffect.timeCategoryEffects),
-            "GENERATIVE must not be buried in or duplicated by HISTORY"
-        )
         XCTAssertTrue(WorkspaceAdjustableEffect.curatedCategoryEffectGroups.contains(shaders))
-
-        let solvers = WorkspaceAdjustableEffect.experimentalCategoryEffects
-        let block = Set(UInt32(104) ... UInt32(139))
-        let filed = Set(shaders + solvers)
-        let inBlock = WorkspaceAdjustableEffect.allCases.filter {
-            $0.styleMode.map(block.contains) ?? false
-        }
-        XCTAssertEqual(inBlock.count, block.count, "Two effects share a generative shader mode")
-        XCTAssertEqual(Set(inBlock).subtracting(filed), [], "Every generative mode has to be on a shelf")
-        XCTAssertEqual(
-            Set(shaders).intersection(solvers),
-            [],
-            "A generative effect is filed in one shelf, not both"
-        )
+        let modes = shaders.compactMap(\.styleMode)
+        XCTAssertEqual(Set(modes).count, modes.count, "Two generative effects share a shader mode")
+        XCTAssertTrue(Set(shaders).isDisjoint(with: WorkspaceAdjustableEffect.timeFamily))
     }
 
     func testPredictionDriftOwnsTheNextTemporalModeAndDatamoshRailEntry() {
@@ -336,9 +317,8 @@ final class CameraEffectStackSlotTests: XCTestCase {
         }
 
         let placement = WorkspaceAdjustableEffect.defaultPlacementOrder
-        XCTAssertEqual(placement.count, metal.count + temporal.count + 2)
+        XCTAssertEqual(placement.count, metal.count + temporal.count + 1)
         XCTAssertTrue(placement.contains(.fluid))
-        XCTAssertTrue(placement.contains(.reactionGarden))
         XCTAssertEqual(Set(placement).count, placement.count)
     }
 

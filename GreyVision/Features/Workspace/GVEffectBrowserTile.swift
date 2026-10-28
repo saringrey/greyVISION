@@ -22,7 +22,7 @@ struct GVEffectTileFace: View {
 
     var body: some View {
         Color.clear
-            .aspectRatio(1, contentMode: .fit)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay { preview }
             .overlay(alignment: .bottom) { caption }
             .overlay(alignment: .top) { badges }

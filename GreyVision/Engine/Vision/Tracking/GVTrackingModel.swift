@@ -6,10 +6,13 @@ import simd
 
 /// What the tracker treats as a subject.
 ///
-/// The first six segment a coarse analysis grid on the CPU; the last four ask
+/// The first seven segment a coarse analysis grid on the CPU; the rest ask
 /// Vision. Both produce the same `GVTrackingDetection`, so association,
 /// smoothing and drawing never need to know which kind of detector ran.
 enum GVTrackingMode: String, CaseIterable, Codable, Sendable, Identifiable {
+    /// Classic blob tracking: anything that stands out from its surroundings,
+    /// light or dark, with no colour or class to key on.
+    case blob
     case color
     case bright
     case shadow
@@ -20,11 +23,16 @@ enum GVTrackingMode: String, CaseIterable, Codable, Sendable, Identifiable {
     case hand
     case body
     case salient
+    case animal
+    case text
+    /// Rectangles: screens, papers, frames, signs. Corners come back as a quad.
+    case shape
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
+        case .blob: "Blobs"
         case .color: "Color"
         case .bright: "Bright"
         case .shadow: "Shadow"
@@ -35,11 +43,15 @@ enum GVTrackingMode: String, CaseIterable, Codable, Sendable, Identifiable {
         case .hand: "Hands"
         case .body: "Bodies"
         case .salient: "Salient"
+        case .animal: "Animals"
+        case .text: "Text"
+        case .shape: "Shapes"
         }
     }
 
     var symbol: String {
         switch self {
+        case .blob: "circle.hexagongrid"
         case .color: "eyedropper"
         case .bright: "sun.max"
         case .shadow: "moon"
@@ -50,6 +62,9 @@ enum GVTrackingMode: String, CaseIterable, Codable, Sendable, Identifiable {
         case .hand: "hand.point.up.left"
         case .body: "figure.stand"
         case .salient: "scope"
+        case .animal: "pawprint"
+        case .text: "textformat"
+        case .shape: "rectangle.dashed"
         }
     }
 
@@ -57,13 +72,13 @@ enum GVTrackingMode: String, CaseIterable, Codable, Sendable, Identifiable {
     /// those controls instead of offering knobs that do nothing.
     var usesVision: Bool {
         switch self {
-        case .face, .hand, .body, .salient: true
+        case .face, .hand, .body, .salient, .animal, .text, .shape: true
         default: false
         }
     }
 
     var usesHue: Bool { self == .color }
-    var usesThreshold: Bool { self == .bright || self == .shadow || self == .vivid || self == .motion }
+    var usesThreshold: Bool { [.blob, .bright, .shadow, .vivid, .motion].contains(self) }
     var usesTolerance: Bool { self == .color || self == .skin }
 
     /// Kind word drawn in labels and the HUD.
@@ -74,6 +89,10 @@ enum GVTrackingMode: String, CaseIterable, Codable, Sendable, Identifiable {
         case .body: "BODY"
         case .salient: "OBJECT"
         case .motion: "MOVER"
+        case .blob: "BLOB"
+        case .animal: "ANIMAL"
+        case .text: "TEXT"
+        case .shape: "QUAD"
         default: "FIELD"
         }
     }
@@ -83,9 +102,13 @@ enum GVTrackingMode: String, CaseIterable, Codable, Sendable, Identifiable {
 
 enum GVTrackingStyle: String, CaseIterable, Codable, Sendable, Identifiable {
     case brackets, box, crosshair, ring, target, dot
+    /// A targeting lock: corner-ticked box with hairlines across the frame
+    /// through the subject's centre.
+    case lockOn
     var id: String { rawValue }
     var label: String {
         switch self {
+        case .lockOn: "Lock"
         case .brackets: "Brackets"
         case .box: "Box"
         case .crosshair: "Cross"
@@ -141,7 +164,7 @@ enum GVTrackingPalette: String, CaseIterable, Codable, Sendable, Identifiable {
 /// survives relaunch; each field decodes independently, so a parameter added
 /// later never invalidates a stored setup.
 struct BlobTrackingParameters: Codable, Equatable, Sendable {
-    var mode = GVTrackingMode.color
+    var mode = GVTrackingMode.blob
 
     // Detect
     /// Target hue, 0...1 (red is 0). Color mode only.
@@ -155,7 +178,7 @@ struct BlobTrackingParameters: Codable, Equatable, Sendable {
     /// Largest subject kept, as a fraction of the frame. Rejects a key that
     /// has swallowed the whole background.
     var maxArea = 0.6
-    /// Analysis grid density, 0...1 → 24...112 cells on the long edge.
+    /// Analysis grid density, 0...1 → 24...160 cells on the long edge.
     var resolution = 0.5
     /// Dilation passes that bridge small gaps between cells, 0...3.
     var merge = 1.0
@@ -173,7 +196,7 @@ struct BlobTrackingParameters: Codable, Equatable, Sendable {
     var prediction = 0.5
     /// Largest jump, as a fraction of the frame, still treated as the same subject.
     var matchRadius = 0.18
-    /// Analysis passes per second, 5...30.
+    /// Analysis passes per second, 5...60. Vision modes are capped at 30.
     var rate = 15.0
     /// Consecutive detections before a new subject is shown, 1...6.
     var confirm = 2.0
@@ -215,7 +238,7 @@ struct BlobTrackingParameters: Codable, Equatable, Sendable {
         value.persistence = clamp(persistence, 0 ... 2)
         value.prediction = clamp(prediction, 0 ... 1)
         value.matchRadius = clamp(matchRadius, 0.02 ... 0.5)
-        value.rate = clamp(rate.rounded(), 5 ... 30)
+        value.rate = clamp(rate.rounded(), 5 ... (mode.usesVision ? 30 : 60))
         value.confirm = clamp(confirm.rounded(), 1 ... 6)
         value.trails = clamp(trails, 0 ... 1)
         value.lineWidth = clamp(lineWidth, 0.5 ... 3)
@@ -224,7 +247,7 @@ struct BlobTrackingParameters: Codable, Equatable, Sendable {
     }
 
     /// Grid cells on the frame's long edge.
-    var gridLongEdge: Int { Int((24 + sanitized.resolution * 88).rounded()) }
+    var gridLongEdge: Int { Int((24 + sanitized.resolution * 136).rounded()) }
     /// Trail samples kept per subject.
     var trailCapacity: Int { Int((sanitized.trails * 48).rounded()) }
 
@@ -283,6 +306,8 @@ struct GVTrackingDetection: Sendable, Equatable {
     var joints: [CGPoint] = []
     /// Index pairs into `joints` drawn as a skeleton.
     var bones: [[Int]] = []
+    /// What the detector says this is ("CAT", "DOG"), when it classifies.
+    var kind: String?
 }
 
 /// A followed subject: a detection with identity, smoothing and history.

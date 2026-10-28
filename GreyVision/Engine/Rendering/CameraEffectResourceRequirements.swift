@@ -63,10 +63,7 @@ extension WorkspaceAdjustableEffect {
     var cameraResourceRequirements: CameraEffectResourceRequirements {
         var requirements: CameraEffectResourceRequirements = []
         switch self {
-        case .predictionDrift, .vectorCodebook,
-             .motionTransplant, .bitplaneLatch, .causalSmear,
-             .realityCavitation, .timeFracture, .antiCamera, .memoryBurnIn,
-             .spectralDepth, .vectorNecromancy:
+        case .predictionDrift, .timeFracture, .antiCamera:
             requirements.insert(.opticalFlow)
         default: break
         }
@@ -74,19 +71,16 @@ extension WorkspaceAdjustableEffect {
         // The three compression modes read no shader history at all. Their
         // state is a VideoToolbox reference queue, and the artefacts are the
         // decoder's, so they ask the graph for nothing it can allocate.
-        case .datamosh, .liquidMosh, .heavyMosh:
+        case .liquidMosh, .heavyMosh:
             requirements.insert(.videoCodec)
-        case .timeGraffiti, .timeMap: requirements.insert(.timestampedHistory)
-        case .frameTear, .bufferUnderrun, .packetLoss, .chromaFailure,
-             .realityCavitation, .timeFracture, .antiCamera, .spectralDepth, .vectorNecromancy:
+        case .frameTear, .timeFracture, .antiCamera:
             requirements.insert(.legacyHistoryTaps)
         default: break
         }
         switch self {
-        case .predictionDrift, .moshBrush,
-             .vectorCodebook, .motionTransplant, .bitplaneLatch:
+        case .datamosh, .predictionDrift:
             requirements.formUnion([.slotHistory, .moshState])
-        case .fluid, .reactionGarden: requirements.insert(.simulation)
+        case .fluid: requirements.insert(.simulation)
         default: break
         }
         return requirements

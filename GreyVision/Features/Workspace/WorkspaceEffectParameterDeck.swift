@@ -11,6 +11,9 @@ struct WorkspaceEffectParameterDeck: View {
     let onClose: () -> Void
 
     @EnvironmentObject private var toasts: GVToastBox
+    @EnvironmentObject private var cameraRuntime: CameraRuntime
+    @GestureState private var pressingDatamosh = false
+    @State private var showDatamoshMotion = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var showStack = false
@@ -21,6 +24,7 @@ struct WorkspaceEffectParameterDeck: View {
         VStack(spacing: GVMetrics.gap) {
             headerRow
             sliderRow
+            if effect == .datamosh { datamoshControls }
             if effect.isSpectrumOverlay {
                 Text("Drag preview to place · Pinch to resize")
                     .font(.caption2)
@@ -243,11 +247,64 @@ struct WorkspaceEffectParameterDeck: View {
                     value: cameraParameterBinding(control.keyPath),
                     defaultValue: control.defaultValue,
                     range: control.range,
-                    format: percentage
+                    format: effect == .datamosh ? { value in
+                        control.label == "DIRECTION" ? "\(Int((value * 360 - 180).rounded()))°" : String(format: "%.2f%%", value * 100)
+                    } : percentage
                 ))
             }
         }
         return specs
+    }
+
+    private var datamoshControls: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Text(cameraRuntime.datamoshTransport.mode.rawValue.uppercased())
+                    .font(GVTheme.mono(10, .semibold))
+                    .foregroundStyle(GVTheme.ash)
+                    .accessibilityIdentifier("datamosh.state")
+                Spacer(minLength: 0)
+                Text("HOLD")
+                    .font(GVTheme.mono(12, .semibold))
+                    .foregroundStyle(GVTheme.bone)
+                    .frame(minWidth: 56, minHeight: 44)
+                    .background(Capsule().fill(Color.white.opacity(cameraRuntime.datamoshTransport.mode == .hold ? 0.2 : 0.06)))
+                    .gesture(DragGesture(minimumDistance: 0).updating($pressingDatamosh) { _, held, _ in held = true })
+                    .onChange(of: pressingDatamosh) { _, held in
+                        if held { cameraRuntime.sendDatamosh(.hold) }
+                        else if cameraRuntime.datamoshTransport.mode == .hold { cameraRuntime.sendDatamosh(.release) }
+                    }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("Hold datamosh source")
+                    .accessibilityHint("Locks source pixels while the distortion keeps moving. Use Release to return to live input.")
+                    .accessibilityAction { cameraRuntime.sendDatamosh(.hold) }
+                    .accessibilityIdentifier("datamosh.hold")
+                GVDeckChip(label: "RELEASE", height: 32, id: "datamosh.release") { cameraRuntime.sendDatamosh(.release) }
+                GVDeckChip(label: "FREEZE", active: cameraRuntime.datamoshTransport.mode == .freeze, height: 32, id: "datamosh.freeze") { cameraRuntime.sendDatamosh(.freeze) }
+                GVDeckChip(label: "RESET", height: 32, id: "datamosh.reset") { cameraRuntime.sendDatamosh(.reset) }
+            }
+            DisclosureGroup("Block motion", isExpanded: $showDatamoshMotion) {
+                VStack(spacing: 8) {
+                    Picker("Macroblock size", selection: Binding(
+                        get: { currentParameters.datamoshBlockSize },
+                        set: { size in var p = currentParameters; p.datamoshBlockSize = size; write(p) }
+                    )) {
+                        ForEach([8, 16, 32], id: \.self) { size in Text("\(size) × \(size)").tag(size) }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("datamosh.blocks")
+                    HStack {
+                        GVParamRow(label: "DECAY", value: cameraParameterBinding(\.datamoshVelocityDecay),
+                                   defaultValue: 0.18, range: 0 ... 1, format: percentage)
+                        GVParamRow(label: "RESIDUAL", value: cameraParameterBinding(\.datamoshResidual),
+                                   defaultValue: 0.0015, range: 0 ... 0.05,
+                                   format: { String(format: "%.2f%%", $0 * 100) })
+                    }
+                }.padding(.top, 8)
+            }
+            .font(GVTheme.mono(11, .medium))
+            .foregroundStyle(GVTheme.ash)
+        }
     }
 
     private var isEffectEnabled: Bool {

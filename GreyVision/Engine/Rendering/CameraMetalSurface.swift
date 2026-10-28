@@ -409,6 +409,13 @@ struct CameraMetalSurface: UIViewRepresentable {
         context.coordinator.renderer?.setBroadcastEngine(broadcast)
         context.coordinator.renderer?.setTrackingFeed(trackingFeed)
         context.coordinator.renderer?.setTemporalHoldActive(runtime.isFrameFrozen)
+        context.coordinator.renderer?.setDatamoshTransport(runtime.datamoshTransport)
+        view.datamoshHoldRecognizer.isEnabled = effectStack[.datamosh].isEnabled
+        view.onDatamoshHold = { [weak runtime] held in
+            guard let runtime else { return }
+            if held { runtime.sendDatamosh(.hold) }
+            else if runtime.datamoshTransport.mode == .hold { runtime.sendDatamosh(.release) }
+        }
         context.coordinator.renderer?.update(
             rgbSplitParameters: rgbSplitParameters,
             effectStack: effectStack,
@@ -440,6 +447,8 @@ struct CameraMetalSurface: UIViewRepresentable {
         view.onTap = nil
         view.onFracture = nil
         view.onTouchChanged = nil
+        view.onDatamoshHold?(false)
+        view.onDatamoshHold = nil
         view.onOverlayPinch = nil
         coordinator.fracture.reset()
         coordinator.statsMailbox.clear()
@@ -595,7 +604,9 @@ enum CameraFractureEvent {
 }
 
 @MainActor
-final class CameraMetalView: MTKView {
+final class CameraMetalView: MTKView, UIGestureRecognizerDelegate {
+    var onDatamoshHold: ((Bool) -> Void)?
+    private(set) lazy var datamoshHoldRecognizer = UILongPressGestureRecognizer(target: self, action: #selector(handleDatamoshHold(_:)))
     var onTap: ((CGPoint, CGSize) -> Void)?
     var onFracture: ((CameraFractureEvent) -> Void)?
     var onTouchChanged: ((CameraTouchEvent) -> Void)?
@@ -611,6 +622,12 @@ final class CameraMetalView: MTKView {
         )
         fracture.cancelsTouchesInView = false
         addGestureRecognizer(fracture)
+        datamoshHoldRecognizer.minimumPressDuration = 0.15
+        datamoshHoldRecognizer.allowableMovement = .greatestFiniteMagnitude
+        datamoshHoldRecognizer.delegate = self
+        datamoshHoldRecognizer.cancelsTouchesInView = false
+        datamoshHoldRecognizer.isEnabled = false
+        addGestureRecognizer(datamoshHoldRecognizer)
         let touch = UIPanGestureRecognizer(target: self, action: #selector(handleTouchPan(_:)))
         touch.minimumNumberOfTouches = 1
         touch.maximumNumberOfTouches = 1
@@ -624,6 +641,19 @@ final class CameraMetalView: MTKView {
     @available(*, unavailable)
     required init(coder _: NSCoder) {
         fatalError("CameraMetalView does not support Interface Builder")
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === datamoshHoldRecognizer && otherGestureRecognizer is UIPanGestureRecognizer
+    }
+
+    @objc private func handleDatamoshHold(_ recognizer: UILongPressGestureRecognizer) {
+        switch recognizer.state {
+        case .began: onDatamoshHold?(true)
+        case .ended, .cancelled, .failed: onDatamoshHold?(false)
+        default: break
+        }
     }
 
     @objc
@@ -721,6 +751,7 @@ private struct CameraRenderSettings {
     let sourceDimensions: CaptureDimensions
     let sourceIdentifier: String
     let temporalHoldActive: Bool
+    let datamoshTransport: GVDatamoshTransport
     let audio: SIMD4<Float>
     let audioDynamics: SIMD4<Float>
     let audioSpectrum: CameraAudioSpectrum
@@ -851,7 +882,6 @@ private enum CameraRenderGraphStage: Equatable {
     case rgbSplit
     case style(WorkspaceAdjustableEffect)
     case fluid
-    case reactionDiffusion
     case temporal(WorkspaceAdjustableEffect)
 }
 
@@ -862,7 +892,7 @@ private enum CameraRenderGraphStage: Equatable {
 /// renderer, and a Slot that cannot ask it would have to be told by someone else.
 private func isCodecMoshMode(_ mode: UInt32) -> Bool {
     switch mode {
-    case 4, 39, 40:
+    case 39, 40:
         true
     default:
         false
@@ -899,7 +929,6 @@ private final class CameraRenderGraphNode: RenderEffect {
     var cameraParameters = CameraEffectParameters()
     var rgbSplitParameters: RGBSplitEffectParameters?
     var fluidSolver: CameraFluidSolver?
-    var reactionSolver: CameraReactionDiffusion?
     var lastFluidTime: TimeInterval = 0
     /// Stateful mosh data belongs to the Slot, not to the renderer. A shared
     /// pair made DATAMOSH, LIQUID MOSH and duplicate Slots overwrite one
@@ -917,6 +946,7 @@ private final class CameraRenderGraphNode: RenderEffect {
     /// first one's reference chain, and a renderer-wide stall timer made slot A's
     /// gap force slot B to resync. Nil until the budget funds this Slot.
     var codecEngine: GVDatamoshEngine?
+    var frameDatamosh: GVFrameDatamosh?
     /// Sessions this Slot holds, so release is exact: a cascade gives back two.
     var codecSessionsSpent = 0
     /// Per-slot stall watchdog, in Slot clock rather than renderer clock.
@@ -950,14 +980,13 @@ private final class CameraRenderGraphNode: RenderEffect {
         case .rgbSplit: "RGB Split"
         case let .style(effect), let .temporal(effect): effect.rawValue
         case .fluid: "Fluid"
-        case .reactionDiffusion: "Reaction Garden"
         }
     }
 
     var kind: RenderEffectKind {
         switch stage {
         case .rgbSplit, .style: .stateless
-        case .fluid, .reactionDiffusion: .composite
+        case .fluid: .composite
         case .temporal: .temporal
         }
     }
@@ -992,9 +1021,9 @@ private final class CameraRenderGraphNode: RenderEffect {
         try owner.processGraphNode(self, request: request)
     }
 
-    func reset(reason _: EffectResetReason) {
+    func reset(reason: EffectResetReason) {
+        if reason != .formatChanged { frameDatamosh = nil }
         fluidSolver?.reset()
-        reactionSolver?.reset()
         lastFluidTime = 0
         moshStateA = nil
         moshStateB = nil
@@ -1005,10 +1034,9 @@ private final class CameraRenderGraphNode: RenderEffect {
     }
 
     func releaseResources() {
+        frameDatamosh = nil
         fluidSolver?.reset()
-        reactionSolver?.reset()
         fluidSolver = nil
-        reactionSolver = nil
         lastFluidTime = 0
         moshStateA = nil
         moshStateB = nil
@@ -1106,14 +1134,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     /// Shared optical flow. One estimator feeds every motion-aware effect.
     private let flowField: CameraFlowField
     /// Device attitude, for world-anchored accumulation.
-    private let worldPoseMailbox = CameraWorldPoseMailbox()
-    private lazy var worldAnchor = CameraWorldAnchor(mailbox: worldPoseMailbox)
-    private var worldReprojection = CameraWorldReprojection()
     /// Timestamped history, addressed in seconds. Runs alongside the fixed
     /// four-tap ring rather than replacing it, so the damage effects built on
     /// taps keep working while new effects move to age-based sampling.
     private let temporalEngine: CameraTemporalEngine
-    private var isWorldAnchorRunning = false
     private let fracturePipeline: MTLComputePipelineState
     private let previewPipeline: MTLRenderPipelineState
     /// Resolves the effect chain's `rgba16Float` output into the 8-bit sRGB
@@ -1164,6 +1188,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private var isSynthetic = false
     private var sourceIdentifier = "camera"
     private var temporalHoldActive = false
+    private var datamoshTransport = GVDatamoshTransport()
     private var audioMailbox: AudioReactiveSnapshotMailbox?
     private var audioGain: Float = 0
     private var blobFields: [SIMD4<Float>] = []
@@ -1425,6 +1450,10 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         }
     }
 
+    func setDatamoshTransport(_ transport: GVDatamoshTransport) {
+        settingsLock.withLock { datamoshTransport = transport }
+    }
+
     func setTemporalHoldActive(_ isActive: Bool) {
         settingsLock.withLock {
             temporalHoldActive = isActive
@@ -1483,6 +1512,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 sourceDimensions: self.sourceDimensions,
                 sourceIdentifier: sourceIdentifier,
                 temporalHoldActive: temporalHoldActive,
+                datamoshTransport: datamoshTransport,
                 audio: liveAudio.metalBands * audioGain,
                 audioDynamics: liveAudio.metalDynamics * audioGain,
                 audioSpectrum: (bands.0 * audioGain, bands.1 * audioGain, bands.2 * audioGain, bands.3 * audioGain),
@@ -1723,24 +1753,8 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             encodeHistoryTaps(source: linearTexture, commandBuffer: commandBuffer)
         }
         let historyTaps = ringReady ? temporalFrames.textures : []
-        // The attitude sensor only runs while a world-anchored mode is armed.
-        // Leaving it on for every session would burn power for an effect that
-        // is not being used.
-        let needsWorld = temporalEffects.contains { $0.0.requiresWorldAnchor }
-        if needsWorld, !isWorldAnchorRunning {
-            worldAnchor.start()
-            isWorldAnchorRunning = true
-        } else if !needsWorld, isWorldAnchorRunning {
-            worldAnchor.stop()
-            worldReprojection.reset()
-            isWorldAnchorRunning = false
-        }
-        let worldMatrix = needsWorld
-            ? worldReprojection.update(
-                pose: worldPoseMailbox.latest,
-                aspect: Float(linearTexture.width) / Float(max(linearTexture.height, 1))
-            )
-            : matrix_identity_float3x3
+        // No shipping effect is world-anchored, so reprojection is identity.
+        let worldMatrix = matrix_identity_float3x3
         let shouldFreezeTemporalHistory = settings.temporalHoldActive &&
             temporalEffects.contains(where: \.0.freezesHistoryOnHold)
 
@@ -1821,7 +1835,7 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         #endif
 
         let shouldWriteHistory = !hasHistoryFrame ||
-            (!shouldFreezeTemporalHistory && !temporalEffects.contains(where: { $0.0 == WorkspaceAdjustableEffect.freeze }))
+            !shouldFreezeTemporalHistory
         if !needsSharedHistory {
             hasHistoryFrame = false
         } else if let historyTexture, shouldWriteHistory {
@@ -2063,8 +2077,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
             let stage: CameraRenderGraphStage
             if slot.effect == .fluid {
                 stage = .fluid
-            } else if slot.effect == .reactionGarden {
-                stage = .reactionDiffusion
             } else if slot.effect.styleMode != nil {
                 stage = .style(slot.effect)
             } else if slot.effect.temporalMode != nil, includeTemporalEffects || slot.effect.cameraResourceRequirements.contains(.slotHistory) {
@@ -2241,21 +2253,26 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
                 throw RenderEffectError.processingFailed("Fluid solver did not encode")
             }
 
-        case .reactionDiffusion:
-            if node.reactionSolver == nil, let shaderLibrary {
-                node.reactionSolver = CameraReactionDiffusion(device: device, library: shaderLibrary)
-            }
-            guard let solver = node.reactionSolver,
-                  solver.encode(commandBuffer: request.frame.commandBuffer,
-                                source: request.input, destination: request.output,
-                                parameters: node.cameraParameters, touch: state.touch,
-                                time: request.frame.timestamp, held: state.settings.temporalHoldActive,
-                                maximumEdge: effectQuality.simulationEdge)
-            else {
-                throw RenderEffectError.processingFailed("Reaction Garden did not encode")
-            }
-
         case let .temporal(effect):
+            if effect == .datamosh {
+                if node.frameDatamosh == nil, let shaderLibrary {
+                    node.frameDatamosh = try GVFrameDatamosh(device: device, library: shaderLibrary)
+                }
+                let p = node.cameraParameters.sanitized
+                var transport = state.settings.datamoshTransport
+                if state.settings.temporalHoldActive && transport.mode == .live { transport.send(.hold) }
+                guard let solver = node.frameDatamosh,
+                      solver.encode(commandBuffer: request.frame.commandBuffer,
+                                    source: request.input, destination: request.output,
+                                    settings: .init(persistence: Float(p.primary), strength: Float(p.secondary),
+                                                    direction: Float(p.tertiary), velocityDecay: Float(p.datamoshVelocityDecay),
+                                                    residual: Float(p.datamoshResidual), blockSize: p.datamoshBlockSize,
+                                                    blend: Float(p.blend)),
+                                    transport: transport, deltaTime: state.deltaTime,
+                                    touch: state.touch, drag: SIMD2(state.touchDrag.x, state.touchDrag.y))
+                else { throw RenderEffectError.processingFailed("Datamosh GPU feedback unavailable") }
+                return
+            }
             // Mosh slots seed and own their recursive image; other temporal
             // algorithms share the composition history allocated on demand.
             let historyTexture = historyTexture ?? request.input
@@ -2379,14 +2396,14 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
     private func holdStyle(for effect: WorkspaceAdjustableEffect, freezeActive: Bool) -> UInt32 {
         guard freezeActive else { return 0 }
         switch effect {
-        case .datamosh, .heavyMosh, .vectorCodebook, .motionTransplant, .bitplaneLatch:
+        case .datamosh, .heavyMosh:
             // MOTION LOCK keeps vectors on their captured course; FEEDBACK
             // RUNAWAY pulls refresh chance toward zero so a held frame
             // consumes itself.
             return 0b0010 | 0b0100
         case .liquidMosh:
             return 0b0100
-        case .moshBrush, .predictionDrift:
+        case .predictionDrift:
             // VECTOR DRIFT lets the frozen prediction field keep mutating, so
             // the smear does not collapse to a single displacement.
             return 0b0100 | 0b10000
@@ -3217,9 +3234,6 @@ private final class CameraMetalRenderer: NSObject, MTKViewDelegate, @unchecked S
         temporalEngine.reset()
         emptyRingTexture = nil
         emptyTimestamps = nil
-        worldAnchor.stop()
-        worldReprojection.reset()
-        isWorldAnchorRunning = false
         hasLinearFrame = false
         hasHistoryFrame = false
         CVMetalTextureCacheFlush(textureCache, 0)

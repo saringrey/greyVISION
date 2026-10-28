@@ -9,42 +9,29 @@ import SwiftUI
 enum WorkspaceDockCategory: String, CaseIterable, Identifiable {
     case all
     /// Everything rendering right now, in pipeline order. The answer to
-    /// "what is actually on" without hunting across twelve families.
+    /// "what is actually on" without hunting across the families.
     case active
     /// The operator's own shortlist, alongside the complete ALL shelf.
     case favorites
-    /// The last handful the operator reached for. Sits beside favourites
-    /// because both answer "where was that one" — favourites for the effects
-    /// they chose to keep, recents for the ones they are working with now.
+    /// The last handful the operator reached for.
     case recents
-    case color
-    /// Real codec moshing: VideoToolbox decode, drop the reference data,
-    /// render the damage. Its own shelf because these genuinely need a
-    /// decoder rather than a frame ring.
-    case datamosh
-    /// Pixel and line sorting by luma, radius, history or edge.
-    case sort
-    /// Frame history without a codec and without sorting: hold, drag,
-    /// extrude, tunnel.
+    /// Codec moshes, pixel sorts and digital damage: the picture as data
+    /// that has gone wrong.
+    case glitch
+    /// Frame history: feedback, trails, echoes and time slicing.
     case time
-    case motion
-    case decay
-    case signal
-    case optics
-    case form
-    /// Colorful interactive and audio-reactive Metal shaders.
-    case shaders
+    /// Tape, film and tube: VHS, Super 8, CRT, halation.
+    case analog
+    /// Grades and print processes: thermal, false colour, dither, ASCII.
+    case look
+    /// Light through glass: flares, diffraction, tilt-shift, leaks.
+    case lens
+    /// Space bent: kaleidoscopes, mirrors, polar and fluid warps.
+    case warp
+    /// Self-generating shader worlds that run over the frame.
+    case generative
+    /// Reacts to the microphone.
     case audio
-    /// Measurement instruments. Kept apart from AUDIO because a scope reports
-    /// on the signal rather than changing it, and a rail that mixes the two
-    /// stops answering either question.
-    case scope
-    /// Generative work still being tuned: touch-reactive, spectrum-reactive and
-    /// the two whole-frame solvers.
-    case experimental
-    /// Research builds that read deep internal state — the sarin experiments,
-    /// the predictive moshes and the corruption brush.
-    case developer
     /// The real depth modes. These are not effects and are not luma
     /// approximations of depth: they read actual LiDAR from the capture
     /// pipeline, so they live behind the hardware's own capability gate.
@@ -63,39 +50,40 @@ enum WorkspaceDockCategory: String, CaseIterable, Identifiable {
     var displayLabel: String {
         switch self {
         case .all: "All"
-        case .color: "Tonal"
-        case .datamosh: "Datamosh"
-        case .sort: "Sort"
-        case .time: "History"
-        case .motion: "Motion"
-        case .decay: "Decay"
-        case .signal: "Analog"
-        case .optics: "Lens"
-        case .form: "Geometry"
-        case .shaders: "Generative"
-        case .audio: "Spectrum"
-        case .scope: "Instruments"
-        case .experimental: "Solvers"
-        case .developer: "Research"
+        case .active: "Active"
+        case .favorites: "Favorites"
+        case .recents: "Recent"
+        case .glitch: "Glitch"
+        case .time: "Time"
+        case .analog: "Analog"
+        case .look: "Look"
+        case .lens: "Lens"
+        case .warp: "Warp"
+        case .generative: "Generative"
+        case .audio: "Audio"
         case .spatial: "Depth"
         case .objects: "Objects"
         case .blobs: "Tracking"
         case .lidar: "LiDAR"
-        case .active: "Active"
-        case .favorites: "Favorites"
-        case .recents: "Recent"
         }
     }
 
-    /// Favourites and recents are drawn as glyphs instead of words, so they
-    /// read as shelves rather than as two more families among the others.
+    /// Glyphs for the scopes and modes, and the fallback a family card shows
+    /// until its live preview has rendered.
     var symbol: String? {
         switch self {
         case .active: "power"
         case .favorites: "star.fill"
         case .recents: "clock.arrow.circlepath"
-        case .experimental: "flask"
-        case .developer: "wrench.and.screwdriver"
+        case .glitch: "square.split.diagonal.2x2"
+        case .time: "clock.arrow.2.circlepath"
+        case .analog: "tv"
+        case .look: "paintpalette"
+        case .lens: "camera.aperture"
+        case .warp: "circle.hexagongrid"
+        case .generative: "sparkles"
+        case .audio: "waveform"
+        case .spatial: "sensor.tag.radiowaves.forward"
         case .blobs: "scope"
         default: nil
         }
@@ -362,7 +350,15 @@ struct GVEffectBrowser: View {
     }
 
     private var selectorPanel: some View {
-        GVEffectDashboardSelector(selected: category, readouts: shelfReadouts, onSelect: changeCategory)
+        GVEffectDashboardSelector(
+            selected: category,
+            readouts: shelfReadouts,
+            preview: { family in EffectCatalog.hero(of: family.rawValue).flatMap(thumbnails.image(for:)) },
+            onAppearFamily: { family in
+                if let hero = EffectCatalog.hero(of: family.rawValue) { thumbnails.request(hero) }
+            },
+            onSelect: changeCategory
+        )
             .padding(10)
             .gvLiquidGlass(radius: Self.panelRadius)
     }

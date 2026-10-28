@@ -2,17 +2,18 @@ import SwiftUI
 
 /// The cold-start sequence: a lone dot beeps three times, a CRT terminal
 /// powers on and POSTs the device, a Win95-style setup dialog stalls loading
-/// codec drivers, the machine "crashes" to a fatal-exception screen, and the
-/// wreckage decays into the codec selection splash.
+/// codec drivers and quietly reports it cannot continue, the tube switches
+/// off, and after five seconds of dead black the codec selection splash
+/// fades up.
 ///
 /// Everything on screen — type, HUD and black field — is one layer run
 /// through `terminalBoot` in TerminalBootShaders.metal, so power-on, tears,
-/// scanlines and the final block decay act on the picture as a whole, the way
-/// a tube would. The RGB split is the one stage composed here instead (see
-/// `chroma`), since the shader must sample its layer only once. Choreography lives in `GVTerminalBootTimeline`; the printed
+/// scanlines and the power-off collapse act on the picture as a whole, the
+/// way a tube would. The faint RGB convergence is the one stage composed here
+/// instead (see `chroma`), since the shader must sample its layer only once. Choreography lives in `GVTerminalBootTimeline`; the printed
 /// values come from `GVTerminalBootReport`.
 ///
-/// Decorative only: it never gates the engine, and a tap skips to the decay.
+/// Decorative only: it never gates the engine, and a tap skips to the fade.
 struct GVTerminalBoot: View {
     let report: GVTerminalBootReport
     let onFinished: () -> Void
@@ -35,21 +36,27 @@ struct GVTerminalBoot: View {
                     content.layerEffect(
                         ShaderLibrary.terminalBoot(
                             .float2(proxy.size), .float(Float(time)), .float(Float(frame.power)),
-                            .float(Float(frame.tear)), .float(Float(frame.decay)), .float(seed),
-                            .float(Float(frame.dot))
+                            .float(seed), .float(Float(frame.dot))
                         ),
-                        maxSampleOffset: CGSize(width: 64, height: 0)
+                        maxSampleOffset: .zero
                     )
                 }
                 .opacity(frame.opacity)
                 .sensoryFeedback(.impact(weight: .light, intensity: 0.5), trigger: frame.statusCount)
                 .sensoryFeedback(.impact(flexibility: .rigid, intensity: 0.8), trigger: frame.beeps)
-                .sensoryFeedback(trigger: frame.phase) { _, phase in phase == .crash ? .error : nil }
+                .sensoryFeedback(trigger: frame.phase) { _, phase in
+                    switch phase {
+                    case .fail: .warning
+                    case .crash: .impact(weight: .heavy, intensity: 1)
+                    default: nil
+                    }
+                }
                 .onChange(of: frame.beeps) { _, beeps in
                     if beeps > 0 { GVSoundEngine.shared.play(.postBeep) }
                 }
                 .onChange(of: frame.phase) { _, phase in
-                    if phase == .crash { GVSoundEngine.shared.play(.crash) }
+                    if phase == .fail { GVSoundEngine.shared.play(.failure) }
+                    if phase == .crash { GVSoundEngine.shared.play(.powerOff) }
                 }
         }
         .ignoresSafeArea()
@@ -72,10 +79,11 @@ struct GVTerminalBoot: View {
 
     // MARK: - Screen
 
-    /// RGB separation as three additive channel copies of the raster, red
-    /// pushed right and blue left. Split widens with tears and decay.
+    /// A hair of RGB misconvergence, as three additive channel copies of the
+    /// raster with red nudged right and blue left. Constant and sub-pixel on
+    /// purpose: a real tube is slightly off, not visibly glitching.
     private func chroma(_ frame: GVTerminalBootTimeline.Frame, time: Double) -> some View {
-        let split = 0.8 + frame.tear * 5 + frame.decay * 9
+        let split = 0.4
         return ZStack {
             // Each copy is flattened before it is blended: unflattened, the
             // additive blend applies per element, so dark type and fills add
@@ -109,14 +117,11 @@ struct GVTerminalBoot: View {
                     .padding(.top, compact ? 40 : 112)
                     .shadow(color: Self.glow.opacity(0.5), radius: 5)
                     hud(frame, time: time, size: geometry.size, compact: compact)
-                case .loading:
-                    GVBootSetupDialog(load: frame.load)
+                case .loading, .fail, .crash:
+                    GVBootSetupDialog(load: frame.load, failed: frame.phase != .loading)
                         .padding(.horizontal, 28)
                         .frame(width: geometry.size.width, height: geometry.size.height)
                     hud(frame, time: time, size: geometry.size, compact: compact)
-                case .crash:
-                    GVBootFatalException(corruption: max(frame.corruption, frame.decay * 0.9),
-                                         cursorOn: frame.cursorOn, time: time)
                 }
             }
         }
@@ -130,7 +135,7 @@ struct GVTerminalBoot: View {
             let count = min(shown, full.count)
             let typing = count < full.count
             let isLast = line.id == report.lines.count - 1
-            let text = GVGlyphCorruption.apply(String(full.prefix(count)), amount: frame.decay * 0.9, salt: line.id, time: time)
+            let text = String(full.prefix(count))
             let key = String(text.prefix(line.keyLength))
             let rest = String(text.dropFirst(line.keyLength))
             let cursor = (typing || isLast) && frame.cursorOn ? "█" : ""

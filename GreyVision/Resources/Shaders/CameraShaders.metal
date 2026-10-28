@@ -600,17 +600,12 @@ static bool gvIsColourOnlyMode(uint mode) {
     switch (mode) {
         case 2:  // posterize
         case 3:  // dither
-        case 9:  // vignette
         case 10: // grain
         case 11: // thermal
         case 13: // threshold
         case 14: // invert
-        case 16: // solarize
-        case 17: // hue shift
         case 18: // monochrome
-        case 73: // gradient map
         case 74: // false colour
-        case 91: // spectral tint
             return true;
         default:
             return false;
@@ -873,49 +868,6 @@ static inline void gvCameraStyleEffectBody(
     float3 result = base;
 
     switch (styleMode) {
-    case 0: { // Ripple
-        // The ripple centres on the finger while it is in contact, and recent
-        // impacts add an expanding ring so a tap visibly disturbs the surface.
-        const float2 anchor = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
-        const float2 centered = uv - anchor;
-        const float radius = length(centered);
-        const float amount = mix(0.002, 0.075, controls.x) * (1.0 + uniforms.audio.y * 0.5);
-        const float frequency = mix(4.0, 52.0, controls.y);
-        const float speed = mix(-4.0, 4.0, controls.z);
-        const float2 direction = radius > 0.0001 ? centered / radius : float2(0.0);
-        // Two harmonics rather than one: the secondary runs at an
-        // incommensurate ratio so rings interfere and break into the choppy
-        // crests real surfaces show, instead of one clean concentric groove.
-        const float wave = (
-            sin(radius * frequency - time * speed) +
-            0.38 * sin(radius * frequency * 2.17 - time * speed * 1.41)
-        ) * amount;
-        const float velocityLift = 1.0 + saturate(uniforms.touch.z) * 0.9;
-        result = gvCameraSample(inputTexture, uv + direction * wave * velocityLift);
-        if (uniforms.touchImpact.w > 0.5) {
-            const float2 impactDelta = uv - uniforms.touchImpact.xy;
-            const float impactRadius = max(length(impactDelta), 0.0001);
-            const float2 impactDirection = impactDelta / impactRadius;
-            const float ring = (
-                sin(impactRadius * frequency * 1.6 - uniforms.touchImpact.z * speed * 2.4) +
-                0.3 * sin(impactRadius * frequency * 3.7 - uniforms.touchImpact.z * speed * 3.1)
-            ) * amount * 1.7 * exp(-impactRadius * 2.6) * exp(-uniforms.touchImpact.z * 2.0);
-            result = gvCameraSample(inputTexture, uv + impactDirection * ring);
-        }
-        // Tracked blobs ring outward too, scaled by their size.
-        for (int i = 0; i < 4; i++) {
-            if (uniforms.blobs[i].w > 0.5) {
-                const float2 blobDelta = uv - uniforms.blobs[i].xy;
-                const float blobRadius = max(length(blobDelta), 0.0001);
-                const float blobRing = (
-                    sin(blobRadius * frequency * 1.5 - time * speed * 1.8) +
-                    0.3 * sin(blobRadius * frequency * 3.3 - time * speed * 2.2)
-                ) * amount * 1.4 * uniforms.blobs[i].z * exp(-blobRadius * 2.8);
-                result = gvCameraSample(inputTexture, uv + blobDelta / blobRadius * blobRing);
-            }
-        }
-        break;
-    }
     case 1: { // Pixelate
         const float block = mix(2.0, 96.0, controls.x);
         const float aspect = mix(0.5, 2.0, controls.z);
@@ -962,21 +914,6 @@ static inline void gvCameraStyleEffectBody(
         result = mix(base, float3(edge), controls.z);
         break;
     }
-    case 5: { // Signal tear
-        const float bands = floor(mix(4.0, 64.0, controls.y));
-        const float band = floor(uv.y * bands);
-        const float tick = floor(time * mix(0.5, 12.0, controls.z));
-        const float gate = step(0.70, gvCameraHash(float2(band, tick)));
-        const float offset = (gvCameraHash(float2(tick, band + 19.0)) - 0.5) * controls.x * 0.42 * gate;
-        float2 tornUV = uv + float2(offset, 0.0);
-        result = gvCameraSample(inputTexture, tornUV);
-        if (gate > 0.5) {
-            const float channelOffset = controls.x * 0.035;
-            result.r = gvCameraSample(inputTexture, tornUV + float2(channelOffset, 0.0)).r;
-            result.b = gvCameraSample(inputTexture, tornUV - float2(channelOffset, 0.0)).b;
-        }
-        break;
-    }
     case 6: { // VHS
         const float line = floor(uv.y * size.y * 0.45);
         const float jitter = (gvCameraHash(float2(line, floor(time * 24.0))) - 0.5) * controls.x * 0.045;
@@ -999,26 +936,6 @@ static inline void gvCameraStyleEffectBody(
         angle = min(angle, sector - angle);
         const float radius = length(point) * mix(0.55, 1.85, controls.z);
         result = gvCameraSample(inputTexture, 0.5 + float2(cos(angle), sin(angle)) * radius);
-        break;
-    }
-    case 8: { // Mirror
-        const float angle = controls.x * 3.14159265;
-        const float2 axis = float2(cos(angle), sin(angle));
-        const float2 perpendicular = float2(-axis.y, axis.x);
-        float2 point = uv - 0.5;
-        float axial = dot(point, axis) + (controls.y - 0.5) * 0.5;
-        const float crossAxis = dot(point, perpendicular);
-        axial = abs(axial);
-        const float2 mirroredUV = 0.5 + axis * axial + perpendicular * crossAxis;
-        result = mix(base, gvCameraSample(inputTexture, mirroredUV), controls.z);
-        break;
-    }
-    case 9: { // Vignette
-        const float2 point = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
-        const float roundness = mix(0.65, 2.2, controls.z);
-        const float distanceValue = pow(length(point) * 1.55, roundness);
-        const float edge = smoothstep(mix(0.92, 0.18, controls.y), 1.15, distanceValue);
-        result = base * (1.0 - edge * controls.x);
         break;
     }
     case 10: { // Grain
@@ -1052,62 +969,12 @@ static inline void gvCameraStyleEffectBody(
         result = mix(base, inverted, controls.z);
         break;
     }
-    case 15: { // Lens warp
-        float2 point = uv - 0.5;
-        const float radius = max(mix(0.22, 0.92, controls.y), 0.001);
-        const float normalizedRadius = length(point) / radius;
-        const float strength = (controls.x - 0.5) * 1.8;
-        point *= 1.0 + strength * normalizedRadius * normalizedRadius;
-        point /= mix(0.72, 1.34, controls.z);
-        const float2 warpedUV = point + 0.5;
-        result = all(warpedUV >= 0.0) && all(warpedUV <= 1.0)
-            ? gvCameraSample(inputTexture, warpedUV)
-            : float3(0.0);
-        break;
-    }
-    case 16: { // Solarize
-        const float threshold = mix(0.08, 0.92, controls.x);
-        const float3 solarized = select(base, 1.0 - base, base > threshold);
-        const float3 shifted = gvCameraHSVToRGB(
-            gvCameraRGBToHSV(solarized) + float3((controls.y - 0.5) * 0.35, 0.0, 0.0)
-        );
-        result = mix(base, shifted, controls.z);
-        break;
-    }
-    case 17: { // Hue shift
-        float3 hsv = gvCameraRGBToHSV(base);
-        hsv.x = fract(hsv.x + controls.x - 0.5);
-        hsv.y = saturate(hsv.y * mix(0.0, 2.0, controls.y));
-        result = mix(base, gvCameraHSVToRGB(hsv), controls.z);
-        break;
-    }
     case 18: { // Monochrome
         const float luma = saturate((gvCameraLuma(base) - 0.5) * mix(0.55, 2.1, controls.y) + 0.5);
         const float3 cool = float3(0.48, 0.34, 0.92);
         const float3 warm = float3(0.96, 0.58, 0.28);
         const float3 tint = mix(cool, warm, controls.x);
         result = mix(base, luma * tint, controls.z);
-        break;
-    }
-    case 19: { // Sharpen
-        const float2 radius = texel * mix(0.75, 4.0, controls.y);
-        const float3 blur = (
-            gvCameraSample(inputTexture, uv + float2(radius.x, 0.0)) +
-            gvCameraSample(inputTexture, uv - float2(radius.x, 0.0)) +
-            gvCameraSample(inputTexture, uv + float2(0.0, radius.y)) +
-            gvCameraSample(inputTexture, uv - float2(0.0, radius.y))
-        ) * 0.25;
-        const float3 sharp = saturate(base + (base - blur) * controls.x * 3.2);
-        result = mix(base, sharp, controls.z);
-        break;
-    }
-    case 20: { // Emboss
-        const float angle = controls.y * 6.2831853;
-        const float2 direction = float2(cos(angle), sin(angle)) * texel * mix(1.0, 5.0, controls.x);
-        const float3 difference = gvCameraSample(inputTexture, uv + direction) -
-            gvCameraSample(inputTexture, uv - direction);
-        const float3 embossed = saturate(0.5 + difference * mix(1.0, 5.0, controls.x));
-        result = mix(base, embossed, controls.z);
         break;
     }
     case 22: { // CRT
@@ -1151,50 +1018,6 @@ static inline void gvCameraStyleEffectBody(
         result = mix(base, bent, controls.z);
         break;
     }
-    case 24: { // Prism streak
-        const float luma = gvCameraLuma(base);
-        const float gate = smoothstep(controls.y, min(controls.y + 0.25, 1.0), luma);
-        const float angle = time * 0.14 + uniforms.audio.w * 2.2;
-        const float2 direction = float2(cos(angle), sin(angle)) * texel * mix(4.0, 72.0, controls.x);
-        float3 streak = base;
-        for (uint index = 1; index <= 6; ++index) {
-            const float weight = (7.0 - float(index)) / 21.0;
-            const float3 sampleColor = gvCameraSample(inputTexture, uv - direction * float(index));
-            streak += sampleColor * weight * gate;
-        }
-        const float3 prism = float3(streak.r, gvCameraSample(inputTexture, uv - direction * 2.0).g, streak.b);
-        result = mix(base, prism, controls.z);
-        break;
-    }
-    case 25: { // Curl vector warp
-        const float scale = mix(3.0, 28.0, controls.y);
-        const float speed = mix(-2.4, 2.4, controls.z);
-        const float phase = time * speed;
-        const float2 field = float2(
-            sin(uv.y * scale + phase) + cos(uv.x * scale * 0.63 - phase * 0.7),
-            cos(uv.x * scale - phase) - sin(uv.y * scale * 0.71 + phase * 0.8)
-        );
-        const float audioLift = 1.0 + uniforms.audio.y * 1.8;
-        result = gvCameraSample(inputTexture, uv + field * controls.x * 0.038 * audioLift);
-        break;
-    }
-    case 26: { // Audio spectral refraction
-        const float2 centered = uv - 0.5;
-        const float radius = max(length(centered), 0.0001);
-        const float2 radial = centered / radius;
-        const float bands = floor(mix(5.0, 42.0, controls.y));
-        const float band = floor(radius * bands);
-        const float spectrum = mix(uniforms.audio.z, uniforms.audio.w, fract(band * 0.618));
-        const float pulse = uniforms.audio.x + uniforms.audio.y * 1.4 + spectrum;
-        const float shift = controls.x * pulse * (0.006 + 0.028 * sin(band + time * 2.0));
-        const float3 refracted = float3(
-            gvCameraSample(inputTexture, uv + radial * shift).r,
-            gvCameraSample(inputTexture, uv - radial * shift * 0.42).g,
-            gvCameraSample(inputTexture, uv - radial * shift).b
-        );
-        result = mix(base, refracted, controls.z);
-        break;
-    }
     case 27: { // Audio scan bend
         const float lines = floor(mix(60.0, 520.0, controls.y));
         const float line = floor(uv.y * lines);
@@ -1203,19 +1026,6 @@ static inline void gvCameraStyleEffectBody(
         const float3 bent = gvCameraSample(inputTexture, uv + float2(bend, 0.0));
         const float rule = 0.5 + 0.5 * sin(uv.y * lines * 3.14159265);
         result = mix(base, bent * (1.0 - 0.22 * rule * saturate(energy)), controls.z);
-        break;
-    }
-    case 29: { // Audio waveform trace
-        const float bands = 4.0;
-        const float band = floor(uv.x * bands);
-        const float level = band < 1.0
-            ? uniforms.audio.y
-            : band < 2.0 ? uniforms.audio.z : band < 3.0 ? uniforms.audio.w : uniforms.audio.x;
-        const float height = mix(0.04, 0.42, controls.x) * level;
-        const float baseline = 1.0 - mix(0.06, 0.34, controls.y);
-        const float trace = 1.0 - smoothstep(0.0, 0.006, abs(uv.y - (baseline - height)));
-        const float fill = step(baseline - height, uv.y) * step(uv.y, baseline) * 0.22;
-        result = mix(base, saturate(base + float3(0.62, 0.30, 1.0) * (trace + fill)), controls.z);
         break;
     }
     case 30: { // Audio band slice
@@ -1272,53 +1082,6 @@ static inline void gvCameraStyleEffectBody(
             cos(uv.x * 11.0 - time * 1.3)
         ) * (0.003 + velocityStir);
         result = gvCameraSample(inputTexture, uv + direction * displacement + shear);
-        break;
-    }
-    case 32: { // Touch warp - finger gravity lens
-        const float2 touchPosition = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
-        const float pull = mix(-0.7, 0.85, controls.x);
-        const float radius = mix(0.08, 0.62, controls.y);
-        const float2 delta = uv - touchPosition;
-        const float distanceValue = length(delta);
-        const float falloff = 1.0 - smoothstep(0.0, radius, distanceValue);
-        const float2 direction = distanceValue > 0.0001 ? delta / distanceValue : float2(0.0);
-        const float velocity = saturate(uniforms.touch.z) * 0.85;
-        const float turbulence = sin(distanceValue * 92.0 - time * 6.0) * 0.14 * velocity;
-        const float2 warped = uv + direction * (pull * falloff * (0.10 + turbulence) + velocity * falloff * 0.05);
-        result = mix(base, gvCameraSample(inputTexture, warped), controls.z);
-        break;
-    }
-    case 33: { // Hatch - engraved crosshatch
-        const float scale = mix(36.0, 300.0, controls.x);
-        const float luma = gvCameraLuma(base);
-        const float level = 1.0 - smoothstep(mix(0.06, 0.88, controls.y), 0.97, luma);
-        const float angle = (controls.y - 0.5) * 0.7;
-        const float2 first = gvCameraRotate(float2(position), angle);
-        const float2 second = gvCameraRotate(float2(position), angle + 1.5707963);
-        const float hatch = step(fract(first.x / scale), 0.055) + step(fract(first.y / scale), 0.055) +
-            step(fract(second.x / scale), 0.045);
-        const float ink = 1.0 - hatch * level * mix(0.30, 1.0, controls.z);
-        const float3 engraved = base * ink + float3(0.94, 0.88, 1.0) * (1.0 - ink) * 0.16;
-        result = mix(base, engraved, controls.z);
-        break;
-    }
-    case 34: { // Phosphor - hot bloom accumulation
-        const float threshold = mix(0.16, 0.74, controls.y);
-        const float luma = gvCameraLuma(base);
-        const float hot = smoothstep(threshold, threshold + 0.20, luma) * mix(0.45, 2.2, controls.x);
-        const float2 stepSize = texel * mix(1.0, 6.0, controls.x);
-        const float weights[4] = { 0.40, 0.28, 0.19, 0.13 };
-        float3 bloom = float3(0.0);
-        for (uint index = 1; index <= 4; ++index) {
-            const float weight = weights[index - 1];
-            bloom += gvCameraSample(inputTexture, uv + float2(stepSize.x * float(index), 0.0)) * weight;
-            bloom += gvCameraSample(inputTexture, uv - float2(stepSize.x * float(index), 0.0)) * weight;
-            bloom += gvCameraSample(inputTexture, uv + float2(0.0, stepSize.y * float(index))) * weight;
-            bloom += gvCameraSample(inputTexture, uv - float2(0.0, stepSize.y * float(index))) * weight;
-        }
-        const float3 violet = float3(0.55, 0.24, 1.0);
-        const float3 glowed = saturate(base + bloom * hot * 0.5) + violet * hot * 0.10;
-        result = mix(base, glowed, controls.z);
         break;
     }
     case 36: { // Hologram - interference projection
@@ -1380,15 +1143,6 @@ static inline void gvCameraStyleEffectBody(
         result = mix(base, result, controls.z);
         break;
     }
-    case 42: { // Lens dirt - static smudge field lit by scene highlights
-        const float2 field = uv * mix(3.0, 14.0, controls.y);
-        const float smudge = pow(gvFbm(field), 3.0) * 4.0;
-        const float3 bloom = gvBlur(inputTexture, uv, texel * 18.0);
-        const float highlight = saturate(gvCameraLuma(bloom) - 0.45) * 2.0;
-        result = base + smudge * highlight * controls.x * float3(0.9, 0.92, 1.0) * 1.6;
-        result = mix(base, result, controls.z);
-        break;
-    }
     case 43: { // Light leak - drifting warm gradient bleeding from an edge
         const float phase = time * mix(0.05, 0.6, controls.y);
         const float edge = fract(phase);
@@ -1399,50 +1153,9 @@ static inline void gvCameraStyleEffectBody(
         result = base + warm * leak * controls.z * 1.5;
         break;
     }
-    case 44: { // Star filter - cross diffraction spikes on speculars
-        const float threshold = mix(0.6, 0.95, controls.y);
-        float3 spikes = float3(0.0);
-        const float reach = mix(0.01, 0.14, controls.x);
-        for (int i = 1; i <= 6; i++) {
-            const float t = float(i) / 6.0;
-            const float weight = (1.0 - t) * 0.3;
-            const float2 h = float2(reach * t, 0.0);
-            const float2 v = float2(0.0, reach * t);
-            spikes += max(gvCameraSample(inputTexture, uv + h) - threshold, 0.0) * weight;
-            spikes += max(gvCameraSample(inputTexture, uv - h) - threshold, 0.0) * weight;
-            spikes += max(gvCameraSample(inputTexture, uv + v) - threshold, 0.0) * weight;
-            spikes += max(gvCameraSample(inputTexture, uv - v) - threshold, 0.0) * weight;
-        }
-        result = base + spikes * mix(1.0, 5.0, controls.z);
-        break;
-    }
-    case 46: { // Soft focus - bloom-veiled diffusion, classic portrait filter
-        const float3 veil = gvBlur(inputTexture, uv, texel * mix(2.0, 24.0, controls.x));
-        const float3 lifted = max(veil - mix(0.1, 0.6, controls.y), 0.0);
-        result = base + lifted * controls.z * 1.8;
-        break;
-    }
 
     // MARK: ANALOG 47-56
 
-    case 47: { // Halation - red-biased glow bleeding out of highlights
-        const float3 bloom = gvBlur(inputTexture, uv, texel * mix(4.0, 30.0, controls.x));
-        const float3 hot = max(bloom - mix(0.4, 0.8, controls.y), 0.0);
-        result = base + hot * float3(1.0, 0.32, 0.16) * controls.z * 3.0;
-        break;
-    }
-    case 48: { // VHS tracking - drifting misaligned band with head noise
-        const float bandPosition = fract(time * mix(0.02, 0.5, controls.y));
-        const float distance = abs(uv.y - bandPosition);
-        const float band = smoothstep(mix(0.14, 0.02, controls.x), 0.0, distance);
-        const float jitter = (gvCameraHash(float2(floor(uv.y * 220.0), floor(time * 24.0))) - 0.5);
-        float2 sampleUV = uv;
-        sampleUV.x += jitter * band * mix(0.02, 0.16, controls.x);
-        result = gvChromaSplit(inputTexture, sampleUV, float2(band * 0.008, 0.0));
-        result += band * gvCameraHash(uv * 900.0 + time) * 0.22;
-        result = mix(base, result, controls.z);
-        break;
-    }
     case 49: { // Super 8 - gate weave, warm stock and edge falloff
         const float weaveX = (gvNoise(float2(time * 2.6, 0.0)) - 0.5) * mix(0.0, 0.02, controls.x);
         const float weaveY = (gvNoise(float2(0.0, time * 2.1)) - 0.5) * mix(0.0, 0.02, controls.x);
@@ -1452,52 +1165,6 @@ static inline void gvCameraStyleEffectBody(
         stock += grain * mix(0.0, 0.22, controls.y);
         const float vignette = 1.0 - smoothstep(0.32, 0.86, length(uv - 0.5));
         result = mix(base, stock * mix(1.0, vignette, 0.85), controls.z);
-        break;
-    }
-    case 50: { // Chroma bleed - luma stays sharp, colour smears sideways
-        const float3 hsvBase = gvCameraRGBToHSV(base);
-        const float reach = mix(0.002, 0.05, controls.x);
-        float3 chroma = float3(0.0);
-        for (int i = 0; i < 5; i++) {
-            const float3 tap = gvCameraSample(inputTexture, uv - float2(reach * float(i) / 4.0, 0.0));
-            chroma += gvCameraRGBToHSV(tap) * 0.2;
-        }
-        const float3 bled = gvCameraHSVToRGB(float3(chroma.x, chroma.y * mix(1.0, 1.9, controls.y), hsvBase.z));
-        result = mix(base, bled, controls.z);
-        break;
-    }
-    case 52: { // Dropout - tape hits punching bright/dead scanline runs
-        const float row = floor(uv.y * mix(60.0, 400.0, controls.y));
-        const float seed = gvCameraHash(float2(row, floor(time * mix(2.0, 20.0, controls.x))));
-        const bool dead = seed > mix(0.995, 0.86, controls.x);
-        if (dead) {
-            const float polarity = gvCameraHash(float2(row, 3.7)) > 0.5 ? 1.0 : 0.0;
-            result = mix(base, float3(polarity), controls.z);
-        }
-        break;
-    }
-    case 53: { // Colour bar tear - SMPTE bars punched through torn rows
-        const float row = floor(uv.y * mix(20.0, 120.0, controls.y));
-        const float torn = gvCameraHash(float2(row, floor(time * 6.0)));
-        if (torn > mix(0.99, 0.72, controls.x)) {
-            const int bar = int(uv.x * 7.0);
-            const float3 bars[7] = {
-                float3(0.75), float3(0.75, 0.75, 0.0), float3(0.0, 0.75, 0.75),
-                float3(0.0, 0.75, 0.0), float3(0.75, 0.0, 0.75), float3(0.75, 0.0, 0.0),
-                float3(0.0, 0.0, 0.75)
-            };
-            result = mix(base, bars[clamp(bar, 0, 6)], controls.z);
-        }
-        break;
-    }
-    case 55: { // Degauss - CRT power-on colour warp rippling from centre
-        const float2 centered = uv - 0.5;
-        const float radius = length(centered);
-        const float pulse = exp(-fract(time * mix(0.1, 0.8, controls.y)) * 4.0);
-        const float wave = sin(radius * 40.0 - time * 12.0) * pulse * mix(0.0, 0.06, controls.x);
-        const float2 direction = radius > 0.0001 ? centered / radius : float2(0.0);
-        result = gvChromaSplit(inputTexture, uv + direction * wave, direction * wave * 1.8);
-        result = mix(base, result, controls.z);
         break;
     }
 
@@ -1568,24 +1235,6 @@ static inline void gvCameraStyleEffectBody(
         result = mix(base, result, controls.y);
         break;
     }
-    case 64: { // Shear stack - horizontal bands slid by band index
-        const float bands = mix(3.0, 48.0, controls.y);
-        const float index = floor(uv.y * bands);
-        const float shear = (gvCameraHash(float2(index, 1.0)) - 0.5) * mix(0.0, 0.4, controls.x);
-        result = gvCameraSample(inputTexture, float2(fract(uv.x + shear), uv.y));
-        result = mix(base, result, controls.z);
-        break;
-    }
-    case 65: { // Lens array - a grid of miniature fisheye lenslets
-        const float pitch = mix(4.0, 40.0, controls.y);
-        const float2 cell = floor(uv * pitch);
-        const float2 local = fract(uv * pitch) - 0.5;
-        const float radius = length(local) * 2.0;
-        const float2 warped = local * (1.0 + mix(0.0, 1.6, controls.x) * radius * radius);
-        result = gvCameraSample(inputTexture, (cell + warped + 0.5) / pitch);
-        result = mix(base, result, controls.z);
-        break;
-    }
     case 66: { // Fold - repeated reflection about a rotating axis
         float2 p = uv - 0.5;
         const float angle = time * 0.15 * controls.z;
@@ -1606,33 +1255,12 @@ static inline void gvCameraStyleEffectBody(
         result = mix(base, result, controls.z);
         break;
     }
-    case 70: { // Plasma - classic interference field modulating the frame
-        const float scale = mix(2.0, 20.0, controls.y);
-        const float plasma =
-            sin(uv.x * scale + time) +
-            sin(uv.y * scale * 1.3 - time * 0.8) +
-            sin((uv.x + uv.y) * scale * 0.7 + time * 1.4) +
-            sin(length(uv - 0.5) * scale * 2.0 - time * 1.1);
-        const float3 tint = 0.5 + 0.5 * cos(plasma + float3(0.0, 2.1, 4.2));
-        result = mix(base, base * tint * 1.6, controls.x * controls.z);
-        break;
-    }
     case 71: { // Contour lines - iso-luminance banding, like a topo map
         const float levels = mix(4.0, 40.0, controls.y);
         const float luma = gvCameraLuma(base);
         const float band = fract(luma * levels);
         const float line = 1.0 - smoothstep(0.0, mix(0.06, 0.4, controls.x), min(band, 1.0 - band));
         result = mix(base, mix(base * 0.2, float3(0.62, 0.35, 1.0), line), controls.z);
-        break;
-    }
-    case 73: { // Gradient map - luminance remapped through a violet ramp
-        const float luma = pow(gvCameraLuma(base), mix(0.4, 2.4, controls.y));
-        const float3 shadow = float3(0.02, 0.01, 0.10);
-        const float3 midtone = float3(0.42, 0.08, 0.78);
-        const float3 highlight = float3(1.0, 0.86, 0.62);
-        float3 mapped = mix(shadow, midtone, smoothstep(0.0, 0.55, luma));
-        mapped = mix(mapped, highlight, smoothstep(0.5, 1.0, luma));
-        result = mix(base, mapped, controls.x * controls.z);
         break;
     }
     case 74: { // False colour - exposure analysis palette
@@ -1649,26 +1277,6 @@ static inline void gvCameraStyleEffectBody(
             mapped = mix(float3(1.0, 0.85, 0.0), float3(1.0, 0.0, 0.0), (scaled - 0.75) / 0.25);
         }
         result = mix(base, mapped, controls.z);
-        break;
-    }
-    case 75: { // Edge glow - Sobel edges re-lit as emissive lines
-        const float2 stepUV = texel * mix(1.0, 5.0, controls.y);
-        const float l = gvCameraLuma(gvCameraSample(inputTexture, uv - float2(stepUV.x, 0.0)));
-        const float r = gvCameraLuma(gvCameraSample(inputTexture, uv + float2(stepUV.x, 0.0)));
-        const float t = gvCameraLuma(gvCameraSample(inputTexture, uv - float2(0.0, stepUV.y)));
-        const float b = gvCameraLuma(gvCameraSample(inputTexture, uv + float2(0.0, stepUV.y)));
-        const float edge = saturate(length(float2(r - l, b - t)) * mix(2.0, 22.0, controls.x));
-        result = base * 0.35 + float3(0.55, 0.25, 1.0) * edge * 1.8;
-        result = mix(base, result, controls.z);
-        break;
-    }
-    case 76: { // Reaction bands - two competing noise scales fighting
-        const float scaleA = mix(3.0, 18.0, controls.y);
-        const float a = gvFbm(uv * scaleA + time * 0.12);
-        const float b = gvFbm(uv * scaleA * 2.3 - time * 0.09);
-        const float reaction = saturate((a - b) * mix(1.0, 8.0, controls.x) + 0.5);
-        const float banded = step(0.5, fract(reaction * 6.0));
-        result = mix(base, base * (0.3 + banded * 1.4), controls.z);
         break;
     }
 
@@ -1708,13 +1316,6 @@ static inline void gvCameraStyleEffectBody(
         }
         break;
     }
-    case 80: { // Ash drift - bright motes lifting off and blowing sideways
-        const float2 drift = float2(time * mix(0.02, 0.3, controls.y), -time * 0.12);
-        const float motes = pow(gvNoise(uv * mix(30.0, 200.0, controls.x) + drift * 20.0), 6.0) * 6.0;
-        const float3 lifted = gvCameraSample(inputTexture, uv + drift * 0.05);
-        result = mix(base, base * 0.7 + lifted * motes, controls.z);
-        break;
-    }
     case 81: { // Bit rot - progressive quantisation failure per channel
         const float depth = mix(8.0, 1.5, controls.x);
         const float2 blockUV = floor(uv * mix(40.0, 500.0, controls.y));
@@ -1732,57 +1333,6 @@ static inline void gvCameraStyleEffectBody(
 
     // MARK: SPECTRAL - audio as destructive energy, 82-91
 
-    case 82: { // Audio macroblock - bass hits punch blocks out of the frame
-        const float energy = uniforms.audio.y;
-        const float blockSize = mix(60.0, 8.0, controls.y);
-        const float2 blockUV = floor(uv * blockSize);
-        const float seed = gvCameraHash(blockUV + floor(time * 8.0));
-        // Only blocks below the bass energy are displaced, so quiet passages
-        // leave the frame intact and a kick knocks a visible patch loose.
-        const float punched = step(seed, energy * controls.x * 1.4);
-        const float2 kick = float2(
-            gvCameraHash(blockUV + 3.1) - 0.5,
-            gvCameraHash(blockUV + 7.7) - 0.5
-        ) * punched * energy * mix(0.02, 0.25, controls.x);
-        result = gvCameraSample(inputTexture, uv + kick);
-        result = mix(base, result, controls.z);
-        break;
-    }
-    case 83: { // Audio fracture - transients split the RGB channels apart
-        const float onset = uniforms.audioDynamics.y;
-        // Level keeps the channels apart while sound plays; onsets spike it.
-        // Onsets alone left the frame clean between hits, which is most of
-        // the time.
-        const float drive = max(onset, uniforms.audio.x * 0.45);
-        const float2 axis = normalize(float2(
-            gvCameraHash(float2(floor(time * 12.0), 1.0)) - 0.5,
-            gvCameraHash(float2(floor(time * 12.0), 9.0)) - 0.5
-        ) + 1e-4);
-        const float2 offset = axis * drive * mix(0.005, 0.09, controls.x);
-        result = gvChromaSplit(inputTexture, uv, offset);
-        // A hard onset also tears a row band for a single frame.
-        if (onset > mix(0.9, 0.25, controls.y)) {
-            const float row = floor(uv.y * 90.0);
-            const float tear = (gvCameraHash(float2(row, floor(time * 30.0))) - 0.5) * onset * 0.14;
-            result = gvChromaSplit(inputTexture, uv + float2(tear, 0.0), offset);
-        }
-        result = mix(base, result, controls.z);
-        break;
-    }
-    case 84: { // Audio stretch - sustained tones drag pixels into streaks
-        // Sustain or level, whichever is held longer: sustain alone only
-        // builds on a steady tone, and music rarely holds one.
-        const float held = max(uniforms.audioDynamics.z, uniforms.audio.x * 0.6);
-        const float direction = controls.y > 0.5 ? 1.0 : -1.0;
-        float3 smear = float3(0.0);
-        const float reach = held * mix(0.02, 0.3, controls.x);
-        for (int i = 0; i < 6; i++) {
-            const float t = float(i) / 5.0;
-            smear += gvCameraSample(inputTexture, uv - float2(0.0, reach * t * direction)) / 6.0;
-        }
-        result = mix(base, smear, held * controls.z);
-        break;
-    }
     case 85: { // Audio repair - damage in sound, healing in silence
         const float quiet = uniforms.audioDynamics.w;
         const float energy = saturate(uniforms.audio.x * 1.4);
@@ -1822,17 +1372,6 @@ static inline void gvCameraStyleEffectBody(
         const float shift = (gvCameraHash(float2(index, 1.0)) - 0.5) * energy * mix(0.0, 0.4, controls.x);
         result = gvCameraSample(inputTexture, float2(uv.x, fract(uv.y + shift)));
         result = mix(base, result, controls.z);
-        break;
-    }
-    case 91: { // Spectral tint - bass, mid and treble drive R, G and B gain
-        const float3 spectrum = float3(uniforms.audio.y, uniforms.audio.z, uniforms.audio.w);
-        const float3 gain = 1.0 + (spectrum - 0.33) * mix(0.0, 3.0, controls.x);
-        float3 tinted = base * gain;
-        // Sustained energy pushes saturation, silence drains it.
-        const float saturation = 1.0 + uniforms.audioDynamics.z * controls.y * 1.5 -
-            uniforms.audioDynamics.w * 0.6;
-        tinted = mix(float3(gvCameraLuma(tinted)), tinted, saturation);
-        result = mix(base, tinted, controls.z);
         break;
     }
     case 92: { // Kuwahara - edge-preserving painterly quantisation
@@ -1900,38 +1439,6 @@ static inline void gvCameraStyleEffectBody(
         result = glyphColor * ink * (0.35 + density * 0.9);
         break;
     }
-    case 94: { // Frosted glass - per-cell refraction plus diffusion
-        const float scale = mix(8.0, 120.0, controls.y);
-        const float2 cell = floor(uv * scale) / scale;
-        const float2 jitter = float2(
-            gvCameraHash(cell * 37.0),
-            gvCameraHash(cell * 91.0 + 13.0)
-        ) - 0.5;
-        const float roughness = mix(0.002, 0.055, controls.x);
-        const float3 frosted = gvBlur(
-            inputTexture,
-            uv + jitter * roughness,
-            texel * mix(0.6, 3.2, controls.x)
-        );
-        result = mix(base, frosted, controls.z);
-        break;
-    }
-    case 96: { // Domain warp - fbm displaced by its own fbm
-        const float scale = mix(1.4, 9.0, controls.y);
-        const float2 drift = float2(time * 0.07, time * -0.05);
-        const float2 inner = float2(
-            gvFbm(uv * scale + drift),
-            gvFbm(uv * scale + drift + 5.2)
-        );
-        const float2 outer = float2(
-            gvFbm(uv * scale + inner * 2.4 + 1.7),
-            gvFbm(uv * scale + inner * 2.4 + 9.3)
-        );
-        const float amount = mix(0.004, 0.14, controls.x);
-        result = gvCameraSample(inputTexture, uv + (outer - 0.5) * amount);
-        result = mix(base, result, controls.z);
-        break;
-    }
     case 98: { // Spectrum bars - sixteen live FFT bands drawn over the frame
         const float bars = floor(mix(8.0, 32.0, controls.y));
         const float column = floor(uv.x * bars);
@@ -1962,125 +1469,6 @@ static inline void gvCameraStyleEffectBody(
         const float rim = smoothstep(0.010, 0.0, abs(radius - reach));
         const float3 ringColor = mix(float3(0.35, 0.95, 1.0), float3(1.0, 0.42, 0.30), band);
         const float3 drawn = base * (1.0 - ring * 0.45) + ringColor * (ring * 0.45 + rim);
-        result = mix(base, drawn, controls.z);
-        break;
-    }
-    case 100: { // Lissajous scope - audio drawn as an oscilloscope trace
-        const float2 centered = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
-        const float gain = mix(0.12, 0.42, controls.x);
-        const float ratio = mix(1.0, 5.0, controls.y);
-        // The curve is driven by the live bands, so its shape follows the
-        // material rather than animating on a fixed clock.
-        const float lowBand = gvSpectrumAt(uniforms.spectrum, 0.12);
-        const float highBand = gvSpectrumAt(uniforms.spectrum, 0.78);
-        float nearest = 1e9;
-        for (int index = 0; index < 48; index++) {
-            const float t = float(index) / 48.0 * 6.2831853;
-            const float2 point = float2(
-                sin(t * ratio + time * 1.3 + lowBand * 6.0),
-                sin(t + time * 0.9 + highBand * 6.0)
-            ) * gain * (0.45 + uniforms.audio.x * 1.4);
-            nearest = min(nearest, distance(centered, point));
-        }
-        const float trace = smoothstep(0.006, 0.0, nearest);
-        const float glow = smoothstep(0.045, 0.0, nearest) * 0.35;
-        const float3 phosphor = float3(0.55, 1.0, 0.72);
-        result = mix(base, base * 0.35 + phosphor * (trace + glow), controls.z);
-        break;
-    }
-    case 101: { // Vectorscope - chroma of the frame plotted on a colour wheel
-        // A real broadcast scope, gated to its own panel so the cost is paid
-        // over a tenth of the frame instead of all of it.
-        const float span = mix(0.20, 0.42, controls.y);
-        const GVScopePanel panel = gvScopePanel(uv, float4(1.0 - span - 0.03, 0.03, span, span));
-        if (!panel.inside) {
-            result = base;
-            break;
-        }
-        const float2 target = (panel.local - 0.5) * 2.0;
-        const float targetRadius = length(target);
-        if (targetRadius > 1.0) {
-            result = mix(base, base * 0.25, controls.z);
-            break;
-        }
-        // The frame is sampled at 64 points on an R2 low-discrepancy sequence
-        // rather than at hashed positions: sin-hash clusters badly at low
-        // counts and a scope that misses whole regions of the frame is
-        // reporting something untrue. The set is shifted eight times a second
-        // so the plot integrates over the image instead of measuring the same
-        // sixty-four pixels forever - slow enough not to read as flicker.
-        const float2 alpha = float2(0.7548776662, 0.5698402909);
-        const float sweep = floor(time * 8.0) * 0.0173;
-        float energy = 0.0;
-        for (int index = 0; index < 64; index++) {
-            const float2 site = fract(alpha * float(index) + sweep);
-            const float3 tap = gvCameraSample(inputTexture, site);
-            const float2 chroma = gvChromaCoordinate(tap);
-            energy += smoothstep(0.09, 0.0, distance(chroma, target));
-        }
-        const float plot = saturate(energy * mix(0.10, 0.45, controls.x));
-        // Graticule: the unit circle and the four axes a colourist reads.
-        const float circle = smoothstep(0.020, 0.0, abs(targetRadius - 1.0));
-        const float axes = smoothstep(0.010, 0.0, min(abs(target.x), abs(target.y)));
-        const float3 wheel = gvCameraHSVToRGB(float3(
-            fract(atan2(target.y, target.x) / 6.2831853),
-            1.0,
-            1.0
-        ));
-        const float3 drawn = float3(0.04) + wheel * plot + float3(0.30) * max(circle, axes * 0.45);
-        result = mix(base, drawn, controls.z);
-        break;
-    }
-    case 102: { // Waveform monitor - luma of each column plotted as a trace
-        const float height = mix(0.16, 0.40, controls.y);
-        const GVScopePanel panel = gvScopePanel(uv, float4(0.0, 1.0 - height, 1.0, height));
-        if (!panel.inside) {
-            result = base;
-            break;
-        }
-        const float target = 1.0 - panel.local.y;
-        float energy = 0.0;
-        for (int index = 0; index < 32; index++) {
-            const float sampleY = (float(index) + 0.5) / 32.0;
-            const float luma = gvCameraLuma(gvCameraSample(inputTexture, float2(panel.local.x, sampleY)));
-            energy += smoothstep(0.035, 0.0, abs(luma - target));
-        }
-        const float trace = saturate(energy * mix(0.06, 0.30, controls.x));
-        // IRE graticule at 0 / 50 / 100, which is what the trace is measured
-        // against; without it the panel is a shape rather than an instrument.
-        const float grid = smoothstep(0.006, 0.0, min(min(target, abs(target - 0.5)), abs(target - 1.0)));
-        const float3 drawn = float3(0.02, 0.03, 0.03) +
-            float3(0.42, 1.0, 0.62) * trace +
-            float3(0.22, 0.26, 0.24) * grid;
-        result = mix(base, drawn, controls.z);
-        break;
-    }
-    case 103: { // RGB parade - three waveform panels, one per channel
-        const float height = mix(0.16, 0.40, controls.y);
-        const GVScopePanel panel = gvScopePanel(uv, float4(0.0, 1.0 - height, 1.0, height));
-        if (!panel.inside) {
-            result = base;
-            break;
-        }
-        const int lane = clamp(int(panel.local.x * 3.0), 0, 2);
-        const float laneX = fract(panel.local.x * 3.0);
-        const float target = 1.0 - panel.local.y;
-        float energy = 0.0;
-        for (int index = 0; index < 32; index++) {
-            const float sampleY = (float(index) + 0.5) / 32.0;
-            const float3 tap = gvCameraSample(inputTexture, float2(laneX, sampleY));
-            const float channel = lane == 0 ? tap.r : (lane == 1 ? tap.g : tap.b);
-            energy += smoothstep(0.035, 0.0, abs(channel - target));
-        }
-        const float trace = saturate(energy * mix(0.06, 0.30, controls.x));
-        const float3 laneColor = lane == 0
-            ? float3(1.0, 0.28, 0.28)
-            : (lane == 1 ? float3(0.30, 1.0, 0.40) : float3(0.36, 0.52, 1.0));
-        const float divider = smoothstep(0.008, 0.0, min(laneX, 1.0 - laneX));
-        const float grid = smoothstep(0.006, 0.0, min(min(target, abs(target - 0.5)), abs(target - 1.0)));
-        const float3 drawn = float3(0.02) +
-            laneColor * trace +
-            float3(0.20) * max(grid, divider * 0.8);
         result = mix(base, drawn, controls.z);
         break;
     }
@@ -2163,28 +1551,6 @@ static inline void gvCameraStyleEffectBody(
         result = mix(base, gvCameraGamutCompress(base * 0.46 + aurora * 1.45), controls.z);
         break;
     }
-    case 109: { // Neural flow - firing nodes linked by travelling axons
-        const float scale = mix(5.0, 15.0, controls.x);
-        const float2 cell = floor(uv * scale);
-        const float2 local = fract(uv * scale) - 0.5;
-        const float2 node = gvMoshHash2(cell) - 0.5;
-        const float nodeDistance = length(local - node * 0.72);
-        const float soma = smoothstep(0.16, 0.025, nodeDistance);
-        float axon = 0.0;
-        for (int neighbour = 0; neighbour < 4; ++neighbour) {
-            const float angle = float(neighbour) * 1.5707963;
-            const float2 direction = float2(cos(angle), sin(angle));
-            const float2 other = direction + (gvMoshHash2(cell + direction) - 0.5) * 0.72;
-            const float2 segment = other - node * 0.72;
-            const float along = saturate(dot(local - node * 0.72, segment) / max(dot(segment, segment), 1e-4));
-            axon = max(axon, smoothstep(0.045, 0.006, length(local - node * 0.72 - segment * along)));
-        }
-        const float firing = pow(sin(time * mix(1.0, 5.0, controls.y) + gvCameraHash(cell) * 9.0) * 0.5 + 0.5, 8.0);
-        const float signal = soma * (0.35 + firing * 1.8 + uniforms.audioDynamics.y) + axon * (0.22 + firing);
-        const float3 neural = mix(float3(0.12, 0.42, 1.0), float3(1.0, 0.18, 0.72), firing);
-        result = mix(base, gvCameraGamutCompress(base * 0.34 + neural * signal), controls.z);
-        break;
-    }
     case 113: { // Waveform tunnel - spectrum wrapped through a deep corridor
         const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
         const float angle = fract(atan2(p.y, p.x) / 6.2831853 + 0.5);
@@ -2195,36 +1561,6 @@ static inline void gvCameraStyleEffectBody(
         const float spoke = smoothstep(0.055, 0.0, abs(fract(angle * 16.0) - 0.5));
         const float3 tunnel = gvCameraHSVToRGB(float3(fract(angle + time * 0.025), 0.86, wall + spoke * band));
         result = mix(base, gvCameraGamutCompress(base * 0.30 + tunnel * 1.6), controls.z);
-        break;
-    }
-    case 114: { // Spectral flower - FFT petals around a reactive core
-        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
-        const float radius = length(p);
-        const float angle = atan2(p.y, p.x);
-        const float bandPosition = fract(angle / 6.2831853 + 0.5);
-        const float energy = gvSpectrumAt(uniforms.spectrum, bandPosition);
-        const float petals = mix(4.0, 18.0, controls.x);
-        const float petalRadius = 0.17 + abs(cos(angle * petals * 0.5 + time * 0.32)) *
-            (0.10 + energy * mix(0.05, 0.32, controls.y));
-        const float petal = smoothstep(0.025, 0.0, abs(radius - petalRadius));
-        const float core = smoothstep(0.10, 0.0, radius) * (0.4 + uniforms.audio.y);
-        const float3 flower = gvCameraHSVToRGB(float3(fract(bandPosition + time * 0.018), 0.82, petal + core));
-        result = mix(base, gvCameraGamutCompress(base * 0.38 + flower * 1.45), controls.z);
-        break;
-    }
-    case 115: { // Glitch weave - interlocked temporal signal ribbons
-        const float rows = mix(12.0, 90.0, controls.x);
-        const float columns = mix(9.0, 70.0, controls.y);
-        const float row = floor(uv.y * rows);
-        const float column = floor(uv.x * columns);
-        const float rowGate = step(gvCameraHash(float2(row, floor(time * 7.0))), 0.30 + uniforms.audio.y * 0.55);
-        const float columnGate = step(gvCameraHash(float2(column, floor(time * 5.0) + 17.0)), 0.20 + uniforms.audio.z * 0.5);
-        const float2 offset = float2((gvCameraHash(float2(row, time)) - 0.5) * rowGate * 0.16,
-            (gvCameraHash(float2(column, time + 9.0)) - 0.5) * columnGate * 0.12);
-        const float3 woven = gvChromaSplit(inputTexture, uv + offset, offset * 0.18);
-        const float weaveThread = max(rowGate * smoothstep(0.15, 0.0, fract(uv.y * rows)),
-            columnGate * smoothstep(0.15, 0.0, fract(uv.x * columns)));
-        result = mix(base, gvCameraGamutCompress(woven + float3(0.24, 0.04, 0.45) * weaveThread), controls.z);
         break;
     }
     case 116: { // Hologram matrix - falling code reconstructed from the camera
@@ -2239,19 +1575,6 @@ static inline void gvCameraStyleEffectBody(
         const float3 hologram = float3(0.08, 1.0, 0.56) * brightness * (0.3 + cameraLuma);
         const float scan = 0.84 + 0.16 * sin(uv.y * size.y * 3.14159);
         result = mix(base, gvCameraGamutCompress(base * float3(0.24, 0.58, 0.44) * scan + hologram), controls.z);
-        break;
-    }
-    case 118: { // Caustic reactor - colliding refractive wave fronts
-        const float2 p = (uv - 0.5) * mix(5.0, 18.0, controls.x);
-        const float phase = time * mix(0.25, 2.0, controls.y);
-        const float waves = sin(p.x + sin(p.y * 1.3 - phase)) +
-            sin(p.y * 1.4 + cos(p.x * 0.8 + phase * 0.7)) +
-            sin(length(p) * 1.8 - phase * 1.3);
-        const float caustic = pow(saturate(1.0 - abs(waves) * 0.34), 9.0) * (1.0 + uniforms.audio.x * 2.0);
-        const float2 refract = gvFbmGradient(p * 0.35 + phase * 0.04, 0.025) * 0.018;
-        const float3 warped = gvCameraSample(inputTexture, uv + refract);
-        const float3 reactor = warped * 0.62 + mix(float3(0.10, 0.52, 1.0), float3(1.0, 0.24, 0.58), uv.y) * caustic;
-        result = mix(base, gvCameraGamutCompress(reactor), controls.z);
         break;
     }
     case 119: { // Event horizon - accretion disc around a black core
@@ -2272,82 +1595,6 @@ static inline void gvCameraStyleEffectBody(
         ), controls.z);
         break;
     }
-    case 120: { // Prism portal - faceted chromatic aperture
-        const float2 centre = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
-        const float2 p = (uv - centre) * float2(size.x / max(size.y, 1.0), 1.0);
-        const float radius = length(p);
-        const float angle = atan2(p.y, p.x);
-        const float facets = floor(mix(3.0, 14.0, controls.y));
-        const float facetedRadius = radius * (0.92 + cos(angle * facets) * 0.08);
-        const float portalRadius = mix(0.12, 0.44, controls.x);
-        const float rim = smoothstep(0.035, 0.0, abs(facetedRadius - portalRadius));
-        const float2 normal = normalize(p + 1e-4);
-        const float3 prism = gvChromaSplit(inputTexture, uv + normal * rim * 0.025, normal * rim * 0.022);
-        const float3 spectral = gvCameraHSVToRGB(float3(fract(angle / 6.2831853 + time * 0.035), 0.92, rim));
-        result = mix(base, gvCameraGamutCompress(prism + spectral * (0.8 + uniforms.audio.z)), controls.z);
-        break;
-    }
-    case 121: { // Neon orbit - luminous bodies on nested ellipses
-        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
-        float light = 0.0;
-        float hue = 0.0;
-        for (int orbitIndex = 0; orbitIndex < 6; ++orbitIndex) {
-            const float fi = float(orbitIndex);
-            const float radius = 0.08 + fi * mix(0.035, 0.075, controls.x);
-            const float phase = time * mix(0.3, 2.4, controls.y) * (0.45 + fi * 0.12) + fi * 1.71;
-            const float2 body = float2(cos(phase) * radius, sin(phase) * radius * (0.42 + fi * 0.06));
-            const float glow = smoothstep(0.045, 0.0, distance(p, body));
-            const float track = smoothstep(0.008, 0.0, abs(length(p / float2(1.0, 0.55)) - radius));
-            light += glow + track * 0.18;
-            hue += glow * fi / 6.0;
-        }
-        const float3 neon = gvCameraHSVToRGB(float3(fract(0.55 + hue + time * 0.018), 0.84, light * (0.7 + uniforms.audio.x)));
-        result = mix(base, gvCameraGamutCompress(base * 0.32 + neon), controls.z);
-        break;
-    }
-    case 122: { // Chrome ripple - liquid-metal camera relief
-        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
-        const float2 p = (uv - origin) * float2(size.x / max(size.y, 1.0), 1.0);
-        const float radius = length(p);
-        const float wave = sin(radius * mix(24.0, 90.0, controls.x) - time * mix(1.0, 8.0, controls.y));
-        const float2 normal = normalize(p + 1e-4) * wave;
-        const float3 refracted = gvCameraSample(inputTexture, uv + normal * 0.018);
-        const float luminance = gvCameraLuma(refracted);
-        const float specular = pow(saturate(0.5 + wave * 0.5), 12.0) * (1.0 + uniforms.audioDynamics.x);
-        const float3 chrome = mix(float3(luminance * 0.35), float3(0.65, 0.78, 1.0), specular) + refracted * 0.34;
-        result = mix(base, gvCameraGamutCompress(chrome), controls.z);
-        break;
-    }
-    case 123: { // Laser garden - perspective blades growing from the floor
-        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
-        float beams = 0.0;
-        float hue = 0.0;
-        for (int index = 0; index < 10; ++index) {
-            const float fi = float(index);
-            const float seed = gvCameraHash(float2(fi, 3.7));
-            const float root = (seed - 0.5) * 1.1;
-            const float bend = sin(time * mix(0.25, 1.8, controls.y) + fi) * mix(0.02, 0.18, controls.x);
-            const float lineX = root + p.y * bend;
-            const float blade = smoothstep(0.012, 0.001, abs(p.x - lineX)) * smoothstep(0.58, -0.3, p.y);
-            beams += blade;
-            hue += blade * seed;
-        }
-        const float3 laser = gvCameraHSVToRGB(float3(fract(hue * 0.17 + time * 0.014), 0.94, beams * (0.6 + uniforms.audio.z * 1.8)));
-        result = mix(base, gvCameraGamutCompress(base * 0.27 + laser), controls.z);
-        break;
-    }
-    case 124: { // Hyper bloom - thresholded camera light becomes a living halo
-        const float threshold = mix(0.82, 0.20, controls.y);
-        const float reach = mix(2.0, 34.0, controls.x);
-        const float3 blurred = gvBlur(inputTexture, uv, texel * reach);
-        const float3 hot = max(blurred - threshold, 0.0);
-        const float halo = gvCameraLuma(hot) * (2.0 + uniforms.audio.x * 5.0);
-        const float hue = fract(gvCameraLuma(base) * 0.38 + time * 0.025);
-        const float3 spectralHalo = gvCameraHSVToRGB(float3(hue, 0.72, halo));
-        const float pulse = 0.76 + 0.24 * sin(time * 2.0 + uniforms.audio.y * 6.0);
-        result = mix(base, gvCameraGamutCompress(base + spectralHalo * pulse), controls.z);
-        break;
-    }
     case 125: { // Pixel confetti - image cells burst into reactive colour chips
         const float density = mix(10.0, 55.0, controls.x);
         const float2 cell = floor(uv * density);
@@ -2360,69 +1607,6 @@ static inline void gvCameraStyleEffectBody(
         const float3 color = gvCameraHSVToRGB(float3(fract(seed + time * 0.04), 0.90, 1.0));
         const float3 sampled = gvCameraSample(inputTexture, (cell + 0.5) / density);
         result = mix(base, gvCameraGamutCompress(sampled * 0.35 + color * chip * enabled), controls.z);
-        break;
-    }
-    case 126: { // Solar flare - anamorphic star driven from touch
-        const float2 centre = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5, 0.5);
-        const float2 p = (uv - centre) * float2(size.x / max(size.y, 1.0), 1.0);
-        const float radius = max(length(p), 0.003);
-        const float core = pow(saturate(1.0 - radius / mix(0.04, 0.24, controls.x)), 4.0);
-        const float horizontal = exp(-abs(p.y) * mix(20.0, 120.0, controls.y)) /
-            (1.0 + abs(p.x) * 5.0);
-        const float rays = pow(abs(sin(atan2(p.y, p.x) * 9.0 + time * 0.25)), 22.0) /
-            (1.0 + radius * 14.0);
-        const float energy = (core + horizontal + rays) * (0.6 + uniforms.audio.x * 1.8);
-        const float3 flare = mix(float3(1.0, 0.24, 0.05), float3(0.45, 0.72, 1.0), saturate(radius * 2.5)) * energy;
-        result = mix(base, gvCameraGamutCompress(base + flare), controls.z);
-        break;
-    }
-    case 127: { // Candy mesh - glossy warped candy lattice
-        const float2 p = (uv - 0.5) * mix(5.0, 18.0, controls.x);
-        const float warp = sin(p.y * 0.8 + time) + cos(p.x * 0.7 - time * 0.8);
-        const float2 q = p + float2(sin(p.y + time), cos(p.x - time)) * warp * 0.18;
-        const float mesh = min(abs(sin(q.x * 3.14159)), abs(sin(q.y * 3.14159)));
-        const float ribbon = smoothstep(mix(0.42, 0.08, controls.y), 0.0, mesh);
-        const float highlight = pow(1.0 - mesh, 9.0);
-        const float hue = fract(q.x * 0.045 + q.y * 0.035 + time * 0.025 + uniforms.audio.z * 0.2);
-        const float3 candy = gvCameraHSVToRGB(float3(hue, 0.76, ribbon * 0.72 + highlight));
-        result = mix(base, gvCameraGamutCompress(base * 0.32 + candy), controls.z);
-        break;
-    }
-    case 128: { // Aurora glass - layered translucent refraction
-        const float scale = mix(2.0, 9.0, controls.x);
-        const float2 flowA = gvFbmGradient(uv * scale + float2(time * 0.08, 0.0), 0.012);
-        const float2 flowB = gvFbmGradient(uv * scale * 1.9 - float2(0.0, time * 0.06), 0.008);
-        const float2 normal = flowA + float2(-flowB.y, flowB.x) * 0.65;
-        const float sheen = pow(saturate(0.5 + dot(normalize(float3(normal, 0.4)), normalize(float3(-0.3, 0.5, 0.8)))),
-            mix(3.0, 16.0, controls.y));
-        const float3 refracted = gvChromaSplit(inputTexture, uv + normal * 0.025, normal * 0.008);
-        const float hue = fract(0.42 + normal.x * 0.28 + normal.y * 0.18 + time * 0.012);
-        const float3 glass = refracted * 0.72 + gvCameraHSVToRGB(float3(hue, 0.62, sheen * (1.0 + uniforms.audio.z)));
-        result = mix(base, gvCameraGamutCompress(glass), controls.z);
-        break;
-    }
-    case 129: { // Cosmic knot - projected luminous torus knot
-        const float2 p = (uv - 0.5) * float2(size.x / max(size.y, 1.0), 1.0);
-        float nearest = 1e6;
-        float knotHue = 0.0;
-        const float spin = time * mix(0.08, 0.75, controls.y);
-        for (int index = 0; index < 40; ++index) {
-            const float t = float(index) / 40.0 * 6.2831853;
-            const float radius = 0.23 + 0.075 * cos(3.0 * t + spin);
-            float3 knot = float3(radius * cos(2.0 * t), radius * sin(2.0 * t), 0.075 * sin(3.0 * t + spin));
-            knot.xz = gvCameraRotate(knot.xz, spin * 0.7);
-            const float2 projected = knot.xy / (0.8 + knot.z);
-            const float distanceValue = distance(p, projected);
-            if (distanceValue < nearest) {
-                nearest = distanceValue;
-                knotHue = t / 6.2831853;
-            }
-        }
-        const float line = smoothstep(mix(0.030, 0.008, controls.x), 0.0, nearest);
-        const float glow = smoothstep(0.075, 0.0, nearest) * 0.35;
-        const float3 knotColor = gvCameraHSVToRGB(float3(fract(knotHue + time * 0.02), 0.84, (line + glow) *
-            (0.7 + uniforms.audio.y * 1.5)));
-        result = mix(base, gvCameraGamutCompress(base * 0.30 + knotColor), controls.z);
         break;
     }
     case 130: { // Nebula drift - swirling interstellar clouds with audio-reactivity
@@ -2440,57 +1624,6 @@ static inline void gvCameraStyleEffectBody(
         const float2 starCell = floor(uv * 180.0);
         const float stars = pow(gvCameraHash(starCell), 42.0) * (0.4 + uniforms.audioDynamics.x * 1.5);
         result = mix(base, gvCameraGamutCompress(base * 0.34 + gas + stars), controls.z);
-        break;
-    }
-    case 131: { // Quantum bloom - pulsing quantum-circuit field with temporal glow
-        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
-        const float2 p = (uv - 0.5) * aspect;
-        const float radius = length(p);
-        const float growth = fract(time * mix(0.08, 0.7, controls.x) + uniforms.audioDynamics.y * 0.18);
-        float bloom = 0.0;
-        for (int ringIndex = 0; ringIndex < 5; ++ringIndex) {
-            const float ringRadius = fract(growth + float(ringIndex) / 5.0) * 0.62;
-            bloom += smoothstep(0.025, 0.0, abs(radius - ringRadius)) * (1.0 - ringRadius);
-        }
-        const float2 cell = gvWorley(p * mix(5.0, 18.0, controls.y) + time * 0.04);
-        const float circuit = smoothstep(0.055, 0.0, cell.y - cell.x);
-        const float3 quantum = gvCameraHSVToRGB(float3(
-            fract(radius * 0.7 + time * 0.025), 0.78, bloom * 1.3 + circuit * 0.32
-        ));
-        result = mix(base, gvCameraGamutCompress(
-            base * 0.31 + quantum * (0.8 + uniforms.audio.x)
-        ), controls.z);
-        break;
-    }
-    case 132: { // Plasma ripple - fluid plasma tendrils with touch displacement
-        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
-        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
-        const float2 p = (uv - origin) * aspect;
-        const float radius = length(p);
-        const float scale = mix(8.0, 32.0, controls.x);
-        const float2 field = gvFbmGradient(uv * scale + float2(time * 0.16, -time * 0.11), 0.009);
-        const float ripple = sin(radius * scale * 1.7 - time * mix(1.0, 7.0, controls.y) +
-            gvFbm(uv * scale * 0.32) * 5.0);
-        const float2 displacement = normalize(p + 1e-4) * ripple * 0.014 + field * 0.020;
-        const float3 warped = gvChromaSplit(inputTexture, uv + displacement, displacement * 0.35);
-        const float filament = pow(saturate(0.5 + ripple * 0.5), 8.0) * (0.5 + uniforms.audio.x * 1.6);
-        const float3 plasma = gvCameraHSVToRGB(float3(fract(0.72 + radius + time * 0.03), 0.88, filament));
-        result = mix(base, gvCameraGamutCompress(warped * 0.62 + plasma), controls.z);
-        break;
-    }
-    case 133: { // Chroma scrape - MTV-style glitch with audio-driven chrome strips
-        const float rows = mix(18.0, 160.0, controls.x);
-        const float row = floor(uv.y * rows);
-        const float tick = floor(time * mix(5.0, 24.0, controls.y));
-        const float seed = gvCameraHash(float2(row, tick));
-        const float active = step(seed, 0.15 + uniforms.audioDynamics.x * 0.75);
-        const float reach = (gvCameraHash(float2(row, tick + 17.0)) - 0.5) *
-            mix(0.015, 0.34, controls.x) * active;
-        const float3 scraped = gvChromaSplit(inputTexture, uv + float2(reach, 0.0), float2(reach * 0.12, 0.0));
-        const float ridge = smoothstep(0.18, 0.0, min(fract(uv.y * rows), 1.0 - fract(uv.y * rows))) * active;
-        const float chrome = pow(saturate(gvCameraLuma(scraped)), 0.45) * ridge * mix(0.5, 2.8, controls.y);
-        const float3 sheen = gvCameraHSVToRGB(float3(fract(uv.x + time * 0.06), 0.58, chrome));
-        result = mix(base, gvCameraGamutCompress(scraped * 0.58 + sheen), controls.z);
         break;
     }
     case 134: { // Singularity weave - gravitational lensing with touch vortex
@@ -2534,73 +1667,6 @@ static inline void gvCameraStyleEffectBody(
         ), controls.z);
         break;
     }
-    case 136: { // Vortex pulse - radial vortex with audio-pumped intensity
-        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
-        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
-        const float2 p = (uv - origin) * aspect;
-        const float radius = max(length(p), 0.004);
-        const float pulse = 0.5 + 0.5 * sin(time * mix(1.0, 7.0, controls.x) - radius * 18.0);
-        const float twist = mix(0.0, 5.0, controls.y) * exp(-radius * 3.4) *
-            (0.45 + pulse + uniforms.audio.y * 0.8);
-        const float2 warpedP = gvCameraRotate(p, twist);
-        const float2 sampleUV = origin + warpedP / aspect;
-        const float3 warped = gvChromaSplit(inputTexture, sampleUV, normalize(p) * pulse * 0.009);
-        const float ring = smoothstep(0.025, 0.0, abs(radius - (0.12 + pulse * 0.25)));
-        const float3 energy = gvCameraHSVToRGB(float3(fract(0.72 + pulse * 0.22 + time * 0.02), 0.86,
-            ring * (0.6 + uniforms.audioDynamics.x * 1.7)));
-        result = mix(base, gvCameraGamutCompress(warped * 0.60 + energy), controls.z);
-        break;
-    }
-    case 138: { // Ion storm - charged flow field that refracts the live image
-        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
-        const float2 origin = uniforms.touch.w > 0.5 ? uniforms.touch.xy : float2(0.5);
-        const float2 p = (uv - origin) * aspect;
-        const float audioEnergy = saturate(uniforms.audio.x * 0.55 + uniforms.audio.y * 0.90 +
-            uniforms.audioDynamics.y * 0.45);
-        const float scale = mix(3.0, 18.0, controls.x);
-        const float phase = time * mix(0.28, 1.85, controls.y);
-        const float2 field = gvFbmGradient(p * scale + float2(phase, -phase * 0.73), 0.025);
-        const float2 curl = float2(-field.y, field.x);
-        const float2 refractedUV = uv + curl * mix(0.004, 0.050, controls.x) * (0.45 + audioEnergy);
-        const float3 refracted = gvChromaSplit(
-            inputTexture,
-            refractedUV,
-            curl * mix(0.001, 0.014, controls.y) * (0.4 + audioEnergy)
-        );
-        const float filaments = pow(saturate(1.0 - abs(sin(dot(p, curl * 22.0) + phase * 5.0))), 14.0);
-        const float3 charge = gvCameraHSVToRGB(float3(
-            fract(0.55 + gvFbm(p * 5.0 - phase) * 0.42 + audioEnergy * 0.18),
-            0.80,
-            1.0
-        ));
-        result = gvCameraGamutCompress(refracted + charge * filaments * (0.45 + audioEnergy * 1.35));
-        break;
-    }
-    case 139: { // Opal wave - iridescent caustics driven by audio and gesture
-        const float2 aspect = float2(size.x / max(size.y, 1.0), 1.0);
-        const float2 p = (uv - 0.5) * aspect;
-        const float audioEnergy = saturate(uniforms.audio.x * 0.45 + uniforms.audio.z * 0.75 +
-            uniforms.audioDynamics.x * 0.35);
-        const float speed = mix(0.18, 1.35, controls.y);
-        const float timePhase = time * speed;
-        const float2 warp = float2(
-            gvFbm(p * mix(4.0, 14.0, controls.x) + float2(timePhase, 1.7)),
-            gvFbm(p * mix(4.0, 14.0, controls.x) + float2(-2.3, -timePhase))
-        ) - 0.5;
-        const float wave = sin((p.x + warp.x * 0.42) * 17.0 +
-            (p.y + warp.y * 0.42) * 13.0 + timePhase * 3.0);
-        const float caustic = pow(saturate(0.5 + 0.5 * wave), mix(7.0, 2.2, controls.x));
-        const float radius = length(p + warp * 0.18);
-        const float hue = fract(radius * 0.78 - wave * 0.13 + timePhase * 0.08 + audioEnergy * 0.22);
-        const float3 iridescence = gvCameraHSVToRGB(float3(hue, 0.72 + audioEnergy * 0.28, 1.0));
-        const float2 offset = warp * mix(0.002, 0.022, controls.x) * (1.0 + audioEnergy);
-        const float3 refracted = gvChromaSplit(inputTexture, uv + offset, offset * 0.72);
-        result = gvCameraGamutCompress(
-            refracted * (0.74 + caustic * 0.26) + iridescence * caustic *
-                (0.28 + audioEnergy * 0.82)
-        );
-        break;
-    }
     case 140: { // CMYK press: four independent, rotated subtractive screens.
         const float pitch = mix(3.5, 22.0, controls.x);
         const float registration = controls.y * pitch * 0.32;
@@ -2624,29 +1690,6 @@ static inline void gvCameraStyleEffectBody(
         const float3 paper = float3(0.97, 0.945, 0.89);
         const float3 colorInk = 1.0 - screens.xyz * density;
         result = paper * colorInk * (1.0 - screens.w * density);
-        break;
-    }
-    case 141: { // Highlight-gated multiorder spectral diffraction, bounded to 24 taps.
-        const float pitch = mix(0.002, 0.030, controls.x);
-        const uint orders = 1u + uint(round(controls.y * 3.0));
-        const float gate = mix(0.25, 0.92, controls.z);
-        float3 spectrum = float3(0);
-        float normalization = 0;
-        for (uint order = 1; order <= 4; ++order) {
-            if (order > orders) break;
-            const float weight = 1.0 / float(order * order);
-            for (int side = -1; side <= 1; side += 2) {
-                for (uint channel = 0; channel < 3; ++channel) {
-                    const float wavelength = channel == 0 ? 0.650 : (channel == 1 ? 0.530 : 0.460);
-                    const float displacement = float(side) * float(order) * pitch * wavelength / 0.530;
-                    const float3 light = gvCameraSample(inputTexture, uv + float2(displacement, displacement * 0.22));
-                    const float highlight = smoothstep(gate, min(gate + 0.15, 1.0), gvCameraLuma(light));
-                    spectrum[channel] += light[channel] * highlight * weight;
-                }
-                normalization += weight;
-            }
-        }
-        result = base + spectrum / max(normalization, 1.0) * 0.75;
         break;
     }
     default:
@@ -2872,16 +1915,6 @@ kernel void gvCameraStyleEffect(
         result = mix(current, history, controls.z * 0.92);
         break;
     }
-    case 3: { // Freeze
-        float3 frozen = gvCameraSample(historyTexture, uv);
-        float3 hsv = gvCameraRGBToHSV(frozen);
-        hsv.x = fract(hsv.x + (controls.y - 0.5) * 0.16);
-        frozen = gvCameraHSVToRGB(hsv);
-        const float noise = (gvCameraHash(float2(position) + floor(time * 12.0)) - 0.5) *
-            controls.z * 0.24;
-        result = mix(current, saturate(frozen + noise), controls.x);
-        break;
-    }
 case 4: { // Datamosh - what the decoder actually reconstructed
         // Nothing in this arm is synthesised. `moshDecode` is the output of a
         // real H.264 decode of a stream this app encoded one frame earlier with
@@ -2920,18 +1953,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
 	        result = mix(current, sorted, controls.z);
 	        break;
 	    }
-	    case 9: { // Temporal pixel sort
-	        const float3 history = gvCameraSample(historyTexture, uv);
-	        const float delta = abs(gvCameraLuma(current) - gvCameraLuma(history));
-	        const float gate = holdActive
-	            ? 1.0
-	            : max(0.24, smoothstep(mix(0.01, 0.32, controls.y), mix(0.06, 0.46, controls.y), delta));
-	        const float2 sortStep = float2(texel.x * mix(3.0, 64.0, controls.x), texel.y * mix(0.0, 10.0, controls.x));
-	        const float rank = fract(delta * 11.0 + time * 0.13 + uv.y);
-	        const float3 sorted = gvCameraLumaRankedSample(historyTexture, uv, sortStep, rank);
-	        result = mix(current, sorted, gate * controls.z);
-	        break;
-	    }
 	    case 10: { // Point-cloud smear
 	        const float cellSize = mix(5.0, 34.0, controls.x);
 	        const float2 cell = floor(float2(position) / cellSize);
@@ -2942,23 +1963,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
 	        const float2 smear = float2(jitter - 0.5, luma - 0.5) * controls.z * 0.28;
 	        const float3 cloud = gvCameraSample(historyTexture, uv + smear);
 	        result = mix(current * 0.58, cloud, pointMask * mix(0.35, 1.0, controls.y));
-	        break;
-	    }
-	    case 12: { // Freeze brush
-	        const float2 brush = uniforms.touch.xy;
-	        const float radius = mix(0.08, 0.42, controls.x);
-	        const float mask = uniforms.touch.w * (1.0 - smoothstep(radius * 0.72, radius, distance(uv, brush)));
-	        const float3 held = gvCameraSample(historyTexture, uv + float2(sin(time + uv.y * 12.0), cos(time + uv.x * 10.0)) * 0.006);
-	        result = mix(current, held, max(mask, holdActive ? controls.z : 0.0));
-	        break;
-	    }
-	    case 13: { // Sort brush
-	        const float2 brush = uniforms.touch.xy;
-	        const float radius = mix(0.07, 0.36, controls.x);
-	        const float mask = uniforms.touch.w * (1.0 - smoothstep(radius * 0.72, radius, distance(uv, brush)));
-	        const float2 direction = normalize((uv - brush) + float2(0.0001)) * texel * mix(4.0, 76.0, controls.y);
-	        const float3 sorted = gvCameraLumaRankedSample(historyTexture, uv, direction, fract(time * 0.17 + uv.x + uv.y));
-	        result = mix(current, sorted, mask * controls.z);
 	        break;
 	    }
 	    case 14: { // Feedback tunnel
@@ -2982,23 +1986,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
 	        // between live and held rather than as one muddy recursive blur.
 	        const float holding = step(0.45, gvCameraHash(block * 1.7 + floor(time * 3.0)));
 	        result = mix(current, held, holding * mix(0.6, 0.96, controls.x));
-	        break;
-	    }
-	    case 19: { // Pixel gravity
-	        const float luma = gvCameraLuma(current);
-	        const float2 cell = floor(float2(position) / mix(3.0, 18.0, controls.y));
-	        const float drift = fract(time * mix(0.05, 0.70, controls.x) + gvCameraHash(cell));
-	        // A per-frame step, not a jump: history is the previous output, so
-	        // the fall accumulates into streaks on its own. The old step of up
-	        // to a third of the frame per frame, held at 82%, dissolved the
-	        // picture into grey static within a few frames.
-	        const float drop = (1.0 - luma) * controls.x * (0.006 + drift * 0.04);
-	        const float sway = (gvCameraHash(cell + float2(19.0)) - 0.5) * controls.y * 0.006;
-	        const float3 fallen = gvCameraSample(historyTexture, uv - float2(sway, drop));
-	        // Dark pixels fall, highlights hold, and history never fully owns
-	        // a pixel — the live frame always shows through.
-	        const float weight = controls.z * mix(0.30, 0.86, 1.0 - luma);
-	        result = mix(current, min(fallen, current + 0.02), weight);
 	        break;
 	    }
 	    case 20: { // Pixel shift
@@ -3030,48 +2017,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
 	        );
 	        const float3 timeSlice = gvCameraSample(historyTexture, uv + offset);
 	        result = mix(current, timeSlice, max(slit, 0.18) * controls.z);
-	        break;
-	    }
-	    case 22: { // Motion bloom
-	        const float3 history = gvCameraSample(historyTexture, uv);
-	        const float motion = gvCameraLuma(abs(current - history));
-	        const float gate = smoothstep(0.012, mix(0.08, 0.34, controls.y), motion);
-	        const float2 radius = texel * mix(2.0, 36.0, controls.y) * (1.0 + uniforms.audio.y * 2.0);
-	        float3 bloom = float3(0.0);
-	        bloom += gvCameraSample(historyTexture, uv + float2(radius.x, 0.0));
-	        bloom += gvCameraSample(historyTexture, uv - float2(radius.x, 0.0));
-	        bloom += gvCameraSample(historyTexture, uv + float2(0.0, radius.y));
-	        bloom += gvCameraSample(historyTexture, uv - float2(0.0, radius.y));
-	        // History is the previous presented frame, so anything added here
-	        // is read back next frame. Only light the live frame does not
-	        // already have is carried, at a gain below one: the halo trails and
-	        // decays. The old `max(current, bloom * 2.4)` compounded every frame
-	        // and walked the whole picture to white within a second.
-	        bloom *= 0.25;
-	        const float3 halo = max(bloom - current, 0.0) * mix(0.45, 0.92, controls.x);
-	        const float3 lift = current * (1.0 + gate * controls.x * 0.6);
-	        result = mix(current, lift + halo, max(gate, uniforms.audio.x * 0.18) * controls.z);
-	        break;
-	    }
-	    case 23: { // Audio bloom - energy halo driven by the live spectrum
-	        const float energy = saturate(uniforms.audio.x * 0.7 + uniforms.audio.y * 1.1);
-	        const float2 haloRadius = texel * mix(3.0, 44.0, controls.y) * (0.35 + energy * 1.9);
-	        float3 halo = float3(0.0);
-	        halo += gvCameraSample(historyTexture, uv + float2(haloRadius.x, 0.0));
-	        halo += gvCameraSample(historyTexture, uv - float2(haloRadius.x, 0.0));
-	        halo += gvCameraSample(historyTexture, uv + float2(0.0, haloRadius.y));
-	        halo += gvCameraSample(historyTexture, uv - float2(0.0, haloRadius.y));
-	        halo += gvCameraSample(historyTexture, uv + haloRadius * 0.71);
-	        halo += gvCameraSample(historyTexture, uv - haloRadius * 0.71);
-	        halo *= 1.0 / 6.0;
-	        // History is the previous output, so a gain above one here grew
-	        // every frame — the tinted halo walked the picture to a violet
-	        // wash. Only light the live frame lacks is carried, below unit
-	        // gain; the energy-driven glow is applied to the live frame, where
-	        // it cannot compound.
-	        const float3 carried = max(halo - current, 0.0) * mix(0.35, 0.9, controls.x) * float3(0.86, 0.62, 1.0);
-	        const float3 glow = current * (1.0 + energy * mix(0.15, 0.6, controls.x)) + carried;
-	        result = mix(current, glow, energy * controls.z);
 	        break;
 	    }
 	    case 24: { // Audio kick - bass transients stutter the frame
@@ -3120,91 +2065,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
 	        result = mix(current, aged, torn * touchIntensity);
 	        break;
 	    }
-	    case 26: { // Buffer underrun - blocks that miss their refresh
-	        // Blocks hold real historical imagery. The age a block is stuck at
-	        // is derived from its own hash and a slow clock, so neighbours
-	        // recover independently instead of flickering in unison.
-	        const float blockSize = mix(8.0, 96.0, controls.y);
-	        const float2 block = floor(float2(position) / blockSize);
-	        const float clock = floor(time * mix(6.0, 0.7, controls.z));
-	        const float roll = gvCameraHash(block * 0.37 + clock * 0.19);
-	        const float stale = step(1.0 - controls.x, roll);
-	        const float age = gvCameraHash(block * 1.93 + clock * 0.07);
-	        float3 held;
-	        if (age < 0.28) {
-	            held = gvCameraSample(tap0, uv);
-	        } else if (age < 0.55) {
-	            held = gvCameraSample(tap1, uv);
-	        } else if (age < 0.80) {
-	            held = gvCameraSample(tap2, uv);
-	        } else {
-	            held = gvCameraSample(tap3, uv);
-	        }
-	        result = mix(current, held, stale * touchIntensity);
-	        break;
-	    }
-	    case 27: { // Packet loss - regions drop, stale, smear or collapse
-	        const float blockSize = mix(6.0, 64.0, controls.y);
-	        const float2 block = floor(float2(position) / blockSize);
-	        // Bursts: a row-wide seed gates the per-block seed, so losses
-	        // arrive in runs the way real dropped packets do rather than as
-	        // uniform salt.
-	        const float burstSeed = gvCameraHash(float2(block.y, floor(time * 3.1)));
-	        const float burst = step(1.0 - mix(0.15, 1.0, controls.y), burstSeed);
-	        const float roll = gvCameraHash(block * 0.83 + floor(time * 5.0) * 0.31);
-	        const float lost = step(1.0 - controls.x, roll) * max(burst, 0.35);
-	        if (lost > 0.0) {
-	            const float mode = gvCameraHash(block * 2.71);
-	            float3 replacement;
-	            if (mode < 0.34) {
-	                // Stale: the block keeps an older frame entirely.
-	                replacement = gvCameraSample(tap2, uv);
-	            } else if (mode < 0.67) {
-	                // Neighbour collapse: the block takes the one beside it.
-	                const float2 donor = (block + float2(-1.0, 0.0)) * blockSize / size;
-	                replacement = gvCameraSample(tap1, donor);
-	            } else {
-	                // Smear: the block is dragged from its own left edge.
-	                const float2 edge = float2(block.x * blockSize / size.x, uv.y);
-	                replacement = gvCameraSample(tap1, mix(edge, uv, 1.0 - controls.z));
-	            }
-	            result = mix(current, replacement, saturate(lost * touchIntensity));
-	        }
-	        break;
-	    }
-	    case 28: { // Chroma failure - colour belongs to an older frame
-	        // Luma is taken live and chroma from the ring, so the image can
-	        // stay sharp while its colour visibly lags. Cb and Cr are pulled
-	        // from different taps and offset independently.
-	        const float delay = controls.x;
-	        const float2 drift = float2(sin(time * 0.7), cos(time * 0.53)) *
-	            (controls.y - 0.5) * 0.06;
-	        const float3 lumaSource = current;
-	        const float3 cbSource = gvCameraSample(delay < 0.5 ? tap1 : tap2, uv + drift);
-	        const float3 crSource = gvCameraSample(delay < 0.5 ? tap2 : tap3, uv - drift);
-	        // Rec.709 luma/chroma split, reassembled from three different
-	        // moments. Working in YCbCr rather than RGB is what makes this read
-	        // as a colour-subcarrier fault instead of a channel offset.
-	        const float yNow = gvCameraLuma(lumaSource);
-	        const float cbValue = (cbSource.b - dot(cbSource, float3(0.299, 0.587, 0.114))) * 0.564;
-	        const float crValue = (crSource.r - dot(crSource, float3(0.299, 0.587, 0.114))) * 0.713;
-	        float3 rebuilt = float3(
-	            yNow + 1.402 * crValue,
-	            yNow - 0.344136 * cbValue - 0.714136 * crValue,
-	            yNow + 1.772 * cbValue
-	        );
-	        // Smear pulls the chroma along its own drift for a few taps.
-	        if (controls.z > 0.01) {
-	            float3 trail = rebuilt;
-	            for (uint i = 1; i <= 4; ++i) {
-	                const float3 s = gvCameraSample(tap2, uv - drift * float(i) * 2.0);
-	                trail += s * (0.25 * controls.z);
-	            }
-	            rebuilt = mix(rebuilt, trail / (1.0 + controls.z), controls.z);
-	        }
-	        result = mix(current, saturate(rebuilt), saturate(delay * 1.15) * touchIntensity);
-	        break;
-	    }
 	    case 29: { // Sensor smear - highlight charge bleeding down the sensor
 	        // Vertical charge transfer: only pixels above threshold contribute,
 	        // and the streak accumulates upward through the column so bright
@@ -3234,76 +2094,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
 	            result = current + wake * strength * mix(0.4, 2.6, controls.y) * touchIntensity;
 	        }
 	        result = saturate(result);
-	        break;
-	    }
-	    case 30: { // Causal smear - corruption arrives ahead of the motion
-	        // Every other motion effect trails backward: it samples where a
-	        // thing was. This samples where a thing is GOING. The flow vector
-	        // is extrapolated forward along its own trajectory, and the scene
-	        // at that predicted location is corrupted before the subject
-	        // arrives. Raise an arm and the wall above it starts melting
-	        // before the hand gets there.
-	        const float horizon = mix(1.0, 14.0, controls.x);
-	        const float gain = mix(0.5, 5.0, controls.y);
-	        const float spread = mix(0.004, 0.06, controls.z);
-
-	        // Look backward along the flow to find the motion that is heading
-	        // into this pixel. If a strong vector upstream points at us, this
-	        // pixel is about to be reached.
-	        float3 arriving = float3(0.0);
-	        float weight = 0.0;
-	        for (uint step = 1u; step <= 5u; ++step) {
-	            const float t = float(step) / 5.0;
-	            const float2 probe = uv - flow * horizon * t;
-	            const float2 probeFlow = flowReady
-	                ? gvCameraSampleVector(flowField, probe)
-	                : float2(0.0);
-	            // Does this upstream vector point toward us?
-	            const float2 toHere = uv - probe;
-	            const float alignment = dot(normalize(probeFlow + 1e-6), normalize(toHere + 1e-6));
-	            const float strength = length(probeFlow) * saturate(alignment);
-	            if (strength > 0.0) {
-	                // Uncertainty grows with distance into the future, so the
-	                // prediction blurs out rather than staying crisp — which is
-	                // what makes it read as anticipation rather than a copy.
-	                const float2 jitter = float2(
-	                    gvCameraHash(float2(position) * 0.013 + t),
-	                    gvCameraHash(float2(position) * 0.017 - t)
-	                ) - 0.5;
-	                arriving += gvCameraSample(inputTexture, probe + jitter * spread * t);
-	                weight += strength * (1.0 - t * 0.5);
-	            }
-	        }
-	        if (weight > 0.0001) {
-	            arriving /= max(weight, 0.0001) * 5.0;
-	            const float presence = saturate(weight * gain * 6.0);
-	            result = mix(current, saturate(arriving), presence * touchIntensity);
-	        }
-	        break;
-	    }
-	    case 31: { // Reality cavitation - fast motion punches holes
-	        // Above a velocity threshold the image is not distorted, it is
-	        // removed, and what shows through is an older frame. The void has
-	        // a lit rim so it reads as material torn away rather than as a
-	        // region that was simply dimmed.
-	        const float threshold = mix(0.05, 0.005, controls.x);
-	        const float size = mix(1.0, 5.0, controls.y);
-	        const float residue = controls.z;
-
-	        const float speed = flowMagnitude * size;
-	        const float cavity = smoothstep(threshold, threshold * 3.0, speed);
-	        if (cavity > 0.001) {
-	            // Exposed layer deepens with speed: a fast movement tears
-	            // through to older material than a slow one.
-	            const float3 exposed = speed > threshold * 6.0
-	                ? gvCameraSample(tap3, uv)
-	                : gvCameraSample(tap1, uv);
-	            // Rim: the boundary of the void catches light.
-	            const float rim = smoothstep(0.75, 1.0, cavity) * (1.0 - smoothstep(0.92, 1.0, cavity));
-	            float3 hole = mix(exposed * (1.0 - residue * 0.55), float3(0.0), cavity * 0.35);
-	            hole += float3(0.55, 0.30, 0.95) * rim * 1.4;
-	            result = mix(current, hole, cavity * touchIntensity);
-	        }
 	        break;
 	    }
 	    case 32: { // Time fracture - a mosaic of incompatible timelines
@@ -3373,149 +2163,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
 	        // frame leaves a wake instead of a hard silhouette.
 	        const float3 trace = gvCameraSample(historyTexture, uv) * persist;
 	        result = max(current * presence, trace * 0.92);
-	        break;
-	    }
-	    case 34: { // Memory burn-in - stable regions engrave themselves
-	        // Where nothing has moved for a while, the image sets. That burnt
-	        // material then resists being replaced, so panning away leaves the
-	        // ghost of what was there while the new scene fills in around it.
-	        // Motion is what erases it.
-	        const float burn = controls.x;
-	        const float hold = controls.y;
-	        const float erase = mix(1.0, 14.0, controls.z);
-
-	        // Stillness is the inverse of local motion. Accumulated in the
-	        // feedback texture, which is already a per-pixel store updated
-	        // every frame — no second buffer needed for this.
-	        const float stillness = 1.0 - saturate(flowMagnitude * erase * 40.0);
-	        const float3 engraved = gvCameraSample(historyTexture, uv);
-
-	        // The burnt layer only strengthens where the scene is still, and
-	        // only releases where it moves.
-	        // Capped below the loop's unit gain: history already contains last
-	        // frame's ghost tint, so retention near 1 compounded it to white.
-	        const float retention = min(stillness * hold * 1.4 + burn * 0.35, 0.84);
-	        const float3 held = mix(current, engraved, retention);
-	        // Slight bloom on the burn so the ghost reads as phosphor rather
-	        // than as a dirty lens.
-	        const float ghost = saturate(gvCameraLuma(engraved) - gvCameraLuma(current));
-	        result = held + float3(0.42, 0.22, 0.62) * ghost * retention * 0.45;
-	        break;
-	    }
-	    case 35: { // Spectral depth - channels separated by time, not offset
-	        // An RGB split where the channels are not moved sideways but taken
-	        // from different moments and displaced along their own motion. The
-	        // ghosting therefore has real spatial structure: it follows what
-	        // actually moved rather than smearing the whole frame.
-	        const float split = controls.x;
-	        const float reach = mix(0.0, 5.0, controls.y);
-
-	        const float2 redUV = uv - flow * reach * 0.3;
-	        const float2 greenUV = uv - flow * reach * 1.0;
-	        const float2 blueUV = uv - flow * reach * 2.2;
-
-	        const float red = gvCameraSample(inputTexture, redUV).r;
-	        const float green = gvCameraSample(split < 0.5 ? tap0 : tap1, greenUV).g;
-	        const float blue = gvCameraSample(split < 0.5 ? tap1 : tap3, blueUV).b;
-
-	        result = mix(current, float3(red, green, blue), saturate(split * 1.3) * touchIntensity);
-	        break;
-	    }
-	    case 36: { // Vector necromancy - resurrecting dead motion
-	        // The flow field holds one present. This reaches for motion that
-	        // has already died: differences between history taps are read back
-	        // as vectors and driven into the current frame, so movement that
-	        // happened seconds ago starts pushing pixels around now.
-	        const float age = controls.x;
-	        const float gain = mix(0.5, 8.0, controls.y);
-	        const float cycle = controls.z;
-
-	        // Reconstruct a vector from the luma gradient between two aged
-	        // taps. Crude next to the live estimator, but it is measuring
-	        // something the estimator no longer has: the past.
-	        const float2 step = texel * 3.0;
-	        const float3 oldA = age < 0.5 ? gvCameraSample(tap1, uv) : gvCameraSample(tap2, uv);
-	        const float3 oldB = age < 0.5 ? gvCameraSample(tap2, uv) : gvCameraSample(tap3, uv);
-	        const float dx =
-	            gvCameraLuma(gvCameraSample(tap2, uv + float2(step.x, 0.0))) -
-	            gvCameraLuma(gvCameraSample(tap2, uv - float2(step.x, 0.0)));
-	        const float dy =
-	            gvCameraLuma(gvCameraSample(tap2, uv + float2(0.0, step.y))) -
-	            gvCameraLuma(gvCameraSample(tap2, uv - float2(0.0, step.y)));
-	        const float delta = gvCameraLuma(oldA) - gvCameraLuma(oldB);
-	        const float2 resurrected = float2(dx, dy) * delta * gain * 0.06;
-
-	        // Cycling walks the graveyard, so held down it plays back a
-	        // sequence of dead motions rather than one.
-	        const float phase = fract(time * mix(0.05, 0.9, cycle));
-	        const float2 driven = resurrected * (0.4 + phase * 1.2);
-	        result = gvCameraSample(inputTexture, uv - driven);
-	        break;
-	    }
-	    case 37: { // World feedback - trails that stay with the room
-	        // The reprojection homography maps this frame's ray to where the
-	        // same ray sat in the previous frame. Sampling the accumulation
-	        // through it stops the buffer being screen-space: turning the phone
-	        // slides the trail off the edge of the frame instead of dragging it
-	        // along, so what was painted on a wall stays on that wall.
-	        //
-	        // This mode and TIME GRAFFITI were shipped with no shader arm at
-	        // all - `uniforms.mode.x` fell straight through to `default` and
-	        // the effect was a passthrough. The matrix was already being
-	        // uploaded every frame with nothing reading it.
-	        const float3 ray = float3(uv - 0.5, 1.0);
-	        const float3 reprojected = uniforms.worldReprojection * ray;
-	        const float2 anchoredUV = reprojected.xy / max(abs(reprojected.z), 1e-4) + 0.5;
-	        const float3 anchored = gvCameraSample(historyTexture, anchoredUV);
-	        // Blur is applied to the anchored read, not the live frame, so the
-	        // softening accumulates with the trail rather than veiling the
-	        // scene.
-	        const float3 softened = mix(
-	            anchored,
-	            gvBlur(historyTexture, anchoredUV, texel * mix(0.6, 3.4, controls.z)),
-	            controls.z
-	        );
-	        const float decay = mix(0.62, 0.995, controls.y);
-	        // Light trails as before, plus a ghost of the whole scene: `max`
-	        // alone only let things brighter than now leave a mark, so turning
-	        // past an evenly lit wall left nothing behind. The ghost's weight
-	        // stays below one — history is the previous output — so the
-	        // world-locked echo decays rather than accumulating.
-	        const float3 trails = max(current, softened * min(decay * mix(0.55, 1.15, controls.x), 0.985));
-	        result = mix(trails, softened * decay, controls.x * 0.5);
-	        break;
-	    }
-	    case 38: { // Time graffiti - painting held time onto the room
-	        // The brush does not deposit the live frame. It deposits a slice
-	        // pulled out of the ring at a chosen age, into a buffer that is
-	        // world-anchored - so the mark is a piece of the past pinned to a
-	        // physical surface, and it stays there when the phone moves.
-	        const float3 ray = float3(uv - 0.5, 1.0);
-	        const float3 reprojected = uniforms.worldReprojection * ray;
-	        const float2 anchoredUV = reprojected.xy / max(abs(reprojected.z), 1e-4) + 0.5;
-	        const float fade = mix(0.90, 0.9995, controls.z);
-	        float3 canvas = gvCameraSample(historyTexture, anchoredUV) * fade;
-
-	        const float radius = mix(0.04, 0.32, controls.x);
-	        const float age = mix(0.15, 2.6, controls.y);
-	        if (uniforms.touch.w > 0.5) {
-	            const float brush = 1.0 -
-	                smoothstep(radius * 0.5, radius, distance(uv, uniforms.touch.xy));
-	            const float3 held = gvTemporalSample(
-	                temporalRing, ringTimestamps, ringInfo, uv, age, current
-	            );
-	            canvas = mix(canvas, held, saturate(brush));
-	        }
-	        // A tap stamps a ring, so the surface can be marked without a drag.
-	        if (uniforms.touchImpact.w > 0.5) {
-	            const float stamp = 1.0 -
-	                smoothstep(radius * 0.35, radius * 0.8, distance(uv, uniforms.touchImpact.xy));
-	            const float3 held = gvTemporalSample(
-	                temporalRing, ringTimestamps, ringInfo, uv, age, current
-	            );
-	            canvas = mix(canvas, held, saturate(stamp * exp(-uniforms.touchImpact.z * 1.6)));
-	        }
-	        result = max(current * 0.80, canvas);
 	        break;
 	    }
 	    case 39: { // Liquid mosh - macroblock advection along the codec's own error
@@ -3600,70 +2247,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
 	        }
 	        break;
 	    }
-	    case 41: { // Mosh brush - motion painted by the finger
-	        // The touch uniforms carry position and speed every frame, and
-	        // strokes persist in the block state: drag and the stroke deposits
-	        // displacement that keeps dragging history after the finger lifts,
-	        // decaying with momentum instead of vanishing the moment the
-	        // gesture ends. PUSH is stroke strength, REACH the brush radius,
-	        // BLOCK the grid the strokes live on.
-	        const float blockSize = mix(8.0, 40.0, controls.z);
-	        const float reach = mix(0.06, 0.44, controls.y);
-	        const float push = mix(0.02, 0.26, controls.x);
-	        const float2 blockPos = floor(float2(position) / blockSize);
-	        const float2 blockId = blockPos + 0.5;
-	        const float2 centreUV = (blockPos * blockSize + blockSize * 0.5) / size;
-	        const GVMoshState previous = gvMoshReadState(moshStateIn, centreUV);
-
-	        float2 painted = float2(0.0);
-	        if (uniforms.touch.w > 0.5 || uniforms.touchDrag.w > 0.5) {
-	            const float2 toFinger = centreUV - uniforms.touch.xy;
-	            const float span = length(toFinger);
-	            const float falloff = 1.0 - smoothstep(reach * 0.35, reach, span);
-	            const float2 direction = span > 1e-4 ? toFinger / span : float2(0.0);
-	            // Radial push while the finger rests, directional drag while it
-	            // moves.
-	            painted = direction * saturate(uniforms.touch.z) * falloff * push;
-	            painted += uniforms.touchDrag.xy * falloff * push * 8.0 * dt;
-	        }
-	        const float momentum = mix(0.82, 0.97, controls.z);
-	        float2 vector = previous.vector * momentum + painted * (1.0 - momentum) * 10.0;
-	        const float limit = 0.22;
-	        const float magnitude = length(vector);
-	        if (magnitude > limit) {
-	            vector *= limit / magnitude;
-	        }
-
-	        const float staleness = min(previous.staleness + dt * 0.3, 1.0);
-	        const float3 dragged = gvCameraSample(historyTexture, clamp(uv - vector, 0.001, 0.999));
-	        const float3 carried = gvMoshStaleColor(dragged, staleness, blockId, time);
-	        result = mix(current, carried, saturate(length(vector) * 22.0));
-
-	        if (all((position & uint2(7)) == uint2(0))) {
-	            moshStateOut.write(
-	                half4(half2(vector), half(staleness), half(floor(time * 11.0))),
-	                position >> 3
-	            );
-	        }
-	        break;
-	    }
-	    case 42: { // Luma time map - brightness chooses how far back a pixel reaches
-	        // Every other temporal mode reads history at one age for the whole
-	        // frame. Here the age is per pixel, so a single image is assembled
-	        // out of many different moments at once: highlights can sit in the
-	        // present while shadows are seconds behind, or the reverse.
-	        //
-	        // `gvTemporalAge` is the shared curve for exactly this mapping. It
-	        // was written, documented and then left with no caller.
-	        const float depth = mix(0.05, 3.0, controls.x);
-	        const float bias = controls.y;
-	        const float contrast = mix(0.6, 5.0, controls.z);
-	        const float age = gvTemporalAge(gvCameraLuma(current), depth, bias, contrast);
-	        result = gvTemporalSample(
-	            temporalRing, ringTimestamps, ringInfo, uv, age, current
-	        );
-	        break;
-	    }
 	    case 43: { // Prediction drift - differential-motion video feedback
         // Inspired by luma's differential-motion construction: compare the
         // live frame with a motion-compensated prediction, preserve the parts
@@ -3746,67 +2329,6 @@ case 4: { // Datamosh - what the decoder actually reconstructed
         }
 	        break;
 	    }
-    case 44: { // Vector codebook: quantize measured direction AND magnitude before transport.
-        const uint2 stateCell = position >> 3;
-        const float2 cellUV = (float2(stateCell * 8u) + 4.0) / size;
-        const GVMoshState previous = gvMoshReadState(moshStateIn, cellUV);
-        const float2 measured = flowReady ? gvCameraSampleVector(flowField, cellUV) : float2(0);
-        const float directions = 2.0 + round(controls.x * 14.0);
-        const float angleStep = 6.2831853 / directions;
-        const float angle = round(atan2(measured.y, measured.x) / angleStep) * angleStep;
-        const float magnitudeStep = mix(0.0005, 0.008, controls.y);
-        const float magnitude = round(length(measured) / magnitudeStep) * magnitudeStep;
-        const float2 coded = float2(cos(angle), sin(angle)) * magnitude;
-        const float memory = pow(mix(0.35, 0.98, controls.z), dt * 60.0);
-        const float2 vector = clamp(mix(coded * 4.0, previous.vector, memory), -0.08, 0.08);
-        const float3 carried = gvCameraSample(historyTexture, clamp(uv - vector * dt * 60.0, 0.001, 0.999));
-        result = mix(current, carried, mix(0.40, 0.985, controls.z));
-        if (all((position & uint2(7)) == uint2(0)))
-            moshStateOut.write(half4(half2(vector), half(length(measured)), 0), stateCell);
-        break;
-    }
-    case 45: { // Transplant a stable permutation of measured donor-region flow.
-        const float regions = 2.0 + round(controls.x * 6.0);
-        const float2 region = min(floor(uv * regions), regions - 1.0);
-        // Translation modulo N is bijective, has no fixed region, and remains
-        // stable until REGION changes. Motion comes from this donor, never noise.
-        const float2 donor = fmod(region + float2(1.0, ceil(regions * 0.5)), regions);
-        const float2 donorUV = (donor + 0.5) / regions;
-        const float2 measured = flowReady ? gvCameraSampleVector(flowField, donorUV) : float2(0);
-        const float2 cellUV = (float2((position >> 3) * 8u) + 4.0) / size;
-        const GVMoshState previous = gvMoshReadState(moshStateIn, cellUV);
-        const float memory = pow(mix(0.25, 0.96, controls.z), dt * 60.0);
-        const float2 vector = clamp(mix(measured * mix(1.0, 9.0, controls.y), previous.vector, memory), -0.1, 0.1);
-        const float3 carried = gvCameraSample(historyTexture, clamp(uv - vector * dt * 60.0, 0.001, 0.999));
-        result = mix(current, carried, mix(0.35, 0.99, controls.z));
-        if (all((position & uint2(7)) == uint2(0)))
-            moshStateOut.write(half4(half2(vector), half(length(measured)), 0), position >> 3);
-        break;
-    }
-    case 46: { // Independent bit planes latch or refresh against motion.
-        constexpr sampler nearest(coord::normalized, address::clamp_to_edge, filter::nearest);
-        const uint planes = 1u + uint(round(controls.x * 7.0));
-        const uint levels = (1u << planes) - 1u;
-        const uint3 liveBits = uint3(round(saturate(current) * float(levels)));
-        const uint3 memoryBits = uint3(round(saturate(float3(historyTexture.sample(nearest, uv).rgb)) * float(levels)));
-        const float moving = smoothstep(0.0003, mix(0.02, 0.001, controls.z), flowMagnitude);
-        const float refresh = 1.0 - pow(1.0 - mix(0.002, 0.28, controls.y) * (0.08 + moving * 0.92), dt * 60.0);
-        const float tick = floor(time * 60.0);
-        uint3 assembled = uint3(0);
-        for (uint plane = 0; plane < 8; ++plane) {
-            if (plane >= planes) break;
-            const uint mask = 1u << plane;
-            for (uint channel = 0; channel < 3; ++channel) {
-                const float hash = gvCameraHash(float2(position >> 3) + float2(float(plane) * 19.17 + tick * 0.317, float(channel) * 31.73));
-                const bool replace = hash < refresh * mix(1.6, 0.65, float(plane) / max(float(planes - 1u), 1.0));
-                assembled[channel] |= (replace ? liveBits[channel] : memoryBits[channel]) & mask;
-            }
-        }
-        result = float3(assembled) / float(levels);
-        if (all((position & uint2(7)) == uint2(0)))
-            moshStateOut.write(half4(0, 0, half(moving), half(planes)), position >> 3);
-        break;
-    }
 	    default:
 	        break;
 	    }

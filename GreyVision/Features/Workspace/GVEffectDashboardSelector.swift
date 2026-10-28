@@ -1,39 +1,47 @@
 import SwiftUI
 
-/// What each selector key shows besides its name. Plain values computed once
-/// per browser pass, so the keypad never walks the catalogue itself.
+/// What each selector card shows besides its name. Plain values computed once
+/// per browser pass, so the selector never walks the catalogue itself.
 struct GVEffectShelfReadout: Equatable {
     var count: Int
     /// Something on this shelf is rendering right now.
     var live: Bool
 }
 
-/// The browser's selector panel: a scope segment over a family keypad.
+/// The browser's selector panel: a scope segment, the effect families as
+/// picture cards, and the two capture modes.
 ///
-/// Every shelf is on screen at once. The old horizontal rail hid two thirds
-/// of the families behind a scroll and gave no hint which of them held the
-/// effect that was on; here each key carries its count and lights when one
-/// of its effects is rendering.
+/// The families used to be a 4×4 keypad of words, which read as a wall of
+/// text. Each family is now a card showing the live camera frame through its
+/// signature effect, so the operator picks a family by how it looks; the
+/// name is a caption, not the content.
 struct GVEffectDashboardSelector: View {
     let selected: WorkspaceDockCategory
     let readouts: [WorkspaceDockCategory: GVEffectShelfReadout]
+    /// The live-frame preview of a family's signature effect, once rendered.
+    let preview: (WorkspaceDockCategory) -> UIImage?
+    let onAppearFamily: (WorkspaceDockCategory) -> Void
     let onSelect: (WorkspaceDockCategory) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var selection
 
     static let scopes: [WorkspaceDockCategory] = [.all, .active, .favorites, .recents]
-    static let families: [WorkspaceDockCategory] = WorkspaceDockCategory.shelfCategories + [.blobs, .spatial]
-    /// Dense by design: every shelf on screen at once is the point. Keys are
-    /// ~85pt wide, so the hit area stays generous along the axis that matters.
-    private static let keyHeight: CGFloat = 34
+    static let families: [WorkspaceDockCategory] = WorkspaceDockCategory.shelfCategories
+    static let modes: [WorkspaceDockCategory] = [.blobs, .spatial]
+    private static let rowHeight: CGFloat = 32
 
     var body: some View {
         VStack(spacing: 8) {
             scopeSegment
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
                 ForEach(Self.families) { family in
-                    key(family)
+                    card(family)
+                }
+            }
+            HStack(spacing: 6) {
+                ForEach(Self.modes) { mode in
+                    modeButton(mode)
                 }
             }
         }
@@ -64,8 +72,8 @@ struct GVEffectDashboardSelector: View {
                     }
                     .minimumScaleFactor(0.8)
                     .foregroundStyle(isSelected ? Color.black : GVTheme.bone.opacity(0.7))
-                    .frame(maxWidth: .infinity, minHeight: Self.keyHeight)
-                    .background { plate(selected: isSelected, live: false) }
+                    .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
+                    .background { plate(selected: isSelected) }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(GVPressStyle(scale: 0.94))
@@ -78,48 +86,104 @@ struct GVEffectDashboardSelector: View {
         .background(Color.black.opacity(0.28), in: Capsule())
     }
 
-    private func key(_ family: WorkspaceDockCategory) -> some View {
+    /// A family as a picture: the live frame through the family's signature
+    /// effect, the name and count set over a scrim, a light when one of its
+    /// effects is on, and a bone frame when selected.
+    private func card(_ family: WorkspaceDockCategory) -> some View {
         let isSelected = family == selected
         let readout = readouts[family] ?? GVEffectShelfReadout(count: 0, live: false)
+        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
         return Button { onSelect(family) } label: {
-            HStack(spacing: 0) {
-                Text(family.displayLabel.uppercased())
-                    .font(GVTheme.mono(10, isSelected ? .semibold : .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Spacer(minLength: 2)
-                Text("\(readout.count)")
-                    .font(GVTheme.mono(9, .regular))
-                    .monospacedDigit()
-                    .opacity(0.55)
-            }
-            .padding(.horizontal, 8)
-            .foregroundStyle(isSelected ? Color.black : GVTheme.bone.opacity(0.74))
-            .frame(maxWidth: .infinity, minHeight: Self.keyHeight)
-            .background { plate(selected: isSelected, live: readout.live) }
-            .overlay(alignment: .topLeading) {
-                if readout.live {
-                    Circle()
-                        .fill(isSelected ? Color.black : Color.mint)
-                        .frame(width: 4, height: 4)
-                        .shadow(color: .mint.opacity(isSelected ? 0 : 0.9), radius: 3)
-                        .padding(4)
-                        .transition(.scale.combined(with: .opacity))
+            Color.clear
+                .aspectRatio(1.35, contentMode: .fit)
+                .overlay {
+                    if let image = preview(family) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .transition(.opacity)
+                    } else if let symbol = family.symbol {
+                        Image(systemName: symbol)
+                            .font(.system(size: 16, weight: .light))
+                            .foregroundStyle(GVTheme.bone.opacity(0.5))
+                    }
                 }
-            }
-            .contentShape(Rectangle())
+                .overlay(alignment: .bottomLeading) {
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text(family.displayLabel.uppercased())
+                            .font(GVTheme.mono(9, .bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Spacer(minLength: 0)
+                        Text("\(readout.count)")
+                            .font(GVTheme.mono(8.5, .medium))
+                            .monospacedDigit()
+                            .opacity(0.7)
+                    }
+                    .foregroundStyle(GVTheme.bone)
+                    .padding(.horizontal, 6)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
+                    .background {
+                        LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if readout.live {
+                        Circle()
+                            .fill(Color.mint)
+                            .frame(width: 5, height: 5)
+                            .shadow(color: .mint.opacity(0.9), radius: 3)
+                            .padding(5)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .background(Color.white.opacity(0.05))
+                .clipShape(shape)
+                .overlay {
+                    shape.strokeBorder(isSelected ? GVTheme.bone : Color.white.opacity(0.1), lineWidth: isSelected ? 1.5 : 0.75)
+                }
+                .shadow(color: .white.opacity(isSelected ? 0.22 : 0), radius: 8)
+                .saturation(isSelected || selected.isShelf == false ? 1 : 0.55)
+                .opacity(isSelected || selected.isShelf == false ? 1 : 0.85)
+                .contentShape(shape)
         }
-        .buttonStyle(GVPressStyle(scale: 0.94))
+        .buttonStyle(GVPressStyle(scale: 0.95))
+        .onAppear { onAppearFamily(family) }
         .accessibilityLabel(family.displayLabel)
         .accessibilityValue([isSelected ? "selected" : nil, readout.live ? "has an active effect" : nil,
-                             "\(readout.count) items"].compactMap { $0 }.joined(separator: ", "))
+                             "\(readout.count) effects"].compactMap { $0 }.joined(separator: ", "))
         .accessibilityIdentifier("workspace.browser.category.\(family.rawValue)")
     }
 
-    /// One sliding bone plate marks the selection across both the segment and
-    /// the keypad, so the eye follows a single object rather than two states.
+    private func modeButton(_ mode: WorkspaceDockCategory) -> some View {
+        let isSelected = mode == selected
+        let readout = readouts[mode] ?? GVEffectShelfReadout(count: 0, live: false)
+        return Button { onSelect(mode) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: mode.symbol ?? "circle")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(mode.displayLabel.uppercased())
+                    .font(GVTheme.mono(10, isSelected ? .semibold : .medium))
+                if readout.live {
+                    Circle().fill(isSelected ? Color.black : Color.mint).frame(width: 4, height: 4)
+                }
+            }
+            .foregroundStyle(isSelected ? Color.black : GVTheme.bone.opacity(0.74))
+            .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
+            .background { plate(selected: isSelected) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle(scale: 0.94))
+        .accessibilityLabel(mode.displayLabel)
+        .accessibilityValue(isSelected ? "selected" : "")
+        .accessibilityIdentifier("workspace.browser.category.\(mode.rawValue)")
+    }
+
+    /// One sliding bone plate marks the selection across the segment and the
+    /// mode row, so the eye follows a single object.
     @ViewBuilder
-    private func plate(selected isSelected: Bool, live: Bool) -> some View {
+    private func plate(selected isSelected: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
         if isSelected {
             shape
@@ -128,8 +192,8 @@ struct GVEffectDashboardSelector: View {
                 .matchedGeometryEffect(id: "selection", in: selection)
         } else {
             shape
-                .fill(Color.white.opacity(live ? 0.075 : 0.04))
-                .overlay(shape.strokeBorder(Color.white.opacity(live ? 0.16 : 0.07), lineWidth: 0.75))
+                .fill(Color.white.opacity(0.04))
+                .overlay(shape.strokeBorder(Color.white.opacity(0.07), lineWidth: 0.75))
         }
     }
 }

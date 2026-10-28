@@ -94,15 +94,14 @@ final class CameraEffectStackTests: XCTestCase {
         XCTAssertNil(stack[slot: first])
     }
 
-    /// The scopes are not in the AUDIO family but read the same FFT. If they
-    /// do not arm the analyser they draw a flat line and read as broken.
-    func testSpectrumScopesArmTheAnalyser() {
-        for effect in [WorkspaceAdjustableEffect.spectrumBars, .radialSpectrum, .lissajous] {
+    /// The spectrum overlays read the FFT. If they do not arm the analyser
+    /// they draw a flat line and read as broken. Image effects must never
+    /// switch the microphone on.
+    func testSpectrumOverlaysArmTheAnalyser() {
+        for effect in [WorkspaceAdjustableEffect.spectrumBars, .radialSpectrum] {
             XCTAssertTrue(effect.requiresAudioAnalysis, effect.label)
         }
-        // The frame scopes measure the image, not the signal, and must not
-        // switch the microphone on to do it.
-        for effect in [WorkspaceAdjustableEffect.vectorscope, .waveformMonitor, .rgbParade] {
+        for effect in [WorkspaceAdjustableEffect.thermal, .kaleidoscope, .vhs] {
             XCTAssertFalse(effect.requiresAudioAnalysis, effect.label)
         }
     }

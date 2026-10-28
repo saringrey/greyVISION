@@ -135,7 +135,7 @@ struct GVTrackingDeck: View {
             slider("Persistence", \.persistence, 0 ... 2) { String(format: "%.1fs", $0) }
             slider("Prediction", \.prediction, 0 ... 1, percent)
             slider("Match Radius", \.matchRadius, 0.02 ... 0.5, percent)
-            slider("Rate", \.rate, 5 ... 30) { "\(Int($0.rounded())) Hz" }
+            slider("Rate", \.rate, 5 ... (parameters.mode.usesVision ? 30 : 60)) { "\(Int($0.rounded())) Hz" }
             slider("Confirm", \.confirm, 1 ... 6) { "\(Int($0.rounded())) hits" }
         }
     }

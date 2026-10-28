@@ -4,16 +4,6 @@ import simd
 import XCTest
 
 final class FlagshipRenderTests: XCTestCase {
-    func testReactionClockIsBoundedAndHoldDoesNotAccumulateDebt() {
-        var clock = CameraReactionClock()
-        XCTAssertEqual(clock.steps(at: 0, held: false), 0)
-        XCTAssertEqual(clock.steps(at: 1.0 / 60, held: false), 2)
-        XCTAssertEqual(clock.steps(at: 10, held: false), 4)
-        XCTAssertEqual(clock.steps(at: 20, held: true), 0)
-        XCTAssertEqual(clock.steps(at: 20 + 1.0 / 60, held: false), 2)
-        XCTAssertEqual(CameraReactionDiffusion.gridSize(width: 3840, height: 2160), SIMD2(256, 144))
-    }
-
     func testQualityRequiresSustainedPressureAndRecoversSlowly() {
         var quality = CameraEffectQuality()
         for index in 1 ... 29 {
@@ -32,13 +22,8 @@ final class FlagshipRenderTests: XCTestCase {
 
     func testNewEffectsDeclareOnlyTheirRequiredResources() {
         XCTAssertTrue(WorkspaceAdjustableEffect.cmykPress.cameraResourceRequirements.isEmpty)
-        XCTAssertTrue(WorkspaceAdjustableEffect.spectralDiffraction.cameraResourceRequirements.isEmpty)
-        XCTAssertEqual(WorkspaceAdjustableEffect.reactionGarden.cameraResourceRequirements, [.simulation])
-        for effect in [WorkspaceAdjustableEffect.vectorCodebook, .motionTransplant, .bitplaneLatch] {
-            XCTAssertTrue(effect.cameraResourceRequirements.contains([.opticalFlow, .slotHistory, .moshState]))
-            XCTAssertFalse(effect.cameraResourceRequirements.contains(.timestampedHistory))
-            XCTAssertTrue(effect.freezesHistoryOnHold)
-        }
+        XCTAssertTrue(WorkspaceAdjustableEffect.anamorphicFlare.cameraResourceRequirements.isEmpty)
+        XCTAssertEqual(WorkspaceAdjustableEffect.fluid.cameraResourceRequirements, [.simulation])
         XCTAssertTrue(WorkspaceAdjustableEffect.predictionDrift.freezesHistoryOnHold)
     }
 
@@ -91,7 +76,7 @@ final class FlagshipRenderTests: XCTestCase {
         let source = try gpu.pattern()
         let reference = gpu.read(source)
         var outputs: [[Float]] = []
-        for effect in [WorkspaceAdjustableEffect.cmykPress, .spectralDiffraction] {
+        for effect in [WorkspaceAdjustableEffect.cmykPress] {
             var mode = try XCTUnwrap(effect.styleMode)
             let constants = MTLFunctionConstantValues()
             constants.setConstantValue(&mode, type: .uint, index: 0)
@@ -134,8 +119,7 @@ final class FlagshipRenderTests: XCTestCase {
         var ringInfo = TemporalRingUniforms(slotCount: 0, head: 0, validCount: 0, isPrimed: 0, currentTime: 0, historySpan: 0, padding: .zero)
         var timestamp: Float = -1e9
         var results: [[Float]] = []
-        for effect in [WorkspaceAdjustableEffect.datamosh, .liquidMosh, .heavyMosh, .predictionDrift,
-                       .vectorCodebook, .motionTransplant, .bitplaneLatch]
+        for effect in [WorkspaceAdjustableEffect.datamosh, .liquidMosh, .heavyMosh, .predictionDrift]
         {
             let output = try gpu.texture()
             let state = try gpu.texture(width: 8, height: 8, fill: .zero)
@@ -171,40 +155,6 @@ final class FlagshipRenderTests: XCTestCase {
         for index in 1 ..< results.count {
             XCTAssertGreaterThan(Self.difference(results[index - 1], results[index]), 0.001)
         }
-    }
-
-    func testReactionGardenEvolvesHoldsAndKeepsDuplicateSimulationsIndependent() throws {
-        let gpu = try GPUFixture()
-        let source = try gpu.pattern()
-        let output = try gpu.texture()
-        let otherOutput = try gpu.texture()
-        let first = try XCTUnwrap(CameraReactionDiffusion(device: gpu.device, library: gpu.library))
-        let second = try XCTUnwrap(CameraReactionDiffusion(device: gpu.device, library: gpu.library))
-        var parameters = WorkspaceAdjustableEffect.reactionGarden.defaultCameraParameters
-        parameters.blend = 0
-        try gpu.command { command in
-            XCTAssertTrue(first.encode(commandBuffer: command, source: source, destination: output, parameters: parameters, touch: .zero, time: 0, held: false))
-        }
-        XCTAssertLessThan(Self.difference(gpu.read(output), gpu.read(source)), 0.0001)
-        parameters.blend = 1
-        for frame in 1 ... 40 {
-            try gpu.command { command in
-                XCTAssertTrue(first.encode(commandBuffer: command, source: source, destination: output, parameters: parameters, touch: SIMD4(0.3, 0.5, 0, 1), time: Double(frame) / 60, held: false))
-            }
-        }
-        let evolved = gpu.read(output)
-        let steps = first.completedStepCount
-        try gpu.command { command in
-            XCTAssertTrue(first.encode(commandBuffer: command, source: source, destination: output, parameters: parameters, touch: .zero, time: 10, held: true))
-            XCTAssertTrue(second.encode(commandBuffer: command, source: source, destination: otherOutput, parameters: parameters, touch: .zero, time: 0, held: false))
-        }
-        XCTAssertEqual(first.completedStepCount, steps)
-        XCTAssertEqual(second.completedStepCount, 0)
-        XCTAssertLessThan(Self.difference(evolved, gpu.read(output)), 0.0001)
-        XCTAssertGreaterThan(Self.difference(evolved, gpu.read(otherOutput)), 0.0001)
-        XCTAssertTrue(evolved.allSatisfy(\.isFinite))
-        first.reset()
-        XCTAssertEqual(first.completedStepCount, 0)
     }
 
     func testDepthFlagshipsRenderFiniteDistinctPixelsAndPreserveInvalidDepth() throws {

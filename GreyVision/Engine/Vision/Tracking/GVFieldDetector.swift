@@ -2,8 +2,8 @@ import CoreGraphics
 import Foundation
 import simd
 
-/// Grid segmentation for the six field modes: colour key, bright, shadow,
-/// vivid, motion and skin.
+/// Grid segmentation for the seven field modes: blob, colour key, bright,
+/// shadow, vivid, motion and skin.
 ///
 /// The analysis frame is averaged into a coarse grid, each cell is classified
 /// for the mode, an optional dilation bridges small gaps, and 8-connected
@@ -76,11 +76,20 @@ final class GVFieldDetector {
         let shadowCut = sorted.isEmpty ? 0 : min(sorted[min(slice, count - 1)], 1 - threshold * 0.5)
         let tolerance = Float(parameters.tolerance)
         let targetHue = Float(parameters.hue)
+        // Blob mode compares each cell with its neighbourhood rather than with
+        // a fixed level, so a lamp in a bright room and a coat on a white
+        // wall both stand out — the classic contrast blob.
+        let surround = parameters.mode == .blob
+            ? Self.boxBlur(luma, columns: columns, rows: rows, radius: max(columns / 6, 2))
+            : []
+        let contrast = (1 - threshold) * 0.3 + 0.04
         for index in 0 ..< count {
             let color = colors[index]
             let level = luma[index]
             let hsv = Self.hsv(color)
             switch parameters.mode {
+            case .blob:
+                active[index] = abs(level - surround[index]) > contrast
             case .color:
                 // A key needs colour to key on: greys sit at hue zero and used
                 // to light up as red.
@@ -105,7 +114,7 @@ final class GVFieldDetector {
                 active[index] = level > 0.12
                     && abs(cb + 0.07) < 0.10 * widen
                     && abs(cr - 0.10) < 0.07 * widen
-            case .face, .hand, .body, .salient:
+            case .face, .hand, .body, .salient, .animal, .text, .shape:
                 active[index] = false
             }
         }
@@ -186,6 +195,36 @@ final class GVFieldDetector {
         detections.sort { $0.area > $1.area }
         let mask = GVTrackingMask(columns: columns, rows: rows, cells: active.map { $0 ? 1 : 0 })
         return Output(detections: Array(detections.prefix(48)), mask: mask)
+    }
+
+    /// Separable box blur over the grid, edge-clamped. Two passes of a
+    /// running sum, so the radius costs nothing extra.
+    static func boxBlur(_ values: [Float], columns: Int, rows: Int, radius: Int) -> [Float] {
+        var horizontal = [Float](repeating: 0, count: values.count)
+        for row in 0 ..< rows {
+            for column in 0 ..< columns {
+                var sum: Float = 0
+                var n: Float = 0
+                for x in max(column - radius, 0) ... min(column + radius, columns - 1) {
+                    sum += values[row * columns + x]
+                    n += 1
+                }
+                horizontal[row * columns + column] = sum / n
+            }
+        }
+        var result = [Float](repeating: 0, count: values.count)
+        for column in 0 ..< columns {
+            for row in 0 ..< rows {
+                var sum: Float = 0
+                var n: Float = 0
+                for y in max(row - radius, 0) ... min(row + radius, rows - 1) {
+                    sum += horizontal[y * columns + column]
+                    n += 1
+                }
+                result[row * columns + column] = sum / n
+            }
+        }
+        return result
     }
 
     static func hsv(_ color: SIMD3<Float>) -> SIMD3<Float> {

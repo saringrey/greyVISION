@@ -1,30 +1,13 @@
 import SwiftUI
 
-/// Glyph-level corruption: characters swapped for block and symbol glyphs,
-/// re-rolled at 20 Hz so the damage crawls rather than sitting still.
-enum GVGlyphCorruption {
-    private static let glyphs = Array("░▒▓█#%&@$/\\<>_=+*01")
-
-    static func apply(_ text: String, amount: Double, salt: Int, time: Double) -> String {
-        guard amount > 0 else { return text }
-        let tick = (time * 20).rounded(.down)
-        return String(text.enumerated().map { index, character in
-            guard character != " ", character != "\n" else { return character }
-            let roll = GVTerminalBootTimeline.hash(Double(salt * 97 + index) + tick * 13.1)
-            guard roll < amount else { return character }
-            return glyphs[Int(roll * 1000) % glyphs.count]
-        })
-    }
-}
-
-/// Windows 95 system colours, for the two screens that borrow its look.
+/// Windows 95 system colours, for the setup dialog that borrows its look.
 private enum GVWin95 {
     static let face = Color(red: 0.753, green: 0.753, blue: 0.753)
     static let shadow = Color(red: 0.502, green: 0.502, blue: 0.502)
     static let highlight = Color.white
     static let navy = Color(red: 0, green: 0, blue: 0.502)
-    static let stopBlue = Color(red: 0, green: 0, blue: 0.667)
-    static let stopGrey = Color(red: 0.667, green: 0.667, blue: 0.667)
+    /// The inactive title bar Win95 drew once a window stopped responding.
+    static let inactiveTitle = Color(red: 0.502, green: 0.502, blue: 0.502)
 }
 
 /// The raised (or sunken) two-tone bevel every Win95 control is built from.
@@ -49,16 +32,23 @@ private struct GVWin95Bevel: ViewModifier {
 }
 
 /// Stage two of the cold start: a setup dialog loading "codec drivers" —
-/// the codec selection screen it hands over to — that never finishes.
+/// the codec selection screen it hands over to — that never finishes. When
+/// it fails it says so plainly, the way an installer would: no drama, the
+/// title bar greys out and the message changes.
 struct GVBootSetupDialog: View {
     /// Bar position, 0...1.
     let load: Double
+    var failed = false
 
     private static let messages = [
         "Copying files...",
+        "Checking system configuration...",
+        "Loading METAL.VXD",
         "Loading SHADER.VXD",
         "Loading CAPTURE.DRV",
+        "Loading AUDIODSP.DRV",
         "Loading TRACKING.DLL",
+        "Building effect graph...",
         "Loading CODEC.VXD",
     ]
     private static let blocks = 22
@@ -69,19 +59,24 @@ struct GVBootSetupDialog: View {
             titleBar
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
-                    Image(systemName: "desktopcomputer")
+                    Image(systemName: failed ? "exclamationmark.triangle" : "desktopcomputer")
                         .font(.system(size: 26))
                         .foregroundStyle(.black)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("grey//VISION Setup is preparing the codec drivers.")
-                        Text(message).foregroundStyle(GVWin95.navy)
+                        if failed {
+                            Text("Setup could not load CODEC.VXD.")
+                            Text("The device is not responding.")
+                        } else {
+                            Text("grey//VISION Setup is preparing the codec drivers.")
+                            Text(message).foregroundStyle(GVWin95.navy)
+                        }
                     }
                     .font(.system(size: 11))
                     .foregroundStyle(.black)
                 }
                 progressBox
                 HStack {
-                    Text("\(Int(load * 100))% complete")
+                    Text(failed ? "Setup cannot continue." : "\(Int(load * 100))% complete")
                         .font(.system(size: 11))
                         .foregroundStyle(.black)
                         .monospacedDigit()
@@ -116,7 +111,7 @@ struct GVBootSetupDialog: View {
         }
         .padding(.horizontal, 4)
         .frame(height: 20)
-        .background(GVWin95.navy)
+        .background(failed ? GVWin95.inactiveTitle : GVWin95.navy)
         .padding(3)
     }
 
@@ -133,49 +128,5 @@ struct GVBootSetupDialog: View {
         .frame(height: 22)
         .background(Color.white)
         .modifier(GVWin95Bevel(sunken: true))
-    }
-}
-
-/// Stage three: the fatal exception. A Win95 stop screen, blamed on the
-/// codec driver, corrupting more the longer it is on screen.
-struct GVBootFatalException: View {
-    let corruption: Double
-    let cursorOn: Bool
-    let time: Double
-
-    private static let body1 = """
-    A fatal exception 0E has occurred at 0028:C0DEC0DE in VXD CODEC(01) + 00004A1F. \
-    The current application will be terminated.
-    """
-    private static let body2 = """
-    *  Press any key to terminate the current application.
-    *  Press CTRL+ALT+DEL again to restart your device. You will
-       lose any unsaved information in all applications.
-    """
-
-    var body: some View {
-        GeometryReader { geometry in
-            let compact = geometry.size.height < 500
-            ZStack {
-                GVWin95.stopBlue
-                VStack(spacing: compact ? 12 : 22) {
-                    Text(" grey//VISION ")
-                        .font(GVTheme.mono(14, .bold))
-                        .foregroundStyle(GVWin95.stopBlue)
-                        .background(GVWin95.stopGrey)
-                    VStack(alignment: .leading, spacing: compact ? 10 : 18) {
-                        Text(GVGlyphCorruption.apply(Self.body1, amount: corruption, salt: 1, time: time))
-                        Text(GVGlyphCorruption.apply(Self.body2, amount: corruption, salt: 2, time: time))
-                    }
-                    .font(GVTheme.mono(12, .medium))
-                    .foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
-                    Text("Press any key to continue \(cursorOn ? "█" : " ")")
-                        .font(GVTheme.mono(12, .medium))
-                        .foregroundStyle(.white)
-                }
-                .padding(.horizontal, compact ? 80 : 26)
-            }
-        }
     }
 }

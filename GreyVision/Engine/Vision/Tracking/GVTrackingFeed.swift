@@ -41,9 +41,10 @@ struct GVTrackingFrame: Sendable {
 /// exactly what the preview sees — camera, simulator feed or a scrubbed take
 /// — instead of being wired to one capture source's sample buffers.
 final class GVTrackingFeed: @unchecked Sendable {
-    /// Long edge of the analysis frame. Large enough for Vision to find a face
-    /// at arm's length, small enough to copy and segment in a millisecond.
-    static let longEdge = 256
+    /// Long edge of the analysis frame. Large enough for Vision to read a
+    /// word or find a face across a room, small enough to copy and segment
+    /// in a millisecond or two.
+    static let longEdge = 384
 
     private let lock = NSLock()
     private var consumer: (@Sendable (GVTrackingFrame) -> Void)?

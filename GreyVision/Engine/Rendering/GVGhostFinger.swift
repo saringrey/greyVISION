@@ -46,7 +46,7 @@ extension WorkspaceAdjustableEffect {
     /// without one. These run on `GVGhostFinger` while nobody is touching.
     var idlesOnGhostFinger: Bool {
         switch self {
-        case .freezeBrush, .sortBrush, .moshBrush, .fluid, .timeGraffiti: true
+        case .fluid: true
         default: false
         }
     }

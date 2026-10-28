@@ -54,7 +54,6 @@ enum GVAudioIdle {
 extension WorkspaceAdjustableEffect {
     /// Audio-driven looks that render nothing in silence. Scopes are left out.
     var idlesOnAudioFloor: Bool {
-        WorkspaceAdjustableEffect.audioCategoryEffects.contains(self)
-            && ![.spectrumBars, .radialSpectrum, .lissajous, .vectorscope, .waveformMonitor, .rgbParade].contains(self)
+        WorkspaceAdjustableEffect.audioFamily.contains(self) && !isSpectrumOverlay
     }
 }

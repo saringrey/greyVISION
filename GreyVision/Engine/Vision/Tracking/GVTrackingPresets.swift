@@ -12,6 +12,29 @@ struct GVTrackingPreset: Identifiable, Sendable, Equatable {
     var symbol: String { parameters.mode.symbol }
 
     static let all: [GVTrackingPreset] = [
+        // Plain blob tracking first: white boxes, numbered, nothing else.
+        make("blobTrack", "Blob Track", "Classic blob tracking: numbered boxes on whatever stands out") {
+            $0.mode = .blob
+            $0.threshold = 0.6
+            $0.style = .box
+            $0.labels = .identifier
+            $0.palette = .mono
+            $0.trails = 0
+            $0.glow = 0
+            $0.showCentroids = true
+            $0.merge = 1
+            $0.maxTracks = 12
+        },
+        make("lockOn", "Lock On", "Targeting locks with hairlines across the frame") {
+            $0.mode = .blob
+            $0.threshold = 0.66
+            $0.style = .lockOn
+            $0.labels = .telemetry
+            $0.palette = .mono
+            $0.maxTracks = 3
+            $0.smoothing = 0.7
+            $0.glow = 0.25
+        },
         make("colorLock", "Color Lock", "Locks onto one hue and names what it finds") {
             $0.mode = .color
             $0.hue = 0.0
@@ -104,6 +127,36 @@ struct GVTrackingPreset: Identifiable, Sendable, Equatable {
             $0.confidence = 0.2
             $0.smoothing = 0.7
             $0.rate = 10
+        },
+        make("petCam", "Pet Cam", "Finds cats and dogs and names them") {
+            $0.mode = .animal
+            $0.style = .brackets
+            $0.labels = .designation
+            $0.confidence = 0.3
+            $0.smoothing = 0.65
+            $0.persistence = 0.8
+            $0.confirm = 1
+            $0.rate = 12
+        },
+        make("textHunter", "Text Hunter", "Boxes every word in view") {
+            $0.mode = .text
+            $0.style = .box
+            $0.labels = .none
+            $0.palette = .mono
+            $0.maxTracks = 16
+            $0.smoothing = 0.5
+            $0.confirm = 1
+            $0.rate = 12
+        },
+        make("frameFinder", "Frame Finder", "Outlines screens, pages and frames, corner to corner") {
+            $0.mode = .shape
+            $0.style = .dot
+            $0.labels = .telemetry
+            $0.confidence = 0.5
+            $0.maxTracks = 4
+            $0.smoothing = 0.6
+            $0.confirm = 1
+            $0.rate = 15
         },
         make("constellation", "Constellation", "Bright points chained into a star map") {
             $0.mode = .bright

@@ -173,23 +173,15 @@ final class GVEffectSampleRenderer {
             return renderCodec(variant, values: values, input: input, source: source, bounds: bounds)
         }
         guard let command = queue.makeCommandBuffer() else { return nil }
-        if effect == .fluid || effect == .reactionGarden {
-            let fluid = effect == .fluid ? CameraFluidSolver(device: device, library: library) : nil
-            let reaction = effect == .reactionGarden ? CameraReactionDiffusion(device: device, library: library) : nil
+        if effect == .fluid {
+            guard let fluid = CameraFluidSolver(device: device, library: library) else { return nil }
             for frame in 0 ..< 24 {
                 let touch = SIMD4<Float>(0.35 + Float(frame) * 0.012, 0.5, 0, 1)
-                let encoded: Bool
-                if let fluid {
-                    encoded = fluid.encode(commandBuffer: command, source: source, destination: output,
-                                           touch: touch, parameters: CameraFluidParameters(drag: values.primary,
-                                           persistence: values.secondary, swirl: values.tertiary),
-                                           blend: Float(values.blend), deltaTime: 1 / 60, quality: .efficient)
-                } else if let reaction {
-                    encoded = reaction.encode(commandBuffer: command, source: source, destination: output,
-                                              parameters: values, touch: touch, time: Double(frame) / 60,
-                                              held: false, maximumEdge: 128)
-                } else { return nil }
-                guard encoded else { return nil }
+                guard fluid.encode(commandBuffer: command, source: source, destination: output,
+                                   touch: touch, parameters: CameraFluidParameters(drag: values.primary,
+                                   persistence: values.secondary, swirl: values.tertiary),
+                                   blend: Float(values.blend), deltaTime: 1 / 60, quality: .efficient)
+                else { return nil }
             }
         } else {
             let name = effect == .rgbSplit ? CameraMetalShaderNames.rgbSplit

@@ -20,35 +20,42 @@ final class TerminalBootTimelineTests: XCTestCase {
         XCTAssertEqual(typed.power, 1)
         XCTAssertEqual(typed.revealed, Array(repeating: .max, count: lengths.count))
         XCTAssertEqual(typed.statusCount, lengths.count)
-        XCTAssertEqual(typed.decay, 0)
+        XCTAssertEqual(typed.fade, 0)
         XCTAssertEqual(typed.opacity, 1)
 
-        let stalled = timeline.frame(at: timeline.crashStart - 0.01, lineLengths: lengths)
+        let stalled = timeline.frame(at: timeline.failStart - 0.01, lineLengths: lengths)
         XCTAssertEqual(stalled.phase, .loading)
         XCTAssertEqual(stalled.load, GVTerminalBootTimeline.stallProgress, accuracy: 0.001, "setup never finishes")
 
-        let crashed = timeline.frame(at: timeline.decayStart - 0.01, lineLengths: lengths)
-        XCTAssertEqual(crashed.phase, .crash)
-        XCTAssertGreaterThan(crashed.corruption, 0)
+        let failed = timeline.frame(at: timeline.crashStart - 0.01, lineLengths: lengths)
+        XCTAssertEqual(failed.phase, .fail)
+        XCTAssertEqual(failed.power, 1, "the failure is shown cleanly")
+
+        let dead = timeline.frame(at: timeline.crashStart + 2, lineLengths: lengths)
+        XCTAssertEqual(dead.phase, .crash)
+        XCTAssertEqual(dead.power, 0, "the raster has switched off")
+        XCTAssertEqual(dead.dot, 0, "and the afterglow has died")
+        XCTAssertEqual(dead.opacity, 1, "the screen stays black until the fade")
+        XCTAssertEqual(timeline.fadeStart - timeline.crashStart, 5, accuracy: 0.001)
 
         let gone = timeline.frame(at: timeline.end, lineLengths: lengths)
-        XCTAssertEqual(gone.decay, 1)
+        XCTAssertEqual(gone.fade, 1)
         XCTAssertEqual(gone.opacity, 0)
     }
 
-    func testATapSkipsStraightToTheDecay() {
+    func testATapSkipsStraightToTheFade() {
         let natural = GVTerminalBootTimeline(lineCount: lengths.count)
         let skipped = GVTerminalBootTimeline(lineCount: lengths.count, skippedAt: 0.5)
-        XCTAssertEqual(skipped.decayStart, 0.5)
+        XCTAssertEqual(skipped.fadeStart, 0.5)
         XCTAssertLessThan(skipped.end, natural.end)
-        // A tap after the decay has begun changes nothing.
-        let late = GVTerminalBootTimeline(lineCount: lengths.count, skippedAt: natural.decayStart + 0.2)
-        XCTAssertEqual(late.decayStart, natural.decayStart)
+        // A tap after the fade has begun changes nothing.
+        let late = GVTerminalBootTimeline(lineCount: lengths.count, skippedAt: natural.fadeStart + 0.2)
+        XCTAssertEqual(late.fadeStart, natural.fadeStart)
     }
 
     func testTheCeremonyIsLongEnoughToReadButBounded() {
         let timeline = GVTerminalBootTimeline(lineCount: 10)
-        XCTAssertGreaterThan(timeline.end, 7)
-        XCTAssertLessThan(timeline.end, 11, "a cold start must not hold the operator hostage; a tap skips it")
+        XCTAssertGreaterThan(timeline.failStart - timeline.loadStart, 6.5, "the setup bar is something you sit and watch")
+        XCTAssertLessThan(timeline.end, 21, "a cold start must not hold the operator hostage; a tap skips it")
     }
 }

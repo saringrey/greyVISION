@@ -6,6 +6,9 @@ enum EffectCatalog {
     struct Shelf: Sendable {
         let id: String
         let label: String
+        /// The family's signature look: the effect its selector card shows
+        /// running over the live frame.
+        let hero: WorkspaceAdjustableEffect
         let effects: [WorkspaceAdjustableEffect]
     }
 
@@ -81,20 +84,22 @@ enum EffectCatalog {
     /// from frozen `static let` category lists — written once during
     /// initialisation, read-only afterwards.
     static let shelves: [Shelf] = [
-        Shelf(id: "color", label: "TONAL", effects: canonicalEffects(WorkspaceAdjustableEffect.colorCategoryEffects)),
-        Shelf(id: "datamosh", label: "DATAMOSH", effects: canonicalEffects(WorkspaceAdjustableEffect.datamoshCategoryEffects)),
-        Shelf(id: "sort", label: "SORT", effects: canonicalEffects(WorkspaceAdjustableEffect.sortCategoryEffects)),
-        Shelf(id: "time", label: "HISTORY", effects: canonicalEffects(WorkspaceAdjustableEffect.timeCategoryEffects)),
-        Shelf(id: "motion", label: "MOTION", effects: canonicalEffects(WorkspaceAdjustableEffect.motionCategoryEffects)),
-        Shelf(id: "decay", label: "DECAY", effects: canonicalEffects(WorkspaceAdjustableEffect.decayCategoryEffects)),
-        Shelf(id: "signal", label: "ANALOG", effects: canonicalEffects(WorkspaceAdjustableEffect.signalCategoryEffects)),
-        Shelf(id: "optics", label: "LENS", effects: canonicalEffects(WorkspaceAdjustableEffect.opticsCategoryEffects)),
-        Shelf(id: "form", label: "GEOMETRY", effects: canonicalEffects(WorkspaceAdjustableEffect.formCategoryEffects)),
-        Shelf(id: "shaders", label: "GENERATIVE", effects: canonicalEffects(WorkspaceAdjustableEffect.shaderCategoryEffects)),
-        Shelf(id: "audio", label: "SPECTRUM", effects: canonicalEffects(WorkspaceAdjustableEffect.audioCategoryEffects)),
-        Shelf(id: "scope", label: "INSTRUMENTS", effects: canonicalEffects(WorkspaceAdjustableEffect.scopeCategoryEffects)),
-        Shelf(id: "experimental", label: "SOLVERS", effects: canonicalEffects(WorkspaceAdjustableEffect.experimentalCategoryEffects)),
-        Shelf(id: "developer", label: "RESEARCH", effects: canonicalEffects(WorkspaceAdjustableEffect.developerCategoryEffects))
+        Shelf(id: "glitch", label: "GLITCH", hero: .sort,
+              effects: canonicalEffects(WorkspaceAdjustableEffect.glitchFamily)),
+        Shelf(id: "time", label: "TIME", hero: .echo,
+              effects: canonicalEffects(WorkspaceAdjustableEffect.timeFamily)),
+        Shelf(id: "analog", label: "ANALOG", hero: .vhs,
+              effects: canonicalEffects(WorkspaceAdjustableEffect.analogFamily)),
+        Shelf(id: "look", label: "LOOK", hero: .thermal,
+              effects: canonicalEffects(WorkspaceAdjustableEffect.lookFamily)),
+        Shelf(id: "lens", label: "LENS", hero: .lightLeak,
+              effects: canonicalEffects(WorkspaceAdjustableEffect.lensFamily)),
+        Shelf(id: "warp", label: "WARP", hero: .kaleidoscope,
+              effects: canonicalEffects(WorkspaceAdjustableEffect.warpFamily)),
+        Shelf(id: "generative", label: "GENERATIVE", hero: .nebulaDrift,
+              effects: canonicalEffects(WorkspaceAdjustableEffect.generativeFamily)),
+        Shelf(id: "audio", label: "AUDIO", hero: .audioTunnel,
+              effects: canonicalEffects(WorkspaceAdjustableEffect.audioFamily)),
     ]
 
     /// Shelf id to effect list, for the single-shelf lookups that dominated
@@ -108,6 +113,11 @@ enum EffectCatalog {
 
     static func effects(in shelfID: String) -> [WorkspaceAdjustableEffect] {
         shelfIndex[shelfID] ?? []
+    }
+
+    /// The signature effect a family's selector card previews.
+    static func hero(of shelfID: String) -> WorkspaceAdjustableEffect? {
+        shelves.first { $0.id == shelfID }?.hero
     }
 
     /// Search terms beyond the label. Includes the names of retired effects

@@ -71,9 +71,10 @@ final class GVPresetStore: ObservableObject {
                 collections = try JSONDecoder().decode(Collections.self, from: Data(contentsOf: collectionsURL))
             }
             starredIDs = collections.starredIDs.intersection(presets.map(\.id))
-            if collections.catalogVersion < 1 {
+            if collections.catalogVersion < 2 {
                 if !presets.isEmpty { appendCuratedRecipes() }
-                collections.catalogVersion = 1
+                appendGlitcheHoldRecipe()
+                collections.catalogVersion = 2
                 persist()
             }
         } catch {
@@ -240,6 +241,18 @@ final class GVPresetStore: ObservableObject {
         }
     }
 
+    private func appendGlitcheHoldRecipe() {
+        let id = UUID(uuidString: "A6DC1000-441B-4864-8FCA-000000000010")!
+        guard !presets.contains(where: { $0.id == id }) else { return }
+        var preset = GVPreset(id: id, name: "GLITCHE HOLD", isFactory: true,
+                              codecRaw: CaptureSetupDraft.VideoCodec.hevc.rawValue,
+                              frameRate: 60, resolutionRaw: CaptureSetupDraft.Resolution.fullHD.rawValue,
+                              rgbSplit: .init(), stack: .init())
+        preset.stack.reset(.datamosh)
+        preset.stack.setEnabled(true, for: .datamosh)
+        presets.append(preset)
+    }
+
     private func appendCuratedRecipes() {
         let names = ["SILVER LIGHT", "CHROMA STUDY", "AFTERIMAGE", "SOFT SIGNAL"]
         for (index, name) in names.enumerated() {
@@ -255,8 +268,8 @@ final class GVPresetStore: ObservableObject {
             preset.stack[.grain].primary = 0.16
             switch index {
             case 0:
-                preset.stack.setEnabled(true, for: .vignette)
-                preset.stack[.vignette].primary = 0.28
+                preset.stack.setEnabled(true, for: .super8)
+                preset.stack[.super8].primary = 0.28
             case 1:
                 preset.rgbSplit.isEnabled = true
                 preset.rgbSplit.amount = 0.006
@@ -301,8 +314,8 @@ final class GVPresetStore: ObservableObject {
                 preset.stack[.vhs].tertiary = 0.48
                 preset.stack.setEnabled(true, for: .grain)
                 preset.stack[.grain].primary = 0.38
-                preset.stack.setEnabled(true, for: .vignette)
-                preset.stack[.vignette].primary = 0.55
+                preset.stack.setEnabled(true, for: .crt)
+                preset.stack[.crt].primary = 0.4
             },
             recipe("SIGNAL GHOST") { preset in
                 preset.stack.setEnabled(true, for: .feedback)

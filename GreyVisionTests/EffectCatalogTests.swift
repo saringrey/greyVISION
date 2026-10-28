@@ -34,7 +34,7 @@ final class EffectCatalogTests: XCTestCase {
     /// recipe that names one decodes onto that replacement instead of failing.
     func testRetiredEffectsResolveToTheirReplacementEverywhere() throws {
         XCTAssertEqual(EffectCatalog.search("opticalFlowLiquid"), [.liquidMosh])
-        XCTAssertEqual(EffectCatalog.search("bokeh"), [.softFocus])
+        XCTAssertEqual(EffectCatalog.search("bokeh"), [.tiltShift])
         for (retired, replacement) in WorkspaceAdjustableEffect.retiredReplacements {
             XCTAssertNil(WorkspaceAdjustableEffect(rawValue: retired), "\(retired) is still a live case")
             XCTAssertEqual(WorkspaceAdjustableEffect.resolving(retired), replacement)
@@ -154,58 +154,42 @@ final class EffectCatalogTests: XCTestCase {
     func testConsolidatedCategoryMenuRetainsEveryShelf() {
         let categories = WorkspaceDockCategory.browsable.filter(\.isShelf)
         XCTAssertEqual(categories.map(\.rawValue), EffectCatalog.shelves.map(\.id))
-        XCTAssertTrue(categories.contains(.experimental))
-        XCTAssertTrue(categories.contains(.developer))
         XCTAssertFalse(WorkspaceDockCategory.browsable.contains(.lidar))
         for shelf in EffectCatalog.shelves {
             XCTAssertFalse(shelf.effects.isEmpty, shelf.id)
             XCTAssertEqual(shelf.effects.count, Set(shelf.effects).count, shelf.id)
+            XCTAssertTrue(shelf.effects.contains(shelf.hero), "\(shelf.id) previews an effect it does not hold")
         }
     }
 
-    /// Families are named for what they contain. This locks in the split so a
-    /// future edit cannot quietly fold the moshes back into the sorts, or
-    /// leave the depth-named luma sorts filed as though they were LiDAR.
-    func testFamiliesAreNamedForTheirContentsAndSeparateRealDepth() {
-        let datamosh = EffectCatalog.effects(in: "datamosh")
-        XCTAssertEqual(Set(datamosh), [.datamosh, .liquidMosh, .heavyMosh])
-        // `canonicalEffects` collapses a variant onto its family's first entry and
-        // that entry supplies the caption. A variant filed under a different
-        // shelf than its canonical would therefore render the other shelf's
-        // name, so every effect's canonical representative must live in the
-        // same group it is filed under.
-        for group in WorkspaceAdjustableEffect.curatedCategoryEffectGroups {
-            for effect in group {
-                let canonical = EffectCatalog.canonical(effect)
-                XCTAssertTrue(
-                    group.contains(canonical),
-                    "\(effect.rawValue) canonicalises to \(canonical.rawValue), which is filed elsewhere"
-                )
-            }
-        }
-
-        let sort = Set(EffectCatalog.effects(in: "sort"))
-        for expected in [WorkspaceAdjustableEffect.sort, .radialSort, .temporalPixelSort] {
-            XCTAssertTrue(sort.contains(expected), expected.rawValue)
-        }
-        XCTAssertFalse(datamosh.contains(.sort), "A sort is not a mosh")
-
-        let history = Set(EffectCatalog.effects(in: "time"))
-        XCTAssertTrue(history.contains(.frameHoldSmear))
-        XCTAssertTrue(Set(datamosh).isDisjoint(with: history))
-        XCTAssertTrue(Set(datamosh).isDisjoint(with: sort))
-
-        // Depth-named effects are luma/edge sorts, not scanner reads. They must
-        // never be presented as the real depth modes.
-        XCTAssertTrue(sort.contains(.pointCloudSmear))
+    /// Eight families, named for what they do, and a catalogue small enough
+    /// that every effect in it earns its place. The depth modes are scanner
+    /// reads, never a catalogue shelf.
+    func testFamiliesAreFewAndTheCatalogueStaysTight() {
+        XCTAssertEqual(EffectCatalog.shelves.map(\.label),
+                       ["GLITCH", "TIME", "ANALOG", "LOOK", "LENS", "WARP", "GENERATIVE", "AUDIO"])
+        XCTAssertLessThanOrEqual(WorkspaceAdjustableEffect.allCases.count, 80)
+        let datamosh = Set(EffectCatalog.effects(in: "glitch"))
+        XCTAssertTrue(datamosh.isSuperset(of: [.datamosh, .liquidMosh, .heavyMosh]))
         XCTAssertFalse(WorkspaceDockCategory.browsable.filter(\.isShelf).contains(.spatial))
         XCTAssertTrue(WorkspaceDockCategory.spatial.displayLabel == "Depth")
         XCTAssertFalse(WorkspaceDockCategory.spatial.isShelf, "Depth modes are not catalogue effects")
+        for group in WorkspaceAdjustableEffect.curatedCategoryEffectGroups {
+            for effect in group {
+                XCTAssertTrue(group.contains(EffectCatalog.canonical(effect)),
+                              "\(effect.rawValue) canonicalises into another family")
+            }
+        }
+    }
 
-        let labels = EffectCatalog.shelves.map(\.label)
-        XCTAssertEqual(labels, ["TONAL", "DATAMOSH", "SORT", "HISTORY", "MOTION", "DECAY",
-                                "ANALOG", "LENS", "GEOMETRY", "GENERATIVE", "SPECTRUM",
-                                "INSTRUMENTS", "SOLVERS", "RESEARCH"])
+    /// Every retired name still opens: it resolves to a survivor, never to
+    /// another retired name.
+    func testEveryRetiredNameResolvesToASurvivor() {
+        for (name, replacement) in WorkspaceAdjustableEffect.retiredReplacements {
+            XCTAssertNil(WorkspaceAdjustableEffect(rawValue: name), "\(name) is retired but still a case")
+            XCTAssertNotNil(WorkspaceAdjustableEffect(rawValue: replacement.rawValue), name)
+            XCTAssertEqual(WorkspaceAdjustableEffect.resolving(name), replacement)
+        }
     }
 
     @MainActor
@@ -214,8 +198,8 @@ final class EffectCatalogTests: XCTestCase {
         let renderer = try XCTUnwrap(GVEffectSampleRenderer())
         let reference = try XCTUnwrap(GVEffectThumbnailStore.makeReferenceStill())
         var outputs = Set<Data>()
-        for effect in [WorkspaceAdjustableEffect.rgbSplit, .cmykPress, .spectralDiffraction,
-                       .kaleidoscope, .kaleido6, .cyberGrid, .feedback, .fluid, .reactionGarden] {
+        for effect in [WorkspaceAdjustableEffect.rgbSplit, .cmykPress,
+                       .kaleidoscope, .kaleido6, .cyberGrid, .feedback, .fluid] {
             let sample = try XCTUnwrap(renderer.render(effect, over: reference), effect.rawValue)
             XCTAssertEqual(sample.cgImage?.width, GVEffectThumbnailStore.side, effect.rawValue)
             XCTAssertEqual(sample.cgImage?.height, GVEffectThumbnailStore.side, effect.rawValue)

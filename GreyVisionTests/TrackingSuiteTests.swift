@@ -49,6 +49,29 @@ final class TrackingSuiteTests: XCTestCase {
         XCTAssertEqual(output.detections[0].rect.midX, 85.0 / 120, accuracy: 0.06)
     }
 
+    /// Classic blob tracking keys on contrast with the surroundings, so a
+    /// light and a dark subject on the same mid-grey field are both found.
+    func testBlobModeFindsLightAndDarkSubjectsTogether() {
+        var frame = Self.frame(width: 160, height: 160, square: CGRect(x: 20, y: 20, width: 30, height: 30),
+                               fill: (245, 245, 245), background: (128, 128, 128))
+        var pixels = frame.pixels
+        for y in 100 ..< 130 {
+            for x in 100 ..< 130 {
+                let index = (y * 160 + x) * 4
+                pixels[index] = 10; pixels[index + 1] = 10; pixels[index + 2] = 10
+            }
+        }
+        frame = GVTrackingFrame(width: 160, height: 160, pixels: pixels, timestamp: 0)
+        var parameters = BlobTrackingParameters.defaults
+        XCTAssertEqual(parameters.mode, .blob, "plain blob tracking is the default")
+        parameters.maxArea = 0.3
+        let detections = GVFieldDetector().detect(frame, parameters: parameters).detections
+        XCTAssertEqual(detections.count, 2)
+        let centres = detections.map { CGPoint(x: $0.rect.midX, y: $0.rect.midY) }
+        XCTAssertTrue(centres.contains { $0.x < 0.4 && $0.y < 0.4 }, "the light square")
+        XCTAssertTrue(centres.contains { $0.x > 0.55 && $0.y > 0.55 }, "the dark square")
+    }
+
     func testMotionModeNeedsAPreviousFrame() {
         let detector = GVFieldDetector()
         var parameters = BlobTrackingParameters.defaults

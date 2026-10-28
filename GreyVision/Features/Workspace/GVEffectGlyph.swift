@@ -24,24 +24,22 @@ enum GVEffectGlyphKind {
         switch effect {
         case .feedback, .feedbackTunnel:
             .feedback
-        case .trails, .motionBloom, .prismStreak:
+        case .trails:
             .trails
         case .echo, .frameHoldSmear, .slitScan:
             .echo
-        case .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .dataBend, .pixelShift, .signalTear:
+        case .datamosh, .liquidMosh, .heavyMosh, .predictionDrift, .dataBend, .pixelShift:
             .datamosh
-        case .sort, .radialSort, .temporalPixelSort, .sortBrush:
+        case .sort, .radialSort:
             .pixelSort
-        case .vectorWarp, .ripple, .pixelGravity:
-            .flow
-        case .pointCloudSmear, .freezeBrush, .freeze:
+        case .pointCloudSmear:
             .depth
-        case .pixelate, .posterize, .dither, .threshold, .edge, .emboss, .sharpen:
+        case .pixelate, .posterize, .dither, .threshold, .edge:
             .block
-        case .rgbSplit, .vhs, .crt, .grain, .thermal, .solarize, .hueShift, .invert, .monochrome:
+        case .rgbSplit, .vhs, .crt, .grain, .thermal, .invert, .monochrome:
             .glitch
-        case .audioSpectral, .audioScanBend, .audioWaveform,
-             .audioBandSlice, .audioBloom, .audioKick:
+        case .audioScanBend,
+             .audioBandSlice, .audioKick:
             .audio
         default:
             .frame

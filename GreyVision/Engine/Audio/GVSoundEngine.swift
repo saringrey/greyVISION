@@ -30,9 +30,12 @@ final class GVSoundEngine {
         case accept
         /// Cold-start POST beep: one bare PC-speaker tone.
         case postBeep
-        /// The cold start's fake fatal exception: a crushed burst, then a
-        /// buzz that sags in pitch, the sound of a machine falling over.
-        case crash
+        /// The cold start's setup failure: three soft steps down, each a
+        /// little more crushed, the sound of a decoder running out of data.
+        case failure
+        /// The cold start's crash: the thump of a tube switching off, then
+        /// a short whine falling away.
+        case powerOff
     }
 
     var isEnabled = true {
@@ -422,12 +425,19 @@ final class GVSoundEngine {
             [
                 Segment(duration: 0.11, frequency: 988, duty: 0.5, gain: 0.2)
             ]
-        case .crash:
+        case .powerOff:
             [
-                Segment(duration: 0.07, frequency: 0, crush: 1, gain: 0.3),
-                Segment(duration: 0.12, frequency: 233, duty: 0.5, crush: 0.35, gate: 72, gain: 0.26),
-                Segment(duration: 0.16, frequency: 185, duty: 0.42, crush: 0.45, gate: 54, gain: 0.24),
-                Segment(duration: 0.22, frequency: 139, duty: 0.36, crush: 0.6, gate: 38, gain: 0.22)
+                Segment(duration: 0.035, frequency: 55, duty: 0.5, crush: 0.2, gain: 0.32),
+                Segment(duration: 0.05, frequency: 0, crush: 1, gain: 0.08),
+                Segment(duration: 0.18, frequency: 7_800, duty: 0.5, gain: 0.025)
+            ]
+        case .failure:
+            [
+                Segment(duration: 0.11, frequency: 494, duty: 0.5, gain: 0.13),
+                Segment(duration: 0.03, frequency: 0),
+                Segment(duration: 0.11, frequency: 392, duty: 0.45, crush: 0.12, gain: 0.11),
+                Segment(duration: 0.03, frequency: 0),
+                Segment(duration: 0.2, frequency: 294, duty: 0.4, crush: 0.3, gain: 0.09)
             ]
         case .error:
             // Low dissonant buzz, hard-gated. Unmistakably a refusal, and

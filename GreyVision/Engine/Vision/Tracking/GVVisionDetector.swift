@@ -3,7 +3,8 @@ import Foundation
 import simd
 import Vision
 
-/// Vision-backed detection for the face, hand, body and salient modes.
+/// Vision-backed detection for the face, hand, body, salient, animal, text
+/// and shape modes.
 ///
 /// Runs on the analysis frame — the same upright, pre-effect image the field
 /// modes segment — so every mode shares one coordinate space. Vision's
@@ -24,6 +25,17 @@ final class GVVisionDetector {
     private let handRequest = VNDetectHumanHandPoseRequest()
     private let bodyRequest = VNDetectHumanBodyPoseRequest()
     private let salientRequest = VNGenerateObjectnessBasedSaliencyImageRequest()
+    private let animalRequest = VNRecognizeAnimalsRequest()
+    private let textRequest = VNDetectTextRectanglesRequest()
+    private let shapeRequest: VNDetectRectanglesRequest = {
+        let request = VNDetectRectanglesRequest()
+        // Anything from a phone screen to a doorway, a little off square.
+        request.minimumAspectRatio = 0.2
+        request.maximumAspectRatio = 1
+        request.minimumSize = 0.08
+        request.quadratureTolerance = 25
+        return request
+    }()
 
     func detect(_ frame: GVTrackingFrame, parameters: BlobTrackingParameters) -> Output {
         guard let image = frame.makeCGImage() else {
@@ -47,6 +59,17 @@ final class GVVisionDetector {
             case .salient:
                 try handler.perform([salientRequest])
                 return Output(detections: salient(floor: floor, frame: frame), error: nil)
+            case .animal:
+                try handler.perform([animalRequest])
+                return Output(detections: animals(floor: floor, frame: frame), error: nil)
+            case .text:
+                try handler.perform([textRequest])
+                return Output(detections: text(frame: frame), error: nil)
+            case .shape:
+                shapeRequest.maximumObservations = Int(parameters.maxTracks)
+                shapeRequest.minimumConfidence = floor
+                try handler.perform([shapeRequest])
+                return Output(detections: shapes(frame: frame), error: nil)
             default:
                 return Output(detections: [], error: nil)
             }
@@ -97,6 +120,34 @@ final class GVVisionDetector {
                 return detection(rect: Self.flip(object.boundingBox), confidence: object.confidence,
                                  joints: [], bones: [], frame: frame)
             }
+        }
+    }
+
+    private func animals(floor: Float, frame: GVTrackingFrame) -> [GVTrackingDetection] {
+        (animalRequest.results ?? []).compactMap { animal in
+            guard animal.confidence >= floor else { return nil }
+            var found = detection(rect: Self.flip(animal.boundingBox), confidence: animal.confidence,
+                                  joints: [], bones: [], frame: frame)
+            found.kind = animal.labels.first?.identifier.uppercased()
+            return found
+        }
+    }
+
+    private func text(frame: GVTrackingFrame) -> [GVTrackingDetection] {
+        (textRequest.results ?? []).map { word in
+            detection(rect: Self.flip(word.boundingBox), confidence: word.confidence,
+                      joints: [], bones: [], frame: frame)
+        }
+    }
+
+    /// Rectangles come back with their four corners as joints and the quad
+    /// as bones, so a tilted screen is outlined, not just boxed.
+    private func shapes(frame: GVTrackingFrame) -> [GVTrackingDetection] {
+        (shapeRequest.results ?? []).map { quad in
+            let corners = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft]
+                .map { CGPoint(x: $0.x, y: 1 - $0.y) }
+            return detection(rect: Self.flip(quad.boundingBox), confidence: quad.confidence,
+                             joints: corners, bones: [[0, 1], [1, 2], [2, 3], [3, 0]], frame: frame)
         }
     }
 

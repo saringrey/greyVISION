@@ -214,6 +214,31 @@ struct GVTrackingCanvas {
         case .dot:
             let radius = (3 + CGFloat(parameters.lineWidth) * 1.5) * scale
             path.addEllipse(in: CGRect(x: rect.midX - radius, y: rect.midY - radius, width: radius * 2, height: radius * 2))
+        case .lockOn:
+            // Corner ticks outside the box, so the subject itself stays clear.
+            let pad = 4 * scale
+            let box = rect.insetBy(dx: -pad, dy: -pad)
+            let arm = max(min(box.width, box.height) * 0.18, 5 * scale)
+            for (corner, dx, dy) in [(CGPoint(x: box.minX, y: box.minY), 1.0, 1.0),
+                                     (CGPoint(x: box.maxX, y: box.minY), -1.0, 1.0),
+                                     (CGPoint(x: box.minX, y: box.maxY), 1.0, -1.0),
+                                     (CGPoint(x: box.maxX, y: box.maxY), -1.0, -1.0)]
+            {
+                path.move(to: CGPoint(x: corner.x + arm * dx, y: corner.y))
+                path.addLine(to: corner)
+                path.addLine(to: CGPoint(x: corner.x, y: corner.y + arm * dy))
+            }
+            // Hairlines across the picture, broken where they would cross
+            // the subject.
+            let center = CGPoint(x: box.midX, y: box.midY)
+            path.move(to: CGPoint(x: displayed.minX, y: center.y))
+            path.addLine(to: CGPoint(x: box.minX - pad, y: center.y))
+            path.move(to: CGPoint(x: box.maxX + pad, y: center.y))
+            path.addLine(to: CGPoint(x: displayed.maxX, y: center.y))
+            path.move(to: CGPoint(x: center.x, y: displayed.minY))
+            path.addLine(to: CGPoint(x: center.x, y: box.minY - pad))
+            path.move(to: CGPoint(x: center.x, y: box.maxY + pad))
+            path.addLine(to: CGPoint(x: center.x, y: displayed.maxY))
         }
         return path
     }

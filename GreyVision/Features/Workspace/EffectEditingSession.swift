@@ -353,6 +353,32 @@ final class EffectEditingSession: ObservableObject {
         isPreviewing = false
     }
 
+    /// Auditions a browser choice against the live picture without leaving
+    /// the browser. The first audition stashes the composition, so closing
+    /// the browser over an unkept audition restores it through `endPreview`.
+    /// An exclusive audition swaps — each tap re-applies over the stash
+    /// instead of accumulating looks the operator never chose — while an
+    /// additive (ADD-mode) audition stacks onto the previous one.
+    func auditionFromBrowser(_ effect: WorkspaceAdjustableEffect) {
+        if previewStash == nil {
+            beginPreview(snapshot)
+        } else if !isStackArmed, let stash = previewStash {
+            effectStack = stash.composition.stack
+            rgbSplitParameters = stash.composition.rgb
+        }
+        applyFromBrowser(effect)
+    }
+
+    /// Keeps the auditioned composition as the operator's edit: the stash is
+    /// dropped and the whole audition lands as exactly one undo step, the
+    /// same contract a preset preview keeps when it is committed.
+    func commitPreview() {
+        guard previewStash != nil else { return }
+        previewStash = nil
+        isPreviewing = false
+        recordHistory()
+    }
+
     /// Commits a choice that explicitly replaces the current composition,
     /// regardless of the ADD toggle. Radial browsing calls this only after the
     /// finger releases over an effect, so merely opening or cancelling the

@@ -23,13 +23,18 @@ struct GVEffectPager<Item: Identifiable, Tile: View>: View {
         let columns: Int
         let rows: Int
         let side: CGFloat
+        /// Rows stretch or squeeze a little from square so a page fills the
+        /// panel exactly instead of leaving a band of dead space under it.
+        let rowHeight: CGFloat
 
         init(size: CGSize, minimumTile: CGFloat, spacing: CGFloat) {
             let columns = max(Int((size.width + spacing) / (minimumTile + spacing)), 3)
             let side = max((size.width - spacing * CGFloat(columns - 1)) / CGFloat(columns), 1)
             self.columns = columns
             self.side = side
-            rows = max(Int((size.height + spacing) / (side + spacing)), 1)
+            let rows = max(Int(((size.height + spacing) / (side + spacing)).rounded()), 1)
+            self.rows = rows
+            rowHeight = max((size.height - spacing * CGFloat(rows - 1)) / CGFloat(rows), 1)
         }
 
         var perPage: Int { columns * rows }
@@ -77,7 +82,7 @@ struct GVEffectPager<Item: Identifiable, Tile: View>: View {
         ) {
             ForEach(Array(slice.enumerated()), id: \.element.id) { offset, item in
                 tile(item, offset)
-                    .frame(width: layout.side, height: layout.side)
+                    .frame(width: layout.side, height: layout.rowHeight)
             }
         }
         // A new shelf replays its entrance rather than diffing tiles in place.
