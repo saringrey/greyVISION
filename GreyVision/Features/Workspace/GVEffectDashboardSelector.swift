@@ -83,7 +83,7 @@ struct GVEffectDashboardSelector: View {
             }
         }
         .padding(3)
-        .background(Color.black.opacity(0.28), in: Capsule())
+        .gvMaterial(.rail, shape: .capsule)
     }
 
     /// A family as a picture: the live frame through the family's signature
@@ -143,6 +143,16 @@ struct GVEffectDashboardSelector: View {
                 .overlay {
                     shape.strokeBorder(isSelected ? GVTheme.bone : Color.white.opacity(0.1), lineWidth: isSelected ? 1.5 : 0.75)
                 }
+                // A specular rim that catches the top edge, the way light
+                // sits on a glass lip, so each card reads as a lit object.
+                .overlay {
+                    shape.strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.34), .white.opacity(0)],
+                                       startPoint: .top, endPoint: .center),
+                        lineWidth: 0.6
+                    )
+                }
+                .shadow(color: .black.opacity(0.45), radius: 6, y: 3)
                 .shadow(color: .white.opacity(isSelected ? 0.22 : 0), radius: 8)
                 .saturation(isSelected || selected.isShelf == false ? 1 : 0.55)
                 .opacity(isSelected || selected.isShelf == false ? 1 : 0.85)
@@ -230,7 +240,9 @@ private struct GVSpecialModeButton: View {
                 if selected {
                     shape.fill(GVTheme.bone).shadow(color: .white.opacity(0.25), radius: 8)
                 } else {
-                    shape.fill(accent.opacity(0.07))
+                    // Native glass tinted by the mode's accent: the accent
+                    // lives in the light behind the key, not in a flat wash.
+                    Color.clear.gvGlassRail(radius: 10, tint: accent.opacity(0.16))
                 }
             }
             .overlay {
