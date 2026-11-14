@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// What each selector card shows besides its name. Plain values computed once
+/// What each selector chip shows besides its name. Plain values computed once
 /// per browser pass, so the selector never walks the catalogue itself.
 struct GVEffectShelfReadout: Equatable {
     var count: Int
@@ -8,251 +8,225 @@ struct GVEffectShelfReadout: Equatable {
     var live: Bool
 }
 
-/// The browser's selector panel: a scope segment, the effect families as
-/// picture cards, and the two capture modes.
+/// The browser's navigation: the four saved lists, and the shelves.
 ///
-/// The families used to be a 4×4 keypad of words, which read as a wall of
-/// text. Each family is now a card showing the live camera frame through its
-/// signature effect, so the operator picks a family by how it looks; the
-/// name is a caption, not the content.
+/// Two rows, one vocabulary. The saved lists sit in a fixed row because they
+/// are where a creator goes back to — Active, Favorites, Recent — and they
+/// must never be scrolled away. The shelves sit in a scrolling row because
+/// there are eight of them and they are browsed by eye: each one carries a
+/// preview of its signature effect, so a family is chosen by how it looks
+/// rather than by remembering what "Generative" meant.
+///
+/// The capture modes close the scrolling row behind a rule. They are capture
+/// sources rather than effects, and they used to live in a third row with a
+/// third shape of control; folding them into the same row as everything else
+/// is what makes the whole strip read as one shelf of choices.
 struct GVEffectDashboardSelector: View {
     let selected: WorkspaceDockCategory
     let readouts: [WorkspaceDockCategory: GVEffectShelfReadout]
     /// The live-frame preview of a family's signature effect, once rendered.
     let preview: (WorkspaceDockCategory) -> UIImage?
-    let onAppearFamily: (WorkspaceDockCategory) -> Void
+    let onAppearCategory: (WorkspaceDockCategory) -> Void
     let onSelect: (WorkspaceDockCategory) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var selection
 
     static let scopes: [WorkspaceDockCategory] = [.all, .active, .favorites, .recents]
     static let families: [WorkspaceDockCategory] = WorkspaceDockCategory.shelfCategories
     static let modes: [WorkspaceDockCategory] = [.objects, .spatial, .blobs]
-    private static let rowHeight: CGFloat = 32
 
     var body: some View {
         VStack(spacing: 8) {
-            scopeSegment
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
-                ForEach(Self.families) { family in
-                    card(family)
-                }
-            }
-            HStack(spacing: 6) {
-                ForEach(Self.modes) { mode in
-                    modeButton(mode)
-                }
-            }
+            scopeRow
+            browseRow
         }
-        .animation(GVMotion.resolved(.spring(response: 0.34, dampingFraction: 0.8), reduceMotion: reduceMotion), value: selected)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("workspace.browser.categories")
     }
 
-    private var scopeSegment: some View {
-        HStack(spacing: 4) {
+    // MARK: - Saved lists
+
+    /// The four lists a creator keeps coming back to. Words, not icons: the
+    /// labels are short enough to read, and an icon beside a word says the
+    /// same thing twice.
+    private var scopeRow: some View {
+        HStack(spacing: 6) {
             ForEach(Self.scopes) { scope in
-                let isSelected = scope == selected
-                Button { onSelect(scope) } label: {
-                    HStack(spacing: 5) {
-                        if let symbol = scope.symbol {
-                            Image(systemName: symbol)
-                                .font(.system(size: 10, weight: .semibold))
-                                .symbolEffect(.bounce, value: isSelected)
-                        }
-                        Text(scope.displayLabel.uppercased())
-                            .font(GVTheme.mono(10.5, isSelected ? .semibold : .medium))
-                            .lineLimit(1)
-                        Text("\(readouts[scope]?.count ?? 0)")
-                            .font(GVTheme.mono(9.5, .regular))
-                            .monospacedDigit()
-                            .opacity(0.6)
-                            .contentTransition(.numericText())
-                    }
-                    .minimumScaleFactor(0.8)
-                    .foregroundStyle(isSelected ? Color.black : GVTheme.bone.opacity(0.7))
-                    .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
-                    .background { plate(selected: isSelected) }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(GVPressStyle(scale: 0.94))
-                .accessibilityLabel(scope.displayLabel)
-                .accessibilityIdentifier("workspace.browser.category.\(scope.rawValue)")
-                .accessibilityValue(isSelected ? "selected" : "")
+                scopeChip(scope)
             }
         }
-        .padding(3)
-        .gvMaterial(.rail, shape: .capsule)
+    }
+
+    private func scopeChip(_ scope: WorkspaceDockCategory) -> some View {
+        let isSelected = scope == selected
+        let count = readouts[scope]?.count ?? 0
+        return Button { onSelect(scope) } label: {
+            HStack(spacing: 5) {
+                Text(scope.displayLabel)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                // An empty list says nothing a glance would not, and the row
+                // has to survive the narrower column a sideways workspace
+                // gives it.
+                if count > 0 || scope == .all {
+                    Text("\(count)")
+                        .font(GVTheme.mono(10, .medium))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .opacity(isSelected ? 0.7 : 0.5)
+                        .layoutPriority(-1)
+                }
+            }
+            .foregroundStyle(isSelected ? Color.black : GVTheme.bone.opacity(0.72))
+            .padding(.horizontal, 10)
+            .frame(minHeight: 36)
+            .background { chipPlate(isSelected) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle())
+        .frame(minHeight: GVMetrics.touchTarget)
+        .accessibilityLabel(scope.displayLabel)
+        .accessibilityValue(isSelected ? "selected" : "")
+        .accessibilityHint("\(count) effects")
+        .accessibilityIdentifier("workspace.browser.category.\(scope.rawValue)")
+    }
+
+    // MARK: - Shelves
+
+    /// The effect families and the capture modes, in one scrolling row.
+    private var browseRow: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Self.families) { family in
+                        familyChip(family)
+                    }
+                    Rectangle()
+                        .fill(GVTheme.separator)
+                        .frame(width: 1, height: 22)
+                    ForEach(Self.modes) { mode in
+                        modeChip(mode)
+                    }
+                }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 2)
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .onChange(of: selected) { _, item in
+                withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
+                    proxy.scrollTo(item, anchor: .center)
+                }
+            }
+            .onAppear { proxy.scrollTo(selected, anchor: .center) }
+            .accessibilityIdentifier("workspace.browser.categories")
+        }
     }
 
     /// A family as a picture: the live frame through the family's signature
-    /// effect, the name and count set over a scrim, a light when one of its
-    /// effects is on, and a bone frame when selected.
-    private func card(_ family: WorkspaceDockCategory) -> some View {
+    /// effect, its name, and a light when one of its effects is running.
+    ///
+    /// The preview is the point. The family rail used to draw a small
+    /// procedural diagram per family, which made eight little abstract
+    /// squiggles that a first-time user had to learn before the rail meant
+    /// anything. A picture of what the family does needs no key.
+    private func familyChip(_ family: WorkspaceDockCategory) -> some View {
         let isSelected = family == selected
         let readout = readouts[family] ?? GVEffectShelfReadout(count: 0, live: false)
-        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
         return Button { onSelect(family) } label: {
-            Color.clear
-                .aspectRatio(1.35, contentMode: .fit)
-                .overlay {
-                    if let image = preview(family) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .transition(.opacity)
-                    } else if let symbol = family.symbol {
-                        Image(systemName: symbol)
-                            .font(.system(size: 16, weight: .light))
-                            .foregroundStyle(GVTheme.bone.opacity(0.5))
-                    }
+            HStack(spacing: 6) {
+                familyThumbnail(family, isSelected: isSelected)
+                Text(family.displayLabel)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                    .foregroundStyle(isSelected ? Color.black : GVTheme.bone.opacity(0.78))
+                    .lineLimit(1)
+                if readout.live {
+                    Circle()
+                        .fill(isSelected ? Color.black.opacity(0.55) : GVTheme.acid)
+                        .frame(width: 5, height: 5)
                 }
-                .overlay(alignment: .bottomLeading) {
-                    HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text(family.displayLabel.uppercased())
-                            .font(GVTheme.mono(9, .bold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Spacer(minLength: 0)
-                        Text("\(readout.count)")
-                            .font(GVTheme.mono(8.5, .medium))
-                            .monospacedDigit()
-                            .opacity(0.7)
-                    }
-                    .foregroundStyle(GVTheme.bone)
-                    .padding(.horizontal, 6)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
-                    .background {
-                        LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if readout.live {
-                        Circle()
-                            .fill(Color.mint)
-                            .frame(width: 5, height: 5)
-                            .shadow(color: .mint.opacity(0.9), radius: 3)
-                            .padding(5)
-                            .transition(.scale.combined(with: .opacity))
-                    }
-                }
-                .background(Color.white.opacity(0.05))
-                .clipShape(shape)
-                .overlay {
-                    shape.strokeBorder(isSelected ? GVTheme.bone : Color.white.opacity(0.1), lineWidth: isSelected ? 1.5 : 0.75)
-                }
-                // A specular rim that catches the top edge, the way light
-                // sits on a glass lip, so each card reads as a lit object.
-                .overlay {
-                    shape.strokeBorder(
-                        LinearGradient(colors: [.white.opacity(0.34), .white.opacity(0)],
-                                       startPoint: .top, endPoint: .center),
-                        lineWidth: 0.6
-                    )
-                }
-                .shadow(color: .black.opacity(0.45), radius: 6, y: 3)
-                .shadow(color: .white.opacity(isSelected ? 0.22 : 0), radius: 8)
-                .saturation(isSelected || selected.isShelf == false ? 1 : 0.55)
-                .opacity(isSelected || selected.isShelf == false ? 1 : 0.85)
-                .contentShape(shape)
+            }
+            .padding(.leading, 4)
+            .padding(.trailing, 10)
+            .frame(minHeight: 36)
+            .background { chipPlate(isSelected) }
+            .contentShape(Rectangle())
         }
-        .buttonStyle(GVPressStyle(scale: 0.95))
-        .onAppear { onAppearFamily(family) }
+        .buttonStyle(GVPressStyle())
+        .frame(minHeight: GVMetrics.touchTarget)
+        .onAppear { onAppearCategory(family) }
         .accessibilityLabel(family.displayLabel)
-        .accessibilityValue([isSelected ? "selected" : nil, readout.live ? "has an active effect" : nil,
-                             "\(readout.count) effects"].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityValue(isSelected ? "selected" : "")
+        .accessibilityHint("\(readout.count) effects")
         .accessibilityIdentifier("workspace.browser.category.\(family.rawValue)")
     }
 
-    private func modeButton(_ mode: WorkspaceDockCategory) -> some View {
-        GVSpecialModeButton(
-            mode: mode,
-            selected: mode == selected,
-            readout: readouts[mode] ?? GVEffectShelfReadout(count: 0, live: false),
-            action: { onSelect(mode) }
-        )
-    }
-
-    /// One sliding bone plate marks the selection across the segment and the
-    /// mode row, so the eye follows a single object.
     @ViewBuilder
-    private func plate(selected isSelected: Bool) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
-        if isSelected {
-            shape
-                .fill(GVTheme.bone)
-                .shadow(color: .white.opacity(0.25), radius: 8)
-                .matchedGeometryEffect(id: "selection", in: selection)
-        } else {
-            shape
-                .fill(Color.white.opacity(0.04))
-                .overlay(shape.strokeBorder(Color.white.opacity(0.07), lineWidth: 0.75))
+    private func familyThumbnail(_ family: WorkspaceDockCategory, isSelected: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+        ZStack {
+            shape.fill(Color.white.opacity(isSelected ? 0.16 : 0.08))
+            if let image = preview(family) {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .clipShape(shape)
+            } else if let symbol = family.symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isSelected ? Color.black.opacity(0.55) : GVTheme.bone.opacity(0.5))
+            }
         }
-    }
-}
-
-/// Tracking, LiDAR and AR are capture modes, not effects — the heavy
-/// hitters. They share one size and say what they are quietly: each carries
-/// its own colour in its glyph, a thin coloured edge and a faint tint, and a
-/// live dot when running. Selected, they take the same white plate as every
-/// other selector key, with the glyph keeping its colour.
-private struct GVSpecialModeButton: View {
-    let mode: WorkspaceDockCategory
-    let selected: Bool
-    let readout: GVEffectShelfReadout
-    let action: () -> Void
-
-    /// Acid for tracking (the instrument's "armed"), scanner blue for LiDAR,
-    /// violet for AR — distinct, and never louder than the white type.
-    private var accent: Color {
-        switch mode {
-        case .blobs: GVTheme.acid
-        case .spatial: Color(red: 0.32, green: 0.78, blue: 1.0)
-        default: Color(red: 0.76, green: 0.52, blue: 1.0)
-        }
+        .frame(width: 26, height: 26)
+        .overlay(shape.strokeBorder(Color.white.opacity(isSelected ? 0.30 : 0.14), lineWidth: 0.5))
     }
 
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        Button(action: action) {
-            HStack(spacing: 6) {
+    /// AR, LiDAR and Tracking: capture sources and capture modes, not
+    /// effects. They keep their own glyphs because they are a different kind
+    /// of thing, and a light when the source is running.
+    private func modeChip(_ mode: WorkspaceDockCategory) -> some View {
+        let isSelected = mode == selected
+        let readout = readouts[mode] ?? GVEffectShelfReadout(count: 0, live: false)
+        return Button { onSelect(mode) } label: {
+            HStack(spacing: 5) {
                 Image(systemName: mode.symbol ?? "circle")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(selected ? accent.mix(with: .black, by: 0.35) : accent)
-                Text(mode.displayLabel.uppercased())
-                    .font(GVTheme.mono(10.5, selected ? .bold : .semibold))
-                    .tracking(0.8)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(mode.displayLabel)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .foregroundStyle(selected ? Color.black : GVTheme.bone.opacity(0.85))
                 if readout.live {
                     Circle()
-                        .fill(accent)
+                        .fill(isSelected ? Color.black.opacity(0.55) : GVTheme.acid)
                         .frame(width: 5, height: 5)
-                        .shadow(color: accent.opacity(0.8), radius: 3)
                 }
             }
-            .padding(.horizontal, 8)
-            .frame(maxWidth: .infinity, minHeight: 36)
-            .background {
-                if selected {
-                    shape.fill(GVTheme.bone).shadow(color: .white.opacity(0.25), radius: 8)
-                } else {
-                    // Native glass tinted by the mode's accent: the accent
-                    // lives in the light behind the key, not in a flat wash.
-                    Color.clear.gvGlassRail(radius: 10, tint: accent.opacity(0.16))
-                }
-            }
-            .overlay {
-                shape.strokeBorder(accent.opacity(selected ? 0 : 0.42), lineWidth: 0.9)
-            }
-            .contentShape(shape)
+            .foregroundStyle(isSelected ? Color.black : GVTheme.bone.opacity(0.78))
+            .padding(.horizontal, 10)
+            .frame(minHeight: 36)
+            .background { chipPlate(isSelected) }
+            .contentShape(Rectangle())
         }
-        .buttonStyle(GVPressStyle(scale: 0.95))
+        .buttonStyle(GVPressStyle())
+        .frame(minHeight: GVMetrics.touchTarget)
         .accessibilityLabel(mode.displayLabel)
-        .accessibilityValue([selected ? "selected" : nil, readout.live ? "live" : nil].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityValue(isSelected ? "selected" : "")
+        .accessibilityHint("\(readout.count) options")
         .accessibilityIdentifier("workspace.browser.category.\(mode.rawValue)")
+    }
+
+    /// One plate for every chip in the strip: a bone fill when the chip is
+    /// the one that is open, and a quiet outline when it is not. The
+    /// instrument used to mark selection three different ways in three
+    /// different rows — a bone plate, a ring and a capsule — which meant
+    /// learning a new symbol for "you are here" every time the eye moved.
+    @ViewBuilder
+    private func chipPlate(_ isSelected: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        if isSelected {
+            shape.fill(GVTheme.bone)
+        } else {
+            shape
+                .fill(Color.white.opacity(0.055))
+                .overlay(shape.strokeBorder(Color.white.opacity(0.08), lineWidth: 0.75))
+        }
     }
 }

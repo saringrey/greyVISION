@@ -44,6 +44,7 @@ private struct GVScaledFont: ViewModifier {
         case level(GVTheme.TypeLevel)
         case mono(CGFloat, Font.Weight)
         case terminal(CGFloat, Font.Weight)
+        case system(CGFloat, Font.Weight, CGFloat)
     }
 
     let face: Face
@@ -63,6 +64,8 @@ private struct GVScaledFont: ViewModifier {
             return GVTheme.mono(size * scale, weight)
         case let .terminal(size, weight):
             return GVTheme.terminal(size * scale, weight)
+        case let .system(size, weight, ceiling):
+            return .system(size: size * min(scale, ceiling), weight: weight)
         }
     }
 }
@@ -81,6 +84,17 @@ extension View {
     /// Scaling replacement for `.gvTerminal(_:_:)`.
     func gvTerminal(_ size: CGFloat, _ weight: Font.Weight = .bold) -> some View {
         modifier(GVScaledFont(face: .terminal(size, weight)))
+    }
+
+    /// A system face that tracks the instrument's compressed Dynamic Type
+    /// scale, with a ceiling.
+    ///
+    /// The ceiling is the point: a title can afford to grow, a label inside a
+    /// fixed rail cannot, and the compressed scale alone would still push the
+    /// browser's four saved-list chips past the width of a phone.
+    func gvSystemFont(_ size: CGFloat, _ weight: Font.Weight = .regular,
+                      maxScale: CGFloat = 1.3) -> some View {
+        modifier(GVScaledFont(face: .system(size, weight, maxScale)))
     }
 
     /// Scales GVTerminalText sizes to respect Dynamic Type.

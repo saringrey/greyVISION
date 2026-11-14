@@ -78,10 +78,10 @@ final class FlagshipUITests: XCTestCase {
         app.buttons["workspace.categories.all"].tap()
         let rail = app.scrollViews["workspace.browser.categories"]
         XCTAssertTrue(rail.waitForExistence(timeout: 5))
-        let color = app.buttons["workspace.browser.category.color"]
-        for _ in 0..<5 where !color.isHittable { rail.swipeLeft() }
-        color.tap()
-        XCTAssertTrue(app.scrollViews["workspace.effects.color"].waitForExistence(timeout: 5))
+        let look = app.buttons["workspace.browser.category.look"]
+        for _ in 0..<5 where !look.isHittable { rail.swipeLeft() }
+        look.tap()
+        XCTAssertTrue(app.scrollViews["workspace.effects.look"].waitForExistence(timeout: 5))
         capture("Image-led effect library")
     }
 
@@ -127,10 +127,11 @@ final class FlagshipUITests: XCTestCase {
         let picker = app.buttons["workspace.categories.all"]
         picker.tap()
         XCTAssertTrue(app.scrollViews["workspace.browser.categories"].waitForExistence(timeout: 5))
-        // The families the browser actually draws, in shelf order.
-        for category in ["all", "color", "datamosh", "sort", "time", "motion", "decay",
-                         "signal", "optics", "form", "shaders", "audio", "scope",
-                         "experimental", "developer", "spatial"] {
+        // The four saved lists that sit above the shelves, the eight shelves
+        // the catalogue holds, and the depth modes that close the row.
+        for category in ["all", "active", "favorites", "recents",
+                         "glitch", "time", "analog", "look", "lens", "warp",
+                         "generative", "audio", "spatial", "blobs"] {
             let option = app.buttons["workspace.browser.category.\(category)"]
             let sidebar = app.scrollViews["workspace.browser.categories"]
             for _ in 0 ..< 10 where !option.exists || !option.isHittable { sidebar.swipeLeft() }
@@ -141,17 +142,25 @@ final class FlagshipUITests: XCTestCase {
                 // Real depth modes, gated on hardware rather than the catalogue.
                 XCTAssertTrue(app.scrollViews["workspace.depth.modes"].waitForExistence(timeout: 5))
                 XCTAssertTrue(app.buttons["workspace.depth.0"].exists)
+            } else if category == "blobs" {
+                // The tracking presets are their own shelf, not effects.
+                XCTAssertTrue(app.scrollViews["workspace.tracking.presets"].waitForExistence(timeout: 5))
             } else {
-                XCTAssertTrue(app.scrollViews["workspace.effects.\(category)"].waitForExistence(timeout: 5), category)
+                // A saved list can legitimately be empty on a fresh install,
+                // and an empty list teaches the interface instead of listing.
+                let list = app.scrollViews["workspace.effects.\(category)"]
+                let empty = app.descendants(matching: .any)["workspace.effects.empty"]
+                XCTAssertTrue(list.waitForExistence(timeout: 3) || empty.waitForExistence(timeout: 3), category)
             }
             capture("Family \(category)")
         }
-        // The datamosh shelf holds the codec effects and nothing else.
-        let datamosh = app.buttons["workspace.browser.category.datamosh"]
-        for _ in 0..<10 where !datamosh.isHittable { app.scrollViews["workspace.browser.categories"].swipeRight() }
-        datamosh.tap()
+        // The glitch shelf holds the codec effects, the sorts and the rest of
+        // the picture-as-data family.
+        let glitch = app.buttons["workspace.browser.category.glitch"]
+        for _ in 0..<10 where !glitch.isHittable { app.scrollViews["workspace.browser.categories"].swipeRight() }
+        glitch.tap()
         XCTAssertTrue(app.buttons["workspace.effect.datamosh"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["workspace.effect.sort"].exists, "Sorts are their own family now")
+        XCTAssertTrue(app.buttons["workspace.effect.sort"].exists, "Sorts live in the glitch shelf")
     }
 
     func testLeftSidebarResearchGroupsScrollAndReturnToAll() {
@@ -159,7 +168,9 @@ final class FlagshipUITests: XCTestCase {
         app.buttons["workspace.categories.all"].tap()
         let sidebar = app.scrollViews["workspace.browser.categories"]
         XCTAssertTrue(sidebar.waitForExistence(timeout: 5))
-        for category in ["experimental", "developer"] {
+        // The shelves furthest along the row: they have to be reachable by
+        // scrolling, and they have to say which one is open.
+        for category in ["warp", "generative"] {
             let group = app.buttons["workspace.browser.category.\(category)"]
             for _ in 0 ..< 4 {
                 if group.exists && group.isHittable { break }

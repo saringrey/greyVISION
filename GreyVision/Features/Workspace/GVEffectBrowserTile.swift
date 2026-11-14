@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// What one browser tile shows. Plain values, so the face can be previewed and
-/// reasoned about without an editor, a thumbnail store or a running camera.
+/// What one browser tile shows. Plain values, so the face can be reasoned
+/// about without a thumbnail store or a running camera.
 struct GVEffectTileModel: Equatable {
     let name: String
     let image: UIImage?
@@ -13,22 +13,47 @@ struct GVEffectTileModel: Equatable {
     let needsAudio: Bool
 }
 
-/// The image-first tile face: full-bleed preview, name set over a scrim, and
-/// the state glyphs in the top corners. Square and dense — the dashboard
-/// pages four across on a phone, so type and glyphs are sized for that.
+/// The image-first tile face.
+///
+/// A preview of what the effect actually does, rendered by the production
+/// shader over a frame tapped from the live camera, with the effect's name
+/// set plainly beneath it.
+///
+/// The picture is the point. An earlier version of this grid drew a small
+/// procedural diagram per effect, and every effect in a family drew the same
+/// diagram — a screenful of near-identical scribbles that the operator had
+/// to decode before they could choose anything. A picture of the effect
+/// needs no decoding: the tile says what it is.
+///
+/// The name sits below the image rather than over it. A caption on a scrim
+/// has to fight the picture for the same square, and the effect's picture is
+/// the more useful of the two.
 struct GVEffectTileFace: View {
     static let cornerRadius: CGFloat = 14
     let model: GVEffectTileModel
 
     var body: some View {
-        Color.clear
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay { preview }
-            .overlay(alignment: .bottom) { caption }
-            .overlay(alignment: .top) { badges }
-            .background(Color.white.opacity(0.045))
-            .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-            .overlay { GVEffectActiveRing(active: model.active, cornerRadius: Self.cornerRadius) }
+        VStack(spacing: 6) {
+            preview
+                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(model.active ? 0.9 : 0.09),
+                                      lineWidth: model.active ? 1.5 : 0.75)
+                }
+                .overlay(alignment: .topTrailing) { badges }
+            Text(model.name)
+                .gvSystemFont(12.5, model.active ? .semibold : .medium, maxScale: 1.45)
+                .foregroundStyle(model.active ? GVTheme.bone : GVTheme.bone.opacity(0.8))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                // Two lines are reserved whether or not the name fills them,
+                // so a row of tiles stays a row of tiles however long the
+                // names are and however large the type is set.
+                .frame(maxWidth: .infinity, minHeight: 30, alignment: .top)
+        }
     }
 
     @ViewBuilder
@@ -41,115 +66,59 @@ struct GVEffectTileFace: View {
                 .clipped()
                 .transition(.opacity)
         } else if model.previewUnavailable {
+            // The effect cannot be previewed on this device. Say so quietly
+            // rather than showing an empty plate that reads as a broken tile.
             Image(systemName: "eye.slash")
-                .font(.title3.weight(.light))
-                .foregroundStyle(GVTheme.bone.opacity(0.5))
+                .font(.system(size: 17, weight: .light))
+                .foregroundStyle(GVTheme.bone.opacity(0.45))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.white.opacity(0.045))
                 .accessibilityHidden(true)
         } else {
             GVTileShimmer()
         }
     }
 
-    private var caption: some View {
-        Text(model.name.uppercased())
-            .font(GVTheme.mono(9, model.active ? .bold : .semibold))
-            .foregroundStyle(GVTheme.bone)
-            .lineLimit(2)
-            .minimumScaleFactor(0.75)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 6)
-            .padding(.top, 16)
-            .padding(.bottom, 5)
-            .background {
-                LinearGradient(colors: [.clear, .black.opacity(0.62), .black.opacity(0.86)],
-                               startPoint: .top, endPoint: .bottom)
-            }
-    }
-
-    /// At most two glyphs per corner, and active is not one of them: the
-    /// conic ring around the face is the sole "this is on" marker, so a tile
-    /// never carries a ring and a check for the same fact.
+    /// Only the state a creator can act on is drawn on the tile itself: that
+    /// it is on, that they starred it, and that it listens to the
+    /// microphone. Render cost is not drawn here — it is a property of the
+    /// composition rather than of the effect, and it is spelled out in the
+    /// tile's menu instead of adding a badge to every face.
     private var badges: some View {
-        HStack(spacing: 5) {
-            if model.cost > 1 {
-                GVCostPips(cost: model.cost)
-            }
+        HStack(spacing: 4) {
             if model.needsAudio {
-                badge("waveform")
+                badge("waveform", opacity: 0.85)
+            }
+            if model.favorite {
+                badge("star.fill", opacity: 0.85)
             }
             Spacer(minLength: 0)
-            if model.favorite {
-                badge("star.fill")
+            if model.active {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundStyle(Color.black)
+                    .frame(width: 17, height: 17)
+                    .background(GVTheme.bone, in: Circle())
+                    .accessibilityHidden(true)
             }
         }
-        .padding(4)
+        .padding(5)
         .accessibilityHidden(true)
     }
 
-    private func badge(_ symbol: String) -> some View {
+    private func badge(_ symbol: String, opacity: Double) -> some View {
         Image(systemName: symbol)
             .font(.system(size: 8.5, weight: .bold))
-            .foregroundStyle(GVTheme.bone)
-            .frame(width: 18, height: 18)
+            .foregroundStyle(GVTheme.bone.opacity(opacity))
+            .frame(width: 17, height: 17)
             .background(.black.opacity(0.55), in: Circle())
             .overlay(Circle().strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
     }
 }
 
-/// Render-cost tier as filled pips. Only drawn for the expensive tiers, so the
-/// common case carries no glyph at all.
-private struct GVCostPips: View {
-    let cost: Int
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0 ..< 3, id: \.self) { index in
-                Capsule()
-                    .fill(GVTheme.bone.opacity(index < cost ? 0.95 : 0.25))
-                    .frame(width: 3, height: 7)
-            }
-        }
-        .padding(.horizontal, 4)
-        .frame(height: 18)
-        .background(.black.opacity(0.55), in: Capsule())
-    }
-}
-
-/// A slow conic sweep around an active tile. It is the only animated element
-/// on an idle grid, and only tiles that are actually rendering carry it.
-private struct GVEffectActiveRing: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
-    let active: Bool
-    let cornerRadius: CGFloat
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if active {
-            TimelineView(GVAmbientClock.ambient(hertz: 30, scenePhase: scenePhase, isActive: !reduceMotion)) { clock in
-                let turn = reduceMotion ? 0 : clock.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 4) / 4
-                shape
-                    .strokeBorder(
-                        AngularGradient(
-                            colors: [GVTheme.bone.opacity(0.95), GVTheme.bone.opacity(0.18),
-                                     GVTheme.bone.opacity(0.55), GVTheme.bone.opacity(0.18),
-                                     GVTheme.bone.opacity(0.95)],
-                            center: .center,
-                            angle: .degrees(turn * 360)
-                        ),
-                        lineWidth: 1.5
-                    )
-                    .shadow(color: .white.opacity(0.28), radius: 8)
-            }
-            .transition(.opacity)
-        } else {
-            shape.strokeBorder(.white.opacity(0.07), lineWidth: 0.75)
-        }
-    }
-}
-
-/// Loading placeholder. A diagonal sheen passes over the empty plate while the
-/// thumbnail store renders, so "not ready" reads as progress, not as broken.
+/// Loading placeholder. A diagonal sheen passes over the empty plate while
+/// the thumbnail store renders, so "not ready" reads as progress, not as
+/// broken.
 private struct GVTileShimmer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sweep = false
@@ -162,6 +131,7 @@ private struct GVTileShimmer: View {
                 .offset(x: sweep ? geometry.size.width : -geometry.size.width * 1.6)
         }
         .clipped()
+        .background(Color.white.opacity(0.045))
         .accessibilityHidden(true)
         .onAppear {
             guard !reduceMotion else { return }
@@ -176,13 +146,14 @@ private struct GVTileShimmer: View {
 /// tile's footprint never changes — neighbours do not shuffle while a finger
 /// is down.
 struct GVEffectTileStyle: ButtonStyle {
+    static let cornerRadius: CGFloat = 14
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed
         configuration.label
             .overlay {
-                RoundedRectangle(cornerRadius: GVEffectTileFace.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: GVEffectTileStyle.cornerRadius, style: .continuous)
                     .fill(.white.opacity(pressed ? 0.10 : 0))
                     .blendMode(.plusLighter)
                     .allowsHitTesting(false)

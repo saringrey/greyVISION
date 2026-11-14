@@ -113,17 +113,18 @@ enum WorkspaceDockCategory: String, CaseIterable, Identifiable {
     }
 }
 
-/// The effect browser: a glass dashboard over the live picture.
+/// The effect browser: a picture catalogue over the live picture.
 ///
-/// It replaced a full-screen sheet that was one long vertical grid under a
-/// horizontal shelf rail — 190 effects at two big tiles a row meant most of
-/// a session in the browser was spent scrolling. The dashboard puts every
-/// shelf on screen at once as a keypad, and pages the chosen shelf sideways
-/// in grids solved to fit the panel, so nothing is ever half off an edge.
+/// Everything the operator chooses is a photograph of what the effect does,
+/// rendered by the production shader over a frame tapped from the live
+/// camera when the browser opened. Nothing has to be guessed from a name or
+/// decoded from an abstract diagram.
 ///
-/// The live camera stays visible through the glass, and every preview is the
-/// effect rendered over a frame tapped from that camera when the browser
-/// opened (`GVEffectThumbnailStore`), not over a stock test card.
+/// The chrome is kept to what a choice needs: a title, one line of state, a
+/// search field, the two ways a tap can behave, and a single shelf of
+/// categories. The details — render cost, what an effect does, its variants,
+/// whether it wants the microphone — are one touch away on the effect itself
+/// rather than printed across every tile.
 struct GVEffectBrowser: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -133,7 +134,6 @@ struct GVEffectBrowser: View {
     @EnvironmentObject private var decay: GVDecayEngine
     @EnvironmentObject private var toasts: GVToastBox
     @StateObject private var thumbnails = GVEffectThumbnailStore.shared
-
     @ObservedObject var editor: EffectEditingSession
     /// The category the browser opens on. The dock passes whatever shelf the
     /// operator tapped, so the rail and the browser always agree.
@@ -143,7 +143,6 @@ struct GVEffectBrowser: View {
     @State private var query = ""
     @FocusState private var searchFocused: Bool
 
-    @ScaledMetric(relativeTo: .caption) private var tileMinimum: CGFloat = 78
     private static let spacing: CGFloat = 8
     private static let panelRadius: CGFloat = 24
     private let surface = Color.white.opacity(0.045)
@@ -162,7 +161,7 @@ struct GVEffectBrowser: View {
                     HStack(alignment: .top, spacing: 10) {
                         VStack(spacing: 10) {
                             header
-                            controlRow
+                            searchRow
                             selectorPanel
                             Spacer(minLength: 0)
                         }
@@ -172,9 +171,8 @@ struct GVEffectBrowser: View {
                 } else {
                     VStack(spacing: 10) {
                         header
-                        controlRow
-                        selectorPanel
-                        contentPanel
+                        searchRow
+                        unifiedPanel
                     }
                 }
             }
@@ -204,112 +202,151 @@ struct GVEffectBrowser: View {
 
     // MARK: - Chrome
 
+    /// A title and one line of state. The instrument used to print the open
+    /// category next to the title as well as marking it on the chip, so the
+    /// same fact appeared twice in the first row the eye met.
     private var header: some View {
-        HStack(spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("EFFECTS")
-                    .font(GVTheme.mono(19, .semibold))
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Effects")
+                    .gvSystemFont(24, .semibold, maxScale: 1.15)
                     .foregroundStyle(GVTheme.bone)
-                Text("// \(trimmedQuery.isEmpty ? category.displayLabel.uppercased() : "SEARCH")")
-                    .font(GVTheme.mono(12, .medium))
-                    .foregroundStyle(GVTheme.bone.opacity(0.5))
-                    .lineLimit(1)
-                    .contentTransition(.opacity)
+                statusLine
             }
-            .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: category)
             Spacer(minLength: 6)
             captureModes
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(GVTheme.bone)
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.08), in: Circle())
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))
-                    .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(GVPressStyle())
-            .accessibilityLabel("Close effect browser")
-            .accessibilityIdentifier("workspace.browser.close")
+            closeButton
         }
     }
 
-    /// Search, the stacking switch and the live readouts on one row: the
-    /// dashboard's instrument strip.
-    private var controlRow: some View {
-        HStack(spacing: 6) {
-            searchField
-            addModeChip
-            readouts
-        }
-    }
-
-    /// Stacking is the one browser action that has no tile to hang off, so it
-    /// lives in the header. Off, a tap is exclusive — the same rule the rail
-    /// used, stated rather than implied.
-    private var addModeChip: some View {
-        Button {
-            editor.setStackArmed(!editor.isStackArmed)
-            decay.fire(.effectActivated)
-        } label: {
-            Image(systemName: editor.isStackArmed ? "square.stack.3d.up.fill" : "square.stack.3d.up")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(editor.isStackArmed ? Color.black : GVTheme.bone.opacity(0.8))
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 40, height: 38)
-                .background {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(editor.isStackArmed ? GVTheme.bone : Color.white.opacity(0.06))
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(GVPressStyle())
-        .frame(minHeight: GVMetrics.touchTarget)
-        .accessibilityLabel(editor.isStackArmed ? "Stacking on, taps add effects" : "Add mode off, taps replace the effect")
-        .accessibilityIdentifier("workspace.browser.add")
-    }
-
-    /// What is on and what it costs, at a glance: active count over a load
-    /// meter summed from the active effects' render-cost tiers, and whether
-    /// the microphone is feeding the audio-reactive effects.
-    private var readouts: some View {
+    /// What is on, what it costs, and whether the microphone is feeding the
+    /// audio-reactive effects — as a sentence rather than an instrument
+    /// cluster. The numbers are still here; they are just no longer shouting.
+    private var statusLine: some View {
         let active = editor.activeEffects
         let load = active.reduce(0) { $0 + $1.gpuCost.rawValue }
         let micLive = audioRuntime.state == .running
         return HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("\(active.count) ON")
-                    .font(GVTheme.mono(10, .semibold))
-                    .foregroundStyle(active.isEmpty ? GVTheme.bone.opacity(0.5) : GVTheme.bone)
-                    .monospacedDigit()
+            Text("\(statusCount.count) \(statusCount.noun)")
+                .gvSystemFont(12, .medium)
+                .foregroundStyle(GVTheme.bone.opacity(0.6))
+                .contentTransition(.numericText())
+            // Nothing is on, so there is nothing to report but the microphone.
+            // The rest arrives the moment an effect is applied.
+            if !active.isEmpty {
+                separator
+                Text("\(active.count) on")
+                    .font(GVTheme.mono(11, .semibold))
+                    .foregroundStyle(GVTheme.bone.opacity(0.92))
                     .contentTransition(.numericText())
-                HStack(spacing: 4) {
-                    Text("LOAD")
-                        .font(GVTheme.mono(8.5, .medium))
-                        .foregroundStyle(GVTheme.bone.opacity(0.45))
-                    HStack(spacing: 2) {
-                        ForEach(0 ..< 6, id: \.self) { index in
-                            Capsule()
-                                .fill(index < load ? (load > 4 ? GVTheme.record : GVTheme.bone) : GVTheme.bone.opacity(0.18))
-                                .frame(width: 3, height: 7)
-                        }
-                    }
-                }
+                loadMeter(load: load)
             }
+            separator
             Image(systemName: micLive ? "waveform" : "mic.slash")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(micLive ? Color.mint : GVTheme.bone.opacity(0.4))
+                .foregroundStyle(micLive ? Color.mint : GVTheme.bone.opacity(0.35))
                 .symbolEffect(.variableColor.iterative, isActive: micLive && !reduceMotion)
         }
-        .padding(.horizontal, 10)
-        .frame(height: 38)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(active.count) effects on, render load \(load), microphone \(micLive ? "live" : "off")")
+        .accessibilityLabel("\(statusCount.count) \(statusCount.noun) in view, \(active.count) effects on, "
+                            + "render load \(load), microphone \(micLive ? "live" : "off")")
         .accessibilityIdentifier("workspace.browser.readouts")
+    }
+
+    /// A hairline dot between the facts in the status line.
+    private var separator: some View {
+        Circle()
+            .fill(GVTheme.bone.opacity(0.28))
+            .frame(width: 2.5, height: 2.5)
+            .accessibilityHidden(true)
+    }
+
+    /// The render-cost meter: six segments, one per point of load, lit from
+    /// the left. It is the one part of the readout that cannot be said in
+    /// words without losing its meaning.
+    private func loadMeter(load: Int) -> some View {
+        HStack(spacing: 3) {
+            Text("Load")
+                .font(GVTheme.mono(9, .medium))
+                .foregroundStyle(GVTheme.bone.opacity(0.4))
+            HStack(spacing: 2) {
+                ForEach(0 ..< 6, id: \.self) { index in
+                    Capsule()
+                        .fill(index < load ? (load > 4 ? GVTheme.record : GVTheme.bone.opacity(0.85))
+                                           : GVTheme.bone.opacity(0.16))
+                        .frame(width: 3, height: 7)
+                }
+            }
+        }
+    }
+
+    /// Search, and the one browser action that has no tile to hang off: what
+    /// a tap does to the composition.
+    private var searchRow: some View {
+        HStack(spacing: 8) {
+            searchField
+            addModeControl
+        }
+    }
+
+    /// Replace or Add, said in words.
+    ///
+    /// This used to be an unlabelled stack icon that silently changed the
+    /// meaning of every tap in the grid. A control that changes what the
+    /// whole screen does has to say so, and saying so takes one word.
+    private var addModeControl: some View {
+        HStack(spacing: 2) {
+            modeSegment(
+                "Replace",
+                selected: !editor.isStackArmed,
+                hint: "Choosing an effect replaces the ones you have on",
+                identifier: "workspace.browser.replace"
+            ) {
+                editor.setStackArmed(false)
+                decay.fire(.effectActivated)
+            }
+            modeSegment(
+                "Add",
+                selected: editor.isStackArmed,
+                hint: "Choosing an effect adds it to your stack",
+                identifier: "workspace.browser.add"
+            ) {
+                editor.setStackArmed(true)
+                decay.fire(.effectActivated)
+            }
+        }
+        .padding(3)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75)
+        )
+        .fixedSize()
+        .frame(height: 44)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tap behaviour")
+    }
+
+    private func modeSegment(_ label: String, selected: Bool, hint: String,
+                             identifier: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? Color.black : GVTheme.bone.opacity(0.72))
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    if selected {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(GVTheme.bone)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle())
+        .accessibilityLabel(label)
+        .accessibilityValue(selected ? "selected" : "")
+        .accessibilityHint(hint)
+        .accessibilityIdentifier(identifier)
     }
 
     private var searchField: some View {
@@ -318,7 +355,7 @@ struct GVEffectBrowser: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(GVTheme.bone.opacity(0.65))
             TextField(text: $query) {
-                Text("Search").foregroundStyle(GVTheme.bone.opacity(0.5))
+                Text("Search effects").foregroundStyle(GVTheme.bone.opacity(0.5))
             }
             .textFieldStyle(.plain)
             .textInputAutocapitalization(.never)
@@ -326,9 +363,10 @@ struct GVEffectBrowser: View {
             .submitLabel(.search)
             .focused($searchFocused)
             .onSubmit { searchFocused = false }
-            .font(GVTheme.mono(13, .regular))
+            .gvSystemFont(14)
             .foregroundStyle(GVTheme.bone)
             .tint(.white)
+            .accessibilityLabel("Search all effects")
             .accessibilityIdentifier("workspace.search.field")
             if !query.isEmpty {
                 Button {
@@ -356,19 +394,27 @@ struct GVEffectBrowser: View {
     }
 
     private var selectorPanel: some View {
-        GVEffectDashboardSelector(
-            selected: category,
-            readouts: shelfReadouts,
-            preview: { family in EffectCatalog.hero(of: family.rawValue).flatMap(thumbnails.image(for:)) },
-            onAppearFamily: { family in
-                if let hero = EffectCatalog.hero(of: family.rawValue) { thumbnails.request(hero) }
-            },
-            onSelect: changeCategory
-        )
+        selector
             .padding(10)
             .gvLiquidGlass(radius: Self.panelRadius)
     }
 
+    private var selector: some View {
+        GVEffectDashboardSelector(
+            selected: category,
+            readouts: shelfReadouts,
+            preview: { item in EffectCatalog.hero(of: item.rawValue).flatMap(thumbnails.image(for:)) },
+            onAppearCategory: { item in
+                if let hero = EffectCatalog.hero(of: item.rawValue) { thumbnails.request(hero) }
+            },
+            onSelect: changeCategory
+        )
+    }
+
+    /// The capture sources: AR objects, tracking and LiDAR. They are not
+    /// effects, so they do not belong in the effect list — but they are the
+    /// only way to reach them, so they sit in the browser's own chrome and
+    /// say which one is running.
     private var captureModes: some View {
         Menu {
             Button {
@@ -376,7 +422,7 @@ struct GVEffectBrowser: View {
                     toasts.show(appModel.objects.capability.reason)
                     return
                 }
-                                editor.disableAll()
+                editor.disableAll()
                 appModel.deactivateDepthMode()
                 appModel.activateObjectMode()
                 dismiss()
@@ -393,14 +439,62 @@ struct GVEffectBrowser: View {
                 .foregroundStyle(GVTheme.bone)
                 .frame(width: 36, height: 36)
                 .background(Color.white.opacity(0.08), in: Circle())
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))
                 .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("Capture modes")
+        .accessibilityValue(currentCaptureMode)
         .accessibilityIdentifier("workspace.capture.modes")
     }
 
+    /// Which source the instrument is pointed at, in words.
+    private var currentCaptureMode: String {
+        switch appModel.sourceMode {
+        case .lidar: "LiDAR"
+        case .objects: "AR Objects"
+        case .camera: appModel.blobs.isEnabled ? "Tracking" : "Camera"
+        }
+    }
+
+    private var closeButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(GVTheme.bone)
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(0.08), in: Circle())
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))
+                .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle())
+        .accessibilityLabel("Close effect browser")
+        .accessibilityIdentifier("workspace.browser.close")
+    }
+
     // MARK: - Content
+
+    /// The portrait layout keeps the shelf of categories and the effects in
+    /// one surface, with the categories pinned above the scrolling list. The
+    /// navigation therefore stays exactly where it was left, instead of
+    /// scrolling away behind the catalogue.
+    private var unifiedPanel: some View {
+        VStack(spacing: 0) {
+            selector
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+                .padding(.bottom, 9)
+            GVRule().padding(.horizontal, 10)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.top, 2)
+        }
+        .padding(.bottom, 10)
+        .gvLiquidGlass(radius: Self.panelRadius)
+    }
 
     private var contentPanel: some View {
         content
@@ -417,95 +511,93 @@ struct GVEffectBrowser: View {
             GVTrackingPane(runtime: appModel.blobs, tileMinimum: 100, spacing: Self.spacing) { preset in
                 appModel.deactivateDepthMode()
                 appModel.deactivateObjectMode()
-                                editor.focus(nil)
+                editor.focus(nil)
                 appModel.blobs.apply(preset)
                 GVInteractionHaptics.select()
                 dismiss()
             }
-        } else if visibleEffects.isEmpty {
+        } else if visibleSections.allSatisfy(\.items.isEmpty) {
             emptyState
         } else {
-            GVEffectPager(items: visibleEffects, resetKey: trimmedQuery.isEmpty ? category.rawValue : "search:\(trimmedQuery)",
-                          minimumTile: tileMinimum, spacing: Self.spacing)
-            { effect, index in
-                tile(effect)
-                    .gvTileEntrance(index: index, reduceMotion: reduceMotion)
-            }
+            GVEffectIndexList(
+                sections: visibleSections.filter { !$0.items.isEmpty },
+                thumbnails: thumbnails,
+                audioRunning: audioRuntime.state == .running,
+                onSelect: select,
+                onToggleFavorite: { preferences.toggleFavorite($0.rawValue) },
+                onOpenMicrophoneSettings: openMicrophoneSettings
+            )
             .accessibilityIdentifier("workspace.effects.\(category.rawValue)")
         }
     }
 
+    /// An empty shelf is a place to learn the interface, not a dead end.
     private var emptyState: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "sparkles")
-                .font(.title2.weight(.light))
-                .foregroundStyle(GVTheme.bone.opacity(0.65))
+        VStack(spacing: 10) {
+            Image(systemName: emptySymbol)
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(GVTheme.bone.opacity(0.55))
+            Text(emptyTitle)
+                .gvSystemFont(15, .semibold)
+                .foregroundStyle(GVTheme.bone.opacity(0.85))
             Text(emptyMessage)
-                .font(.subheadline)
-                .foregroundStyle(GVTheme.bone.opacity(0.65))
+                .gvSystemFont(13)
+                .foregroundStyle(GVTheme.bone.opacity(0.6))
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 32)
+        .accessibilityIdentifier("workspace.effects.empty")
+    }
+
+    private var emptySymbol: String {
+        if !trimmedQuery.isEmpty { return "magnifyingglass" }
+        switch category {
+        case .favorites: return "star"
+        case .recents: return "clock.arrow.circlepath"
+        case .active: return "power"
+        default: return "sparkles"
+        }
+    }
+
+    private var emptyTitle: String {
+        if !trimmedQuery.isEmpty { return "No match" }
+        switch category {
+        case .favorites: return "No favorites yet"
+        case .recents: return "Nothing here yet"
+        case .active: return "Nothing on yet"
+        default: return "Nothing in this shelf"
+        }
     }
 
     private var emptyMessage: String {
         if !trimmedQuery.isEmpty {
-            return "No effect matches “\(trimmedQuery)”"
+            return "No effect matches “\(trimmedQuery)”. Try a family name — Glitch, Analog, Warp."
         }
         switch category {
         case .favorites:
-            return "Keep your favorites here. Touch and hold an effect to save it."
+            return "Touch and hold an effect to save it here."
         case .recents:
-            return "No recent effects · Your picks will appear here"
+            return "The effects you use will collect here."
         case .active:
-            return "Nothing active · Enable an effect to see it here"
+            return "Tap an effect to turn it on."
         default:
-            return "Nothing in this shelf"
+            return "Nothing in this shelf."
         }
     }
 
-    private func tile(_ effect: WorkspaceAdjustableEffect) -> some View {
+    private func indexItem(_ effect: WorkspaceAdjustableEffect) -> GVEffectIndexItem {
         let active = EffectCatalog.variants(for: effect).contains { editor.isEnabled($0) }
-        let model = GVEffectTileModel(
+        return GVEffectIndexItem(
+            effect: effect,
             name: displayName(effect),
-            image: thumbnails.image(for: effect),
-            previewUnavailable: thumbnails.isUnavailable(effect),
             active: active,
             favorite: preferences.isFavorite(effect.rawValue),
             cost: effect.gpuCost.rawValue,
-            needsAudio: effect.requiresAudioAnalysis
+            needsAudio: effect.requiresAudioAnalysis,
+            accessibilityValue: accessibilityState(for: effect, active: active)
         )
-        return Button {
-            select(effect)
-        } label: {
-            GVEffectTileFace(model: model)
-                .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: model)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(GVEffectTileStyle())
-        .accessibilityLabel(effect.label)
-        .accessibilityHint(effect.detail)
-        .accessibilityValue(accessibilityState(for: effect, active: active))
-        .accessibilityIdentifier("workspace.effect.\(effect.rawValue)")
-        .accessibilityAction(named: "Open Microphone Settings") { openMicrophoneSettings() }
-        .onAppear { thumbnails.request(effect) }
-        .contextMenu {
-            Button {
-                preferences.toggleFavorite(effect.rawValue)
-            } label: {
-                Label(preferences.isFavorite(effect.rawValue) ? "Remove favorite" : "Save favorite", systemImage: "star")
-            }
-            Button("Adjust effect") {
-                select(effect)
-                                dismiss()
-            }
-            Text(effect.detail.capitalized)
-            Text("Render cost \(effect.gpuCost.rawValue) of 3")
-            if effect.requiresAudioAnalysis, audioRuntime.state != .running {
-                Button("Open Microphone Settings", action: openMicrophoneSettings)
-            }
-        }
     }
 
     // MARK: - Depth
@@ -518,18 +610,22 @@ struct GVEffectBrowser: View {
             VStack(alignment: .leading, spacing: Self.spacing) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("LiDAR")
-                        .font(.subheadline.weight(.medium))
+                        .gvSystemFont(15, .semibold)
                         .foregroundStyle(GVTheme.bone)
                     Spacer()
                     Text("\(DepthEffectMode.allCases.count)")
-                        .font(.caption)
-                        .foregroundStyle(GVTheme.bone.opacity(0.60))
+                        .font(GVTheme.mono(11, .medium))
+                        .foregroundStyle(GVTheme.bone.opacity(0.45))
                 }
+                .padding(.horizontal, 12)
+                .padding(.top, 14)
+                .padding(.bottom, 8)
                 if !appModel.depth.capability.isSupported {
                     Text(appModel.depth.capability.reason)
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundStyle(GVTheme.bone.opacity(0.72))
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 12)
                 }
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 130, maximum: 260), spacing: Self.spacing)],
@@ -539,6 +635,8 @@ struct GVEffectBrowser: View {
                         depthTile(mode)
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
             }
         }
         .accessibilityIdentifier("workspace.depth.modes")
@@ -554,7 +652,7 @@ struct GVEffectBrowser: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Text(mode.label.capitalized)
-                            .font(.caption.weight(active ? .medium : .regular))
+                            .gvSystemFont(13, active ? .semibold : .regular)
                             .foregroundStyle(GVTheme.bone)
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
@@ -565,7 +663,7 @@ struct GVEffectBrowser: View {
                         }
                     }
                     Text(mode.detail)
-                        .font(.system(.caption2, design: .monospaced))
+                        .gvSystemFont(11)
                         .foregroundStyle(GVTheme.bone.opacity(0.62))
                         .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
@@ -606,7 +704,7 @@ struct GVEffectBrowser: View {
             toasts.show("\(mode.label): \(appModel.depth.capability.reason)")
             return
         }
-                editor.disableAll()
+        editor.disableAll()
         appModel.deactivateObjectMode()
         appModel.activateDepthEffect(mode)
         GVInteractionHaptics.select()
@@ -633,12 +731,11 @@ struct GVEffectBrowser: View {
             return
         }
         searchFocused = false
-        withAnimation(GVMotion.resolved(.spring(response: 0.38, dampingFraction: 0.82), reduceMotion: reduceMotion)) {
+        withAnimation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion)) {
             category = item
             query = ""
         }
     }
-
 
     // MARK: - Data
 
@@ -658,7 +755,7 @@ struct GVEffectBrowser: View {
             .recents: .init(count: preferences.recentEffects.count, live: false),
             .blobs: .init(count: GVTrackingPreset.all.count, live: appModel.blobs.isEnabled),
             .objects: .init(count: appModel.objects.objects.count, live: appModel.sourceMode == .objects),
-            .spatial: .init(count: DepthEffectMode.allCases.count, live: appModel.sourceMode == .lidar && appModel.depth.isActive),
+            .spatial: .init(count: DepthEffectMode.allCases.count, live: appModel.sourceMode == .lidar && appModel.depth.isActive)
         ]
         for shelf in WorkspaceDockCategory.shelfCategories {
             let effects = EffectCatalog.effects(in: shelf.rawValue)
@@ -671,26 +768,58 @@ struct GVEffectBrowser: View {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// What the grid shows. A search spans every shelf — the whole point of
+    /// What is on screen right now, in the words that fit it. The depth
+    /// modes and the tracking presets are not effects, and calling them
+    /// "0 effects" was a small lie the status line told on every visit.
+    private var statusCount: (count: Int, noun: String) {
+        if trimmedQuery.isEmpty {
+            switch category {
+            case .spatial: return (DepthEffectMode.allCases.count, "depth modes")
+            case .blobs: return (GVTrackingPreset.all.count, "presets")
+            default: break
+            }
+        }
+        let count = visibleSections.reduce(0) { $0 + $1.items.count }
+        return (count, count == 1 ? "effect" : "effects")
+    }
+
+    /// What the index shows. A search spans every shelf — the whole point of
     /// typing is not having to know which family an effect was filed under.
-    private var visibleEffects: [WorkspaceAdjustableEffect] {
+    private var visibleSections: [GVEffectIndexSection] {
         if !trimmedQuery.isEmpty {
-            return EffectCatalog.search(trimmedQuery)
+            return [makeSection(id: "search", title: "Results", effects: EffectCatalog.search(trimmedQuery))]
         }
         switch category {
         case .spatial, .blobs:
             return []
         case .all:
-            return EffectCatalog.canonicalEffects(EffectCatalog.shelves.flatMap(\.effects))
+            return EffectCatalog.shelves.map { shelf in
+                makeSection(id: shelf.id, title: displayLabel(for: shelf.id), effects: shelf.effects)
+            }
         case .active:
-            return editor.activeEffects
+            return [makeSection(id: "active", title: "On now", effects: editor.activeEffects)]
         case .favorites:
-            return WorkspaceAdjustableEffect.allCases.filter { preferences.isFavorite($0.rawValue) }
+            let effects = WorkspaceAdjustableEffect.allCases.filter { preferences.isFavorite($0.rawValue) }
+            return [makeSection(id: "favorites", title: "Favorites", effects: effects)]
         case .recents:
-            return preferences.recentEffects.compactMap(WorkspaceAdjustableEffect.resolving)
+            let effects = preferences.recentEffects.compactMap(WorkspaceAdjustableEffect.resolving)
+            return [makeSection(id: "recents", title: "Recent", effects: effects)]
         default:
-            return EffectCatalog.effects(in: category.rawValue)
+            return [makeSection(id: category.rawValue, title: category.displayLabel,
+                                effects: EffectCatalog.effects(in: category.rawValue))]
         }
+    }
+
+    /// A shelf's name in the same voice as its chip. The catalogue stores
+    /// them in capitals for the terminal; the browser speaks in title case.
+    private func displayLabel(for shelfID: String) -> String {
+        WorkspaceDockCategory(rawValue: shelfID)?.displayLabel
+            ?? EffectCatalog.shelves.first { $0.id == shelfID }?.label
+            ?? shelfID
+    }
+
+    private func makeSection(id: String, title: String, effects: [WorkspaceAdjustableEffect]) -> GVEffectIndexSection {
+        GVEffectIndexSection(id: id, title: title, items: effects.map(indexItem))
     }
 
     private func displayName(_ effect: WorkspaceAdjustableEffect) -> String {
@@ -705,9 +834,9 @@ struct GVEffectBrowser: View {
 
     // MARK: - Selection
 
-    /// Exclusive by default, additive while the header's Add chip is on —
-    /// exactly the contract `EffectEditingSession.selectFamily` already keeps
-    /// for the rail, so nothing about stacking policy moves here.
+    /// Exclusive by default, additive while Add is on — exactly the contract
+    /// `EffectEditingSession.selectFamily` already keeps for the rail, so
+    /// nothing about stacking policy moves here.
     ///
     /// A tap applies the look and closes the browser: the menu covers most
     /// of the picture, so auditioning behind it showed too little to judge.
