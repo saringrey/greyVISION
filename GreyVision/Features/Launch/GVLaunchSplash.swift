@@ -54,7 +54,7 @@ struct GVLaunchSplash: View {
                             .frame(width: proxy.size.width, height: proxy.size.height * 0.36)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GVPressStyle())
                     .accessibilityLabel("grey vision")
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityIdentifier("boot.social")
@@ -90,14 +90,29 @@ struct GVLaunchSplash: View {
             guard !appModel.isUITesting else { return }
             _ = await GVLaunchPermissions.requestAll()
         }
+        // The glitch bed loops for as long as the splash is on screen, pauses
+        // with the app and fades out the moment the camera opens.
+        .onAppear { startSplashSound() }
+        .onDisappear { GVSoundEngine.shared.stopMenuMusic(fadeDuration: 0.35) }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { isOpening = false }
+            if phase == .active {
+                startSplashSound()
+            } else {
+                GVSoundEngine.shared.stopMenuMusic(fadeDuration: 0.2)
+            }
         }
+    }
+
+    private func startSplashSound() {
+        guard !appModel.isUITesting, scenePhase == .active else { return }
+        GVSoundEngine.shared.startMenuMusic()
     }
 
     private func openCamera() {
         guard !isOpening else { return }
         isOpening = true
+        GVSoundEngine.shared.stopMenuMusic(fadeDuration: 0.35)
         GVInteractionHaptics.select()
         appModel.startEngine()
     }
@@ -170,6 +185,6 @@ private struct GVBracketFace<Label: View>: View {
                 }
             }
             .opacity(isEnabled ? 1 : 0.45)
-            .animation(.spring(response: 0.16, dampingFraction: 0.7), value: pressed)
+            .animation(reduceMotion ? nil : GVMotion.softPress(pressed), value: pressed)
     }
 }

@@ -15,7 +15,6 @@ struct GVEffectDock: View {
     @EnvironmentObject private var decay: GVDecayEngine
     @EnvironmentObject private var toasts: GVToastBox
     @StateObject private var thumbnails = GVEffectThumbnailStore.shared
-    @ObservedObject private var ambient = GVAmbientLight.shared
     @ObservedObject var editor: EffectEditingSession
     /// Opens the full-screen catalogue (search and every shelf).
     let onOpenCatalogue: () -> Void
@@ -133,10 +132,10 @@ struct GVEffectDock: View {
             .background {
                 let tile = RoundedRectangle(cornerRadius: 5, style: .continuous)
                 if isOpen {
-                    tile.fill(ambient.hue)
+                    tile.fill(GVTheme.accent)
                 } else {
                     tile.fill(Color.white.opacity(0.05))
-                        .overlay(tile.fill(ambient.hue.opacity(0.10)))
+                        .overlay(tile.fill(GVTheme.accent.opacity(0.10)))
                 }
             }
             .overlay(alignment: .topTrailing) {
@@ -168,7 +167,7 @@ struct GVEffectDock: View {
             .frame(maxWidth: .infinity, minHeight: 58)
             .background {
                 let tile = RoundedRectangle(cornerRadius: 5, style: .continuous)
-                tile.fill(Color.white.opacity(0.05)).overlay(tile.fill(ambient.hue.opacity(0.10)))
+                tile.fill(Color.white.opacity(0.05)).overlay(tile.fill(GVTheme.accent.opacity(0.10)))
             }
             .contentShape(Rectangle())
         }
@@ -216,7 +215,7 @@ struct GVEffectDock: View {
             .frame(height: 30)
             .background {
                 let shape = Capsule(style: .continuous)
-                if isOpen { shape.fill(GVTheme.bone) } else { shape.fill(.ultraThinMaterial).overlay(shape.fill(Color.black.opacity(0.35))).overlay(shape.fill(ambient.hue.opacity(0.14))) }
+                if isOpen { shape.fill(GVTheme.bone) } else { shape.fill(.ultraThinMaterial).overlay(shape.fill(Color.black.opacity(0.35))).overlay(shape.fill(GVTheme.accent.opacity(0.14))) }
             }
             .contentShape(Capsule(style: .continuous))
         }
@@ -323,7 +322,7 @@ struct GVEffectDock: View {
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .strokeBorder(active ? ambient.hue : Color.white.opacity(0.08), lineWidth: active ? 2 : 0.75)
+                        .strokeBorder(active ? GVTheme.accent : Color.white.opacity(0.08), lineWidth: active ? 2 : 0.75)
                 }
                 .overlay {
                     // A live effect is a tracked object, as on the splash.

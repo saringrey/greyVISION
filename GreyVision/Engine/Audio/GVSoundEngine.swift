@@ -297,7 +297,7 @@ final class GVSoundEngine {
 
     // MARK: - Menu music
 
-    /// Starts the looping menu bed.
+    /// Starts the looping splash bed (`gv_splash_loop.mp3`).
     ///
     /// Uses `AVAudioPlayer` rather than the cue engine: it decodes MP3, loops
     /// natively and carries its own volume, none of which is worth rebuilding
@@ -310,7 +310,7 @@ final class GVSoundEngine {
             if !music.isPlaying { music.play() }
             return
         }
-        guard let url = Bundle.main.url(forResource: "greyvision", withExtension: "mp3") else {
+        guard let url = Bundle.main.url(forResource: "gv_splash_loop", withExtension: "mp3") else {
             GVLog.audio.error("menu music missing from bundle")
             return
         }

@@ -1261,12 +1261,12 @@ private extension WorkspaceView {
             configuration.label
                 .background {
                     if active {
-                        shape.fill(GVTheme.bone).shadow(color: .white.opacity(0.3), radius: 8)
+                        shape.fill(GVTheme.accent).shadow(color: GVTheme.accent.opacity(0.45), radius: 8)
                     }
                 }
                 .gvChromePlate(shape, bracketInset: configuration.isPressed || active ? 3 : 0)
-                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
-                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? GVMotion.softPressScale : 1))
+                .animation(GVMotion.resolved(GVMotion.softPress(configuration.isPressed), reduceMotion: reduceMotion), value: configuration.isPressed)
         }
     }
 
@@ -1451,9 +1451,9 @@ private extension WorkspaceView {
                             .strokeBorder(Color.white.opacity(0.055), lineWidth: GVMetrics.hairline)
                     }
                 }
-                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? GVMotion.softPressScale : 1))
                 .brightness(configuration.isPressed ? 0.02 : 0)
-                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+                .animation(GVMotion.resolved(GVMotion.softPress(configuration.isPressed), reduceMotion: reduceMotion), value: configuration.isPressed)
         }
     }
 

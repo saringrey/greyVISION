@@ -214,7 +214,7 @@ private struct GVGlassButtonStyle: ButtonStyle {
                         lineWidth: configuration.isPressed ? 1.3 : 1
                     )
             )
-            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? GVMotion.softPressScale : 1))
             .colorEffect(
                 ShaderLibrary.pressPulse(
                     .float(Float(Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600))),
@@ -223,7 +223,7 @@ private struct GVGlassButtonStyle: ButtonStyle {
                     .float3(pulseTint.x, pulseTint.y, pulseTint.z)
                 )
             )
-            .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+            .animation(GVMotion.resolved(GVMotion.softPress(configuration.isPressed), reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 }
 

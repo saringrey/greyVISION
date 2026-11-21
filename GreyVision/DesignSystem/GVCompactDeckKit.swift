@@ -343,8 +343,8 @@ private struct GVGlassChipStyle: ButtonStyle {
                     .strokeBorder(stroke, lineWidth: 0.75)
             }
             .frame(height: height)
-            .scaleEffect(reduceMotion ? 1 : (pressed ? 0.96 : 1))
-            .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: pressed)
+            .scaleEffect(reduceMotion ? 1 : (pressed ? GVMotion.softPressScale : 1))
+            .animation(GVMotion.resolved(GVMotion.softPress(pressed), reduceMotion: reduceMotion), value: pressed)
             .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: active)
             .opacity(dimmed && !active ? 0.55 : 1)
     }

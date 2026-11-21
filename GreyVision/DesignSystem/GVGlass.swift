@@ -13,10 +13,10 @@ enum GVMaterialRole {
 
     var tint: Color {
         switch self {
-        case .control: Color(red: 0.112, green: 0.131, blue: 0.180).opacity(0.42)
-        case .rail: Color(red: 0.103, green: 0.121, blue: 0.167).opacity(0.50)
-        case .deck: Color(red: 0.095, green: 0.112, blue: 0.155).opacity(0.58)
-        case .notice: Color(red: 0.120, green: 0.141, blue: 0.192).opacity(0.64)
+        case .control: Color(red: 0.020, green: 0.020, blue: 0.024).opacity(0.78)
+        case .rail: Color(red: 0.018, green: 0.018, blue: 0.022).opacity(0.82)
+        case .deck: Color(red: 0.016, green: 0.016, blue: 0.020).opacity(0.86)
+        case .notice: Color(red: 0.022, green: 0.022, blue: 0.026).opacity(0.90)
         }
     }
 
@@ -24,10 +24,10 @@ enum GVMaterialRole {
     /// blur while keeping a translucent fill.
     var opaqueFallback: Color {
         switch self {
-        case .control: Color(red: 0.125, green: 0.145, blue: 0.198)
-        case .rail: Color(red: 0.107, green: 0.126, blue: 0.174)
-        case .deck: Color(red: 0.099, green: 0.116, blue: 0.161)
-        case .notice: Color(red: 0.116, green: 0.136, blue: 0.186)
+        case .control: Color(red: 0.030, green: 0.030, blue: 0.034)
+        case .rail: Color(red: 0.024, green: 0.024, blue: 0.028)
+        case .deck: Color(red: 0.020, green: 0.020, blue: 0.024)
+        case .notice: Color(red: 0.028, green: 0.028, blue: 0.032)
         }
     }
 
@@ -50,10 +50,10 @@ enum GVMaterialRole {
 
     var nativeVeilOpacity: Double {
         switch self {
-        case .control: 0.10
-        case .rail: 0.12
-        case .deck: 0.15
-        case .notice: 0.18
+        case .control: 0.55
+        case .rail: 0.60
+        case .deck: 0.66
+        case .notice: 0.70
         }
     }
 }
@@ -189,12 +189,12 @@ private struct GVMaterialModifier: ViewModifier {
         }
     }
 
-    /// The camera's colour, washed through the glass from below so every
-    /// panel picks up what the lens is looking at.
+    /// A trace of the accent at the foot of each panel. Kept faint: the
+    /// plates are near-black and the accent lives on edges and selections.
     private var ambientWash: some View {
         shape.erased
             .fill(LinearGradient(
-                colors: [ambient.hue.opacity(0.10), ambient.hue.opacity(0.30)],
+                colors: [GVTheme.accent.opacity(0.0), GVTheme.accent.opacity(0.07)],
                 startPoint: .top, endPoint: .bottom
             ))
             .blendMode(.plusLighter)
@@ -211,7 +211,7 @@ private struct GVMaterialModifier: ViewModifier {
         let highContrastScale = contrast == .increased ? 1.5 : 1
         let ambientScale = 0.76 + ambient.level * 0.48
         let inactiveOpacity = min(role.inactiveBorderOpacity * ambientScale * highContrastScale, 0.22)
-        let color = state.accent?.opacity(state.borderOpacity) ?? ambient.hue.opacity(min(inactiveOpacity * 2.2, 0.42))
+        let color = state.accent?.opacity(state.borderOpacity) ?? GVTheme.accent.opacity(min(inactiveOpacity * 2.2, 0.42))
 
         return shape.erased
             .stroke(color, lineWidth: state.borderWidth)

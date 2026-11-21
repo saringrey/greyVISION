@@ -15,8 +15,8 @@ final class GVAmbientLight: ObservableObject {
     @Published private(set) var level: Double = 0.52
     /// The scene's dominant colour, lifted to a usable accent. The chrome
     /// takes its tint from this, so the interface wears what the camera sees.
-    @Published private(set) var hue: Color = GVTheme.violet
-    @Published private(set) var hueRGB = SIMD3<Double>(0.56, 0.66, 1.0)
+    @Published private(set) var hue: Color = GVAccent.shared.color
+    @Published private(set) var hueRGB = GVAccent.restingRGB
     private var hueTask: Task<Void, Never>?
 
     private weak var mailbox: CameraRenderStatsMailbox?
@@ -39,23 +39,31 @@ final class GVAmbientLight: ObservableObject {
                 self?.sampleCurrentFrame()
             }
         }
+        // The accent follows the camera. Sample several times a second and
+        // apply with a short ease, so a new colour in frame reaches the chrome
+        // in well under a quarter of a second instead of several seconds.
         hueTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                if let frame = await GVSourceFrameTap.shared.nextFrame(timeout: .seconds(1)),
+                // A 24×24 reduction of a 320px tap: well under a millisecond.
+                if let frame = await GVSourceFrameTap.shared.nextFrame(timeout: .milliseconds(400)),
                    let rgb = Self.dominantColor(of: frame) {
                     self?.publishHue(rgb)
                 }
-                try? await Task.sleep(for: .milliseconds(1200))
+                try? await Task.sleep(for: Self.hueInterval)
             }
         }
     }
 
+    /// How often the accent re-samples the live frame.
+    static let hueInterval = Duration.milliseconds(110)
+
     private func publishHue(_ rgb: SIMD3<Double>) {
         let delta = abs(rgb.x - hueRGB.x) + abs(rgb.y - hueRGB.y) + abs(rgb.z - hueRGB.z)
-        guard delta > 0.06 else { return }
-        withAnimation(.easeInOut(duration: 1.4)) {
+        guard delta > 0.025 else { return }
+        withAnimation(.easeOut(duration: 0.14)) {
             hueRGB = rgb
             hue = Color(red: rgb.x, green: rgb.y, blue: rgb.z)
+            GVAccent.shared.set(rgb)
         }
     }
 
@@ -82,7 +90,7 @@ final class GVAmbientLight: ObservableObject {
             sum += c * w
             weight += w
         }
-        guard weight > 4 else { return SIMD3(0.56, 0.66, 1.0) }
+        guard weight > 4 else { return GVAccent.restingRGB }
         let avg = sum / weight
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         UIColor(red: avg.x, green: avg.y, blue: avg.z, alpha: 1).getHue(&h, saturation: &s, brightness: &b, alpha: &a)

@@ -160,7 +160,7 @@ struct GVEffectTileStyle: ButtonStyle {
             .scaleEffect(reduceMotion ? 1 : (pressed ? 0.955 : 1))
             .shadow(color: .black.opacity(pressed ? 0.2 : 0.4), radius: pressed ? 3 : 8, y: pressed ? 1 : 4)
             .animation(
-                reduceMotion ? GVMotion.reduced : (pressed ? GVMotion.micro : .spring(response: 0.34, dampingFraction: 0.62)),
+                reduceMotion ? GVMotion.reduced : GVMotion.softPress(pressed),
                 value: pressed
             )
     }

@@ -140,7 +140,7 @@ struct GVEffectPager<Item: Identifiable, Tile: View>: View {
                                 .frame(height: Self.meterHeight)
                                 .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(GVPressStyle())
                         .accessibilityLabel("Page \(index + 1)")
                     }
                 }

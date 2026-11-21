@@ -52,6 +52,18 @@ enum GVMotion {
     /// 120ms — corruption arriving and clearing.
     static let decay: Animation = .easeOut(duration: 0.12)
 
+    /// Soft press. Sinks quickly under the finger, then eases back with a
+    /// gentle settle on release, so every tap feels cushioned rather than
+    /// clicked. Shared by every button style in the app.
+    static func softPress(_ pressed: Bool) -> Animation {
+        pressed
+            ? .easeOut(duration: 0.10)
+            : .spring(response: 0.34, dampingFraction: 0.74)
+    }
+
+    /// How far a pressed control sinks.
+    static let softPressScale: CGFloat = 0.95
+
     /// Resolves a token against the user's Reduce Motion preference.
     static func resolved(_ animation: Animation, reduceMotion: Bool) -> Animation {
         reduceMotion ? reduced : animation
@@ -65,7 +77,7 @@ enum GVMotion {
 struct GVPressStyle: ButtonStyle {
     /// One press depth for the whole instrument. Call sites that need a
     /// different travel pass it here rather than inventing a second value.
-    var scale: CGFloat = 0.96
+    var scale: CGFloat = GVMotion.softPressScale
     var tint: Color = GVTheme.violetDeep
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -73,12 +85,10 @@ struct GVPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? scale : 1))
+            .opacity(configuration.isPressed ? 0.82 : 1)
             .brightness(configuration.isPressed ? 0.025 : 0)
             .animation(
-                GVMotion.resolved(
-                    configuration.isPressed ? GVMotion.micro : GVMotion.press,
-                    reduceMotion: reduceMotion
-                ),
+                GVMotion.resolved(GVMotion.softPress(configuration.isPressed), reduceMotion: reduceMotion),
                 value: configuration.isPressed
             )
     }

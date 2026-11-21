@@ -19,9 +19,10 @@ import SwiftUI
 enum GVTheme {
     // MARK: - Core palette
 
-    /// Near-black canvas. Everything sits on this.
+    /// Near-black canvas. Everything sits on this. Neutral, not blue: the
+    /// only colour in the chrome is the live accent.
     static var void: Color {
-        Color(red: 0.030, green: 0.042, blue: 0.078)
+        Color(red: 0.008, green: 0.008, blue: 0.010)
     }
 
     /// Warm off-white. Primary type and anything the operator reads to work.
@@ -34,19 +35,28 @@ enum GVTheme {
 
     /// Secondary telemetry and inactive labels. Present, not competing.
     static var ash: Color {
-        Color(red: 0.50, green: 0.53, blue: 0.58)
+        Color(red: 0.52, green: 0.52, blue: 0.54)
     }
 
     /// Selected, active, operator-chosen. The only accent on an idle screen,
     /// and on an idle screen there should be at most one or two of them.
+    ///
+    /// Live: this is `GVAccent`, which follows the camera's dominant colour.
+    /// The name is historical; every call site that meant "the accent" reads
+    /// through here, so they all change together and immediately.
     static var violet: Color {
-        Color(red: 0.56, green: 0.66, blue: 1.0)
+        GVAccent.shared.color
+    }
+
+    /// Same as `violet`; the name new code should use.
+    static var accent: Color {
+        GVAccent.shared.color
     }
 
     /// The deep end of the violet ramp. Gradients, glows and edges fade toward
     /// this; it is never a standalone state colour.
     static var violetDeep: Color {
-        Color(red: 0.20, green: 0.29, blue: 0.70)
+        GVAccent.shared.deep
     }
 
     /// Armed, ready, succeeded. Never decoration.
@@ -62,7 +72,9 @@ enum GVTheme {
     /// Linear RGB passed to interaction shaders. Keeping this beside the
     /// visible palette prevents press treatments from inventing a separate
     /// accent that does not exist anywhere else in the instrument.
-    static let interactionPulseRGB = SIMD3<Float>(0.56, 0.66, 1.0)
+    static var interactionPulseRGB: SIMD3<Float> {
+        GVAccent.shared.floatRGB
+    }
 
     /// Warning that is genuinely a warning — thermal pressure, dropped frames.
     /// Muted on purpose so it cannot be mistaken for `record`.
@@ -88,7 +100,7 @@ enum GVTheme {
     /// The dimmest mark the instrument draws: unlit tick marks, an inactive
     /// toggle, a control that is present but has nothing to say.
     static var faint: Color {
-        Color(red: 0.25, green: 0.27, blue: 0.31)
+        Color(red: 0.22, green: 0.22, blue: 0.24)
     }
 
     static func color(_ state: State) -> Color {
@@ -107,15 +119,15 @@ enum GVTheme {
     /// Three tiers, distilled. Charcoal plates separate groups without heavy
     /// outlines; only the armed tier carries a clear state edge.
     static var surfacePrimary: Color {
-        Color(red: 0.103, green: 0.121, blue: 0.167).opacity(0.82)
+        Color(red: 0.030, green: 0.030, blue: 0.034).opacity(0.90)
     }
 
     static var surfaceSecondary: Color {
-        Color(red: 0.095, green: 0.112, blue: 0.155).opacity(0.46)
+        Color(red: 0.024, green: 0.024, blue: 0.028).opacity(0.70)
     }
 
     static var surfaceArmed: Color {
-        Color(red: 0.125, green: 0.145, blue: 0.198).opacity(0.90)
+        Color(red: 0.045, green: 0.045, blue: 0.050).opacity(0.94)
     }
 
     /// Shared elevation tint so panels feel lit by the same source.
