@@ -24,6 +24,13 @@ enum GVLaunchPermissions {
         let camera = await requestCapture(.video)
         let microphone = await requestMicrophone()
         let photos = await requestPhotoLibrary()
+        if photos {
+            // Movies a killed session finished writing but never filed, and
+            // takes whose export failed earlier, get their Photos save now.
+            Task.detached(priority: .utility) {
+                await GVTakeArchive.shared.recoverUnsavedTakes(exporter: GVSystemPhotosExporter())
+            }
+        }
         GVLog.capture.notice(
             "Launch permissions camera=\(camera, privacy: .public) mic=\(microphone, privacy: .public) photos=\(photos, privacy: .public)"
         )
@@ -53,7 +60,7 @@ enum GVLaunchPermissions {
     private static func requestPhotoLibrary() async -> Bool {
         switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
         case .authorized, .limited: true
-        case .notDetermined: await PHPhotoLibrary.requestAuthorization(for: .addOnly) == .authorized
+        case .notDetermined: [.authorized, .limited].contains(await PHPhotoLibrary.requestAuthorization(for: .addOnly))
         default: false
         }
     }

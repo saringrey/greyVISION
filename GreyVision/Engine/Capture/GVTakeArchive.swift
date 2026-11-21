@@ -190,6 +190,31 @@ actor GVTakeArchive {
         return try await exportToPhotos(take, exporter: exporter)
     }
 
+    /// Files every finished movie or still that has no record yet — a session
+    /// killed between the writer finishing and the filing — and retries any
+    /// take whose Photos export failed or never ran. Without this, a take that
+    /// missed its one export attempt never reached the camera roll.
+    func recoverUnsavedTakes(exporter: any GVPhotosExporting) async {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+        for file in files {
+            guard GVTake.Kind(fileExtension: file.pathExtension) != nil,
+                  let id = UUID(uuidString: file.deletingPathExtension().lastPathComponent)
+            else { continue }
+            if FileManager.default.fileExists(atPath: metadataURL(id).path) {
+                guard let take = try? read(id), take.photosStatus != .saved else { continue }
+                _ = try? await exportToPhotos(take, exporter: exporter)
+            } else {
+                // Skip a file still being written (a recording in progress
+                // has no record yet either) and leave old strays alone rather
+                // than surprise the camera roll with weeks-old footage.
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                let age = Date.now.timeIntervalSince(modified)
+                guard age > 120, age < 7 * 24 * 3600 else { continue }
+                _ = try? await completeRecording(at: file, source: .camera, exporter: exporter)
+            }
+        }
+    }
+
     func exportToPhotos(_ take: GVTake, exporter: any GVPhotosExporting) async throws -> GVTake {
         var current = try read(take.id)
         guard current.photosStatus != .saved, exportsInFlight.insert(take.id).inserted else { return current }

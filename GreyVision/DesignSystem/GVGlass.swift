@@ -13,47 +13,47 @@ enum GVMaterialRole {
 
     var tint: Color {
         switch self {
-        case .control: Color.black.opacity(0.28)
-        case .rail: Color.black.opacity(0.32)
-        case .deck: Color.black.opacity(0.38)
-        case .notice: Color.black.opacity(0.46)
+        case .control: Color(red: 0.112, green: 0.131, blue: 0.180).opacity(0.42)
+        case .rail: Color(red: 0.103, green: 0.121, blue: 0.167).opacity(0.50)
+        case .deck: Color(red: 0.095, green: 0.112, blue: 0.155).opacity(0.58)
+        case .notice: Color(red: 0.120, green: 0.141, blue: 0.192).opacity(0.64)
         }
     }
 
     /// Reduce Transparency must remove transparency, rather than merely omit
-    /// blur while keeping a translucent black fill.
+    /// blur while keeping a translucent fill.
     var opaqueFallback: Color {
         switch self {
-        case .control: Color(white: 0.10)
-        case .rail: Color(white: 0.075)
-        case .deck: Color(white: 0.065)
-        case .notice: Color(white: 0.085)
+        case .control: Color(red: 0.125, green: 0.145, blue: 0.198)
+        case .rail: Color(red: 0.107, green: 0.126, blue: 0.174)
+        case .deck: Color(red: 0.099, green: 0.116, blue: 0.161)
+        case .notice: Color(red: 0.116, green: 0.136, blue: 0.186)
         }
     }
 
     var inactiveBorderOpacity: Double {
         switch self {
-        case .control: 0.07
-        case .rail: 0.045
-        case .deck: 0.065
-        case .notice: 0.10
+        case .control: 0.06
+        case .rail: 0.04
+        case .deck: 0.055
+        case .notice: 0.08
         }
     }
 
     var shadow: (color: Color, radius: CGFloat, y: CGFloat)? {
         switch self {
         case .control, .rail: nil
-        case .deck: (Color.black.opacity(0.34), 8, 4)
-        case .notice: (Color.black.opacity(0.52), 10, 5)
+        case .deck: (Color.black.opacity(0.28), 10, 5)
+        case .notice: (Color.black.opacity(0.36), 12, 6)
         }
     }
 
     var nativeVeilOpacity: Double {
         switch self {
-        case .control: 0.12
-        case .rail: 0.14
-        case .deck: 0.18
-        case .notice: 0.22
+        case .control: 0.10
+        case .rail: 0.12
+        case .deck: 0.15
+        case .notice: 0.18
         }
     }
 }
@@ -151,7 +151,7 @@ private struct GVMaterialModifier: ViewModifier {
             if role == .control {
                 // Keep control labels above an opaque plate; nested native
                 // glass containers can composite their dark tint over text.
-                content.background { shape.erased.fill(role.opaqueFallback) }
+                content.background { shape.erased.fill(role.opaqueFallback).overlay { ambientWash } }
             } else if #available(iOS 26.0, *), !reduceTransparency {
                 nativeMaterial(content: content)
             } else {
@@ -170,6 +170,7 @@ private struct GVMaterialModifier: ViewModifier {
             shape.erased.fill(.clear)
                 .glassEffect(.regular.tint(tint).interactive(interactive), in: shape.erased)
                 .overlay { nativeVeil }
+                .overlay { ambientWash }
                 .allowsHitTesting(false)
         }
     }
@@ -182,9 +183,22 @@ private struct GVMaterialModifier: ViewModifier {
             ZStack {
                 shape.erased.fill(.ultraThinMaterial)
                 shape.erased.fill(tint)
+                ambientWash
             }
             .clipShape(shape.erased)
         }
+    }
+
+    /// The camera's colour, washed through the glass from below so every
+    /// panel picks up what the lens is looking at.
+    private var ambientWash: some View {
+        shape.erased
+            .fill(LinearGradient(
+                colors: [ambient.hue.opacity(0.10), ambient.hue.opacity(0.30)],
+                startPoint: .top, endPoint: .bottom
+            ))
+            .blendMode(.plusLighter)
+            .allowsHitTesting(false)
     }
 
     private var nativeVeil: some View {
@@ -197,7 +211,7 @@ private struct GVMaterialModifier: ViewModifier {
         let highContrastScale = contrast == .increased ? 1.5 : 1
         let ambientScale = 0.76 + ambient.level * 0.48
         let inactiveOpacity = min(role.inactiveBorderOpacity * ambientScale * highContrastScale, 0.22)
-        let color = state.accent?.opacity(state.borderOpacity) ?? Color.white.opacity(inactiveOpacity)
+        let color = state.accent?.opacity(state.borderOpacity) ?? ambient.hue.opacity(min(inactiveOpacity * 2.2, 0.42))
 
         return shape.erased
             .stroke(color, lineWidth: state.borderWidth)
@@ -269,14 +283,14 @@ extension View {
 
     func gvGlassPanel(
         radius: CGFloat = GVMetrics.radiusPanel,
-        tint: Color = Color.black.opacity(0.34)
+        tint: Color = Color(red: 0.103, green: 0.121, blue: 0.167).opacity(0.50)
     ) -> some View {
         gvMaterial(.deck, shape: .rounded(radius: radius), tint: tint)
     }
 
     func gvGlassRail(
         radius: CGFloat = 14,
-        tint: Color = Color.black.opacity(0.32)
+        tint: Color = Color(red: 0.099, green: 0.116, blue: 0.161).opacity(0.46)
     ) -> some View {
         gvMaterial(.rail, shape: .rounded(radius: radius), tint: tint)
     }
@@ -333,29 +347,46 @@ private struct GVChromePlate<S: InsettableShape>: ViewModifier {
     let shape: S
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    /// Black and white, like the splash: a near-black plate carrying the
-    /// same ordered white dither, edged in a white glow. The camera's colour
-    /// no longer bleeds through the chrome, so the picture is the only colour
-    /// on screen.
+    /// A charcoal plate with subtle depth. Distilled: less contrasty edge
+    /// treatment and softer shadow to keep chrome quiet over live imagery.
     func body(content: Content) -> some View {
         content
             .background {
                 if reduceTransparency {
-                    shape.fill(Color(white: 0.06))
+                    shape.fill(Color(red: 0.095, green: 0.112, blue: 0.155))
                 } else {
-                    GVSplashPlate()
-                        .clipShape(shape)
-                        .opacity(0.94)
+                    ZStack {
+                        shape.fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.142, green: 0.165, blue: 0.223).opacity(0.94),
+                                    Color(red: 0.099, green: 0.116, blue: 0.159).opacity(0.96),
+                                    Color(red: 0.077, green: 0.091, blue: 0.126).opacity(0.98)
+                                ],
+                                startPoint: .topLeading, endPoint: .bottomTrailing
+                            )
+                        )
+                        GVSplashPlate()
+                            .clipShape(shape)
+                            .opacity(0.22)
+                    }
                 }
             }
             .overlay {
                 shape.strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.42), .white.opacity(0.1), .white.opacity(0.28)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing),
-                    lineWidth: 0.8
+                    Color.white.opacity(0.10),
+                    lineWidth: 0.6
                 )
+                .allowsHitTesting(false)
             }
-            .shadow(color: .white.opacity(0.07), radius: 8)
-            .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(LinearGradient(colors: [.clear, .white.opacity(0.08), .clear],
+                                         startPoint: .leading, endPoint: .trailing))
+                    .frame(height: 1)
+                    .padding(.horizontal, 18)
+                    .allowsHitTesting(false)
+            }
+            .shadow(color: .black.opacity(0.30), radius: 14, y: 6)
     }
 }

@@ -54,19 +54,9 @@ struct GVRecordingHUD: View {
 
         return TimelineView(.periodic(from: .now, by: reduceMotion ? 1 : 0.5)) { timeline in
             HStack(spacing: 0) {
-                HStack {
-                    GVCyclingWordmark(
-                        text: "grey//VISION",
-                        size: portrait ? (compact ? 13.2 : 14.5) : 11.4,
-                        tracking: portrait ? 0.34 : 0.5
-                    )
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Color.clear
-                    .frame(width: islandReserve)
-                    .accessibilityHidden(true)
-
+                // Timecode in the left shoulder, the mark in the right: the
+                // take is a recording of this screen, and the watermark it
+                // carries sits top-right.
                 HStack(spacing: 8) {
                     Circle()
                         .fill(GVTheme.record)
@@ -80,7 +70,20 @@ struct GVRecordingHUD: View {
                         .lineLimit(1)
                         .fixedSize()
                 }
-                .fixedSize()
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Color.clear
+                    .frame(width: islandReserve)
+                    .accessibilityHidden(true)
+
+                HStack {
+                    GVCyclingWordmark(
+                        text: "grey//VISION",
+                        size: portrait ? (compact ? 13.2 : 14.5) : 11.4,
+                        tracking: portrait ? 0.34 : 0.5
+                    )
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .padding(.horizontal, horizontalInset)
             .frame(height: panelHeight)

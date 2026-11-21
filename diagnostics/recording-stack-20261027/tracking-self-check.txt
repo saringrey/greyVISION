@@ -1,0 +1,81 @@
+PASS color snapshot retains geometry
+PASS color first captured frame includes a burn-in pass
+PASS color joint is visible at top-left coordinates
+PASS color skeleton bone survives compositing
+PASS color preserves all processed bands outside marks
+PASS color resize immediately refreshes overlay geometry
+PASS color resized joint stays in place
+PASS bright snapshot retains geometry
+PASS bright first captured frame includes a burn-in pass
+PASS bright joint is visible at top-left coordinates
+PASS bright skeleton bone survives compositing
+PASS bright preserves all processed bands outside marks
+PASS bright resize immediately refreshes overlay geometry
+PASS bright resized joint stays in place
+PASS shadow snapshot retains geometry
+PASS shadow first captured frame includes a burn-in pass
+PASS shadow joint is visible at top-left coordinates
+PASS shadow skeleton bone survives compositing
+PASS shadow preserves all processed bands outside marks
+PASS shadow resize immediately refreshes overlay geometry
+PASS shadow resized joint stays in place
+PASS vivid snapshot retains geometry
+PASS vivid first captured frame includes a burn-in pass
+PASS vivid joint is visible at top-left coordinates
+PASS vivid skeleton bone survives compositing
+PASS vivid preserves all processed bands outside marks
+PASS vivid resize immediately refreshes overlay geometry
+PASS vivid resized joint stays in place
+PASS motion snapshot retains geometry
+PASS motion first captured frame includes a burn-in pass
+PASS motion joint is visible at top-left coordinates
+PASS motion skeleton bone survives compositing
+PASS motion preserves all processed bands outside marks
+PASS motion resize immediately refreshes overlay geometry
+PASS motion resized joint stays in place
+PASS skin snapshot retains geometry
+PASS skin first captured frame includes a burn-in pass
+PASS skin joint is visible at top-left coordinates
+PASS skin skeleton bone survives compositing
+PASS skin preserves all processed bands outside marks
+PASS skin resize immediately refreshes overlay geometry
+PASS skin resized joint stays in place
+PASS face snapshot retains geometry
+PASS face first captured frame includes a burn-in pass
+PASS face joint is visible at top-left coordinates
+PASS face skeleton bone survives compositing
+PASS face preserves all processed bands outside marks
+PASS face resize immediately refreshes overlay geometry
+PASS face resized joint stays in place
+PASS hand snapshot retains geometry
+PASS hand first captured frame includes a burn-in pass
+PASS hand joint is visible at top-left coordinates
+PASS hand skeleton bone survives compositing
+PASS hand preserves all processed bands outside marks
+PASS hand resize immediately refreshes overlay geometry
+PASS hand resized joint stays in place
+PASS body snapshot retains geometry
+PASS body first captured frame includes a burn-in pass
+PASS body joint is visible at top-left coordinates
+PASS body skeleton bone survives compositing
+PASS body preserves all processed bands outside marks
+PASS body resize immediately refreshes overlay geometry
+PASS body resized joint stays in place
+PASS salient snapshot retains geometry
+PASS salient first captured frame includes a burn-in pass
+PASS salient joint is visible at top-left coordinates
+PASS salient skeleton bone survives compositing
+PASS salient preserves all processed bands outside marks
+PASS salient resize immediately refreshes overlay geometry
+PASS salient resized joint stays in place
+PASS detaching clears capture snapshot
+PASS GPU frame keeps its original hand overlay while later rasters run
+PASS later hand positions cannot leak into an earlier GPU frame
+PASS nil snapshot passes processed texture through
+PASS restart immediately restores marks
+PASS restart does not resurrect the old shifted raster
+PASS hand joints map from analysis crop into full recorded frame
+PASS crop does not leave marks in uncropped coordinates
+PASS hand skeleton survives capped raster at 4K
+4K host CPU encode: cold 4.63 ms; max of 60 warm frames 0.06 ms (not device FPS)
+0 failures; production Swift sources, library: GreyVision/Resources/Shaders/TrackingShaders.metal

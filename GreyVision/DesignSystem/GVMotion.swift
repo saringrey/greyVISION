@@ -63,7 +63,9 @@ enum GVMotion {
 /// Compresses slightly and lifts in value. Feedback stays tactile without
 /// adding a glow or shader event that competes with the live image.
 struct GVPressStyle: ButtonStyle {
-    var scale: CGFloat = 0.98
+    /// One press depth for the whole instrument. Call sites that need a
+    /// different travel pass it here rather than inventing a second value.
+    var scale: CGFloat = 0.96
     var tint: Color = GVTheme.violetDeep
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

@@ -1,0 +1,35 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "121936B7-8065-43D2-A9F5-941A6B72CE5F",
+        "deviceName" : "iPhone 17 Pro",
+        "exportedFileName" : "EC039FB1-42A2-433A-8D97-0B05FA4CC091.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "Digital decay codec console landscape_0_C25CE959-995E-4333-BD99-2343DEDEEF73.png",
+        "timestamp" : 1790921715.294
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "121936B7-8065-43D2-A9F5-941A6B72CE5F",
+        "deviceName" : "iPhone 17 Pro",
+        "exportedFileName" : "8F15990D-5687-45C9-9124-6622A8F6731C.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "Digital decay codec console portrait_0_6651938D-2401-4215-BF94-C4CDA6A7FCF4.png",
+        "timestamp" : 1790921707.211
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "121936B7-8065-43D2-A9F5-941A6B72CE5F",
+        "deviceName" : "iPhone 17 Pro",
+        "exportedFileName" : "A39BE429-FD2A-40EB-AFDF-39399BC3695F.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "Magnetic Open GreyVision entry_0_50CD2DB5-1F90-447D-9AF4-E2FD4A592450.png",
+        "timestamp" : 1790921704.136
+      }
+    ],
+    "testIdentifier" : "FlagshipUITests/testMagneticEntryAndSleekCodecSelection()",
+    "testIdentifierURL" : "test://com.apple.xcode/GreyVision/GreyVisionUITests/FlagshipUITests/testMagneticEntryAndSleekCodecSelection"
+  }
+]

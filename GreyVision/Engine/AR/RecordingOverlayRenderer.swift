@@ -56,9 +56,9 @@ final class RecordingOverlayRenderer: @unchecked Sendable {
         let scale = min(max(reference / Self.referenceEdge, 1), 1.5)
         let margin = 52 * scale
 
-        // Top-left stack: the oversized wordmark with the channel line beneath
-        // it — the same slot the workspace header carries the live mark, so
-        // the burn matches what the operator framed around. Anchored off the
+        // Top-right stack: the oversized wordmark with the channel line beneath
+        // it, right-aligned in the frame's top-right shoulder — the same place
+        // the workspace header carries the mark mid-take. Anchored off the
         // frame's top edge and sized to dominate without covering the action.
         let brandSize = 52 * scale
         let sigSize = 20 * scale
@@ -72,7 +72,7 @@ final class RecordingOverlayRenderer: @unchecked Sendable {
         drawGlowedImage(
             context,
             image: brandImage,
-            x: margin,
+            x: CGFloat(width) - margin - CGFloat(brandImage.width),
             y: stackTop - brandHeight,
             haloRadius: 34 * scale,
             haloAlpha: 0.22,
@@ -82,7 +82,7 @@ final class RecordingOverlayRenderer: @unchecked Sendable {
         drawGlowedImage(
             context,
             image: sigImage,
-            x: margin,
+            x: CGFloat(width) - margin - CGFloat(sigImage.width),
             y: stackTop - brandHeight - 8 * scale - sigHeight,
             haloRadius: 16 * scale,
             haloAlpha: 0.16,

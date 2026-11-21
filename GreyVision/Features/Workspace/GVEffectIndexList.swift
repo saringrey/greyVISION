@@ -48,11 +48,10 @@ struct GVEffectIndexList: View {
     let onOpenMicrophoneSettings: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Three across on a phone, more on a wide panel. Fixed rather than
-    /// scaled: a preview grid that reflows when the type grows stops being
-    /// comparable between one visit and the next.
-    private let tileMinimum: CGFloat = 96
-    private let tileSpacing: CGFloat = 10
+    /// Compact grid: the tiles are the previews, so a denser grid shows more
+    /// of them per screenful instead of a sparse row of big ones.
+    private let tileMinimum: CGFloat = 64
+    private let tileSpacing: CGFloat = 4
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -60,41 +59,39 @@ struct GVEffectIndexList: View {
                 ForEach(sections) { section in
                     sectionHeader(section)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: tileMinimum), spacing: tileSpacing)],
-                              spacing: 16) {
+                              spacing: 8) {
                         ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
                             tile(item)
                                 .gvTileEntrance(index: index, reduceMotion: reduceMotion)
                         }
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.bottom, 18)
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 10)
                 }
             }
-            .padding(.top, 4)
-            .padding(.bottom, 12)
+            .padding(.top, 2)
+            .padding(.bottom, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("workspace.effects.index")
     }
 
-    /// The section's name and how much is in it. One line, no rules: the
-    /// pictures below already say what the group is.
+    /// Compact section header.
     private func sectionHeader(_ section: GVEffectIndexSection) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(section.title)
-                .gvSystemFont(15, .semibold)
+                .gvSystemFont(13, .semibold)
                 .foregroundStyle(GVTheme.bone)
                 .lineLimit(1)
             Text("\(section.items.count)")
-                .font(GVTheme.mono(11, .medium))
+                .font(GVTheme.mono(10, .medium))
                 .foregroundStyle(GVTheme.bone.opacity(0.45))
                 .monospacedDigit()
-                .contentTransition(.numericText())
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 16)
-        .padding(.bottom, 9)
+        .padding(.horizontal, 6)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
     }

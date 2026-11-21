@@ -13,6 +13,11 @@ final class GVAmbientLight: ObservableObject {
     static let meaningfulDelta = 0.02
 
     @Published private(set) var level: Double = 0.52
+    /// The scene's dominant colour, lifted to a usable accent. The chrome
+    /// takes its tint from this, so the interface wears what the camera sees.
+    @Published private(set) var hue: Color = GVTheme.violet
+    @Published private(set) var hueRGB = SIMD3<Double>(0.56, 0.66, 1.0)
+    private var hueTask: Task<Void, Never>?
 
     private weak var mailbox: CameraRenderStatsMailbox?
     private var samplingTask: Task<Void, Never>?
@@ -34,6 +39,57 @@ final class GVAmbientLight: ObservableObject {
                 self?.sampleCurrentFrame()
             }
         }
+        hueTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let frame = await GVSourceFrameTap.shared.nextFrame(timeout: .seconds(1)),
+                   let rgb = Self.dominantColor(of: frame) {
+                    self?.publishHue(rgb)
+                }
+                try? await Task.sleep(for: .milliseconds(1200))
+            }
+        }
+    }
+
+    private func publishHue(_ rgb: SIMD3<Double>) {
+        let delta = abs(rgb.x - hueRGB.x) + abs(rgb.y - hueRGB.y) + abs(rgb.z - hueRGB.z)
+        guard delta > 0.06 else { return }
+        withAnimation(.easeInOut(duration: 1.4)) {
+            hueRGB = rgb
+            hue = Color(red: rgb.x, green: rgb.y, blue: rgb.z)
+        }
+    }
+
+    /// The frame's most characterful colour: pixels are weighted by how
+    /// saturated and lit they are, so a red mug on a grey desk wins over the
+    /// desk. The result is pushed to a clear, mid-bright accent; a grey scene
+    /// falls back to the theme's cobalt.
+    nonisolated static func dominantColor(of image: CGImage) -> SIMD3<Double>? {
+        let side = 24
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        guard let context = CGContext(
+            data: &pixels, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        var sum = SIMD3<Double>(0, 0, 0)
+        var weight = 0.0
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let c = SIMD3<Double>(Double(pixels[i]), Double(pixels[i + 1]), Double(pixels[i + 2])) / 255
+            let maxC = max(c.x, c.y, c.z), minC = min(c.x, c.y, c.z)
+            let sat = maxC > 0 ? (maxC - minC) / maxC : 0
+            let w = pow(sat, 2) * sqrt(maxC)
+            sum += c * w
+            weight += w
+        }
+        guard weight > 4 else { return SIMD3(0.56, 0.66, 1.0) }
+        let avg = sum / weight
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(red: avg.x, green: avg.y, blue: avg.z, alpha: 1).getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        let accent = UIColor(hue: h, saturation: min(max(s * 1.5, 0.45), 0.85), brightness: 0.95, alpha: 1)
+        var r: CGFloat = 0, g: CGFloat = 0, bl: CGFloat = 0
+        accent.getRed(&r, green: &g, blue: &bl, alpha: &a)
+        return SIMD3(Double(r), Double(g), Double(bl))
     }
 
     /// Stops all polling and releases the render mailbox. The current level is
@@ -41,6 +97,8 @@ final class GVAmbientLight: ObservableObject {
     func deactivate() {
         samplingTask?.cancel()
         samplingTask = nil
+        hueTask?.cancel()
+        hueTask = nil
         mailbox = nil
         lastFrameNumber = nil
     }

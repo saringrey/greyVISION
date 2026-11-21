@@ -85,9 +85,9 @@ private struct GVTrackingPresetTile: View {
             .background(
                 LinearGradient(colors: [Color(white: 0.10), Color(white: 0.03)], startPoint: .top, endPoint: .bottom)
             )
-            .clipShape(RoundedRectangle(cornerRadius: GVEffectTileFace.cornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: GVEffectTileStyle.cornerRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: GVEffectTileFace.cornerRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: GVEffectTileStyle.cornerRadius, style: .continuous)
                     .strokeBorder(.white.opacity(active ? 0.85 : 0.07), lineWidth: active ? 1.5 : 0.75)
             }
     }

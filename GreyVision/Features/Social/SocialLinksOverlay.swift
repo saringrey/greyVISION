@@ -84,7 +84,7 @@ struct SocialLinksOverlay: View {
             .background(GVTheme.surfacePrimary)
             .overlay(Rectangle().strokeBorder(GVTheme.separator, lineWidth: GVMetrics.hairline))
         }
-        .buttonStyle(GVPressStyle(scale: 0.98))
+        .buttonStyle(GVPressStyle())
         .accessibilityIdentifier("creator.link.\(label.lowercased())")
     }
 }

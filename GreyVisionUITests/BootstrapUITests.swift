@@ -22,6 +22,45 @@ final class BootstrapUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testEffectSelectionAndCompositionActionsStayAlive() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--open-effect-browser"]
+        app.launch()
+
+        for (index, effect) in ["rgbSplit", "vhs", "echo", "cmykPress"].enumerated() {
+            if index > 0 {
+                app.buttons["workspace.categories.all"].tap()
+            }
+            let search = app.textFields["workspace.search.field"]
+            XCTAssertTrue(search.waitForExistence(timeout: 10))
+            search.tap()
+            search.typeText(effect)
+            let choice = app.buttons["workspace.effect.\(effect)"]
+            XCTAssertTrue(choice.waitForExistence(timeout: 5), effect)
+            choice.tap()
+            XCTAssertTrue(app.descendants(matching: .any)["workspace.parameters.\(effect)"]
+                .waitForExistence(timeout: 5), "Selecting \(effect) must keep the app alive")
+            XCTAssertEqual(app.state, .runningForeground)
+        }
+        let clear = app.buttons["workspace.clear-effects"]
+        if !clear.isHittable { app.scrollViews["workspace.adjustments"].swipeDown() }
+        XCTAssertTrue(clear.isEnabled)
+        app.buttons["workspace.chip.power"].tap()
+        XCTAssertTrue(clear.isEnabled, "A powered-off stack must still be clearable")
+        clear.tap()
+        let undo = app.buttons["workspace.undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 3))
+        XCTAssertTrue(undo.isEnabled)
+        undo.tap()
+        XCTAssertTrue(clear.isEnabled)
+        app.buttons["workspace.global-bypass"].tap()
+        XCTAssertEqual(app.buttons["workspace.global-bypass"].value as? String, "on")
+        app.buttons["workspace.global-bypass"].tap()
+        app.buttons["workspace.settings"].tap()
+        XCTAssertTrue(app.buttons["workspace.countdown"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
     func testLaunchCombinesEntryAndFormatSelection() {
         let app = XCUIApplication()
         app.launch()

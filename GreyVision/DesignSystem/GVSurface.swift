@@ -37,13 +37,12 @@ enum GVSurfaceTier {
         }
     }
 
-    /// Only lit tiers cast light. A primary surface that glows is a primary
-    /// surface pretending to be selected.
+    /// Only lit tiers cast light. Kept subtle to preserve a distilled charcoal feel.
     var glow: Color? {
         switch self {
         case .primary, .secondary: nil
-        case .armed: GVTheme.violet.opacity(0.34)
-        case .critical: GVTheme.record.opacity(0.34)
+        case .armed: GVTheme.violet.opacity(0.18)
+        case .critical: GVTheme.record.opacity(0.26)
         }
     }
 }

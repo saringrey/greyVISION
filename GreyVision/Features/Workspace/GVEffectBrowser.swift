@@ -158,18 +158,18 @@ struct GVEffectBrowser: View {
             let wide = geometry.size.width > geometry.size.height * 1.15
             Group {
                 if wide {
-                    HStack(alignment: .top, spacing: 10) {
-                        VStack(spacing: 10) {
+                    HStack(alignment: .top, spacing: 6) {
+                        VStack(spacing: 6) {
                             header
                             searchRow
                             selectorPanel
                             Spacer(minLength: 0)
                         }
-                        .frame(width: min(max(geometry.size.width * 0.4, 300), 380))
+                        .frame(width: min(max(geometry.size.width * 0.36, 260), 340))
                         contentPanel
                     }
                 } else {
-                    VStack(spacing: 10) {
+                    VStack(spacing: 6) {
                         header
                         searchRow
                         unifiedPanel
@@ -177,8 +177,8 @@ struct GVEffectBrowser: View {
                 }
             }
             .padding(.horizontal, GVMetrics.screenInset)
-            .padding(.top, 6)
-            .padding(.bottom, 4)
+            .padding(.top, 2)
+            .padding(.bottom, 2)
         }
         .presentationBackground { backdrop }
         .preferredColorScheme(.dark)
@@ -194,8 +194,7 @@ struct GVEffectBrowser: View {
     private var backdrop: some View {
         ZStack {
             Rectangle().fill(.ultraThinMaterial)
-            LinearGradient(colors: [.black.opacity(0.55), .black.opacity(0.35), .black.opacity(0.6)],
-                           startPoint: .top, endPoint: .bottom)
+            Color(red: 0.08, green: 0.084, blue: 0.092).opacity(0.72)
         }
         .ignoresSafeArea()
     }
@@ -206,15 +205,14 @@ struct GVEffectBrowser: View {
     /// category next to the title as well as marking it on the chip, so the
     /// same fact appeared twice in the first row the eye met.
     private var header: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .center, spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text("Effects")
-                    .gvSystemFont(24, .semibold, maxScale: 1.15)
+                    .gvSystemFont(18, .semibold, maxScale: 1.1)
                     .foregroundStyle(GVTheme.bone)
                 statusLine
             }
-            Spacer(minLength: 6)
-            captureModes
+            Spacer(minLength: 4)
             closeButton
         }
     }
@@ -403,58 +401,8 @@ struct GVEffectBrowser: View {
         GVEffectDashboardSelector(
             selected: category,
             readouts: shelfReadouts,
-            preview: { item in EffectCatalog.hero(of: item.rawValue).flatMap(thumbnails.image(for:)) },
-            onAppearCategory: { item in
-                if let hero = EffectCatalog.hero(of: item.rawValue) { thumbnails.request(hero) }
-            },
             onSelect: changeCategory
         )
-    }
-
-    /// The capture sources: AR objects, tracking and LiDAR. They are not
-    /// effects, so they do not belong in the effect list — but they are the
-    /// only way to reach them, so they sit in the browser's own chrome and
-    /// say which one is running.
-    private var captureModes: some View {
-        Menu {
-            Button {
-                guard appModel.objects.capability.isSupported else {
-                    toasts.show(appModel.objects.capability.reason)
-                    return
-                }
-                editor.disableAll()
-                appModel.deactivateDepthMode()
-                appModel.activateObjectMode()
-                dismiss()
-            } label: { Label("AR Objects", systemImage: "cube.transparent") }
-            Button { changeCategory(.blobs) } label: {
-                Label("Tracking", systemImage: "scope")
-            }
-            Button { changeCategory(.spatial) } label: {
-                Label("LiDAR", systemImage: "sensor.tag.radiowaves.forward")
-            }
-        } label: {
-            Image(systemName: "camera.aperture")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(GVTheme.bone)
-                .frame(width: 36, height: 36)
-                .background(Color.white.opacity(0.08), in: Circle())
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))
-                .frame(width: GVMetrics.touchTarget, height: GVMetrics.touchTarget)
-                .contentShape(Rectangle())
-        }
-        .accessibilityLabel("Capture modes")
-        .accessibilityValue(currentCaptureMode)
-        .accessibilityIdentifier("workspace.capture.modes")
-    }
-
-    /// Which source the instrument is pointed at, in words.
-    private var currentCaptureMode: String {
-        switch appModel.sourceMode {
-        case .lidar: "LiDAR"
-        case .objects: "AR Objects"
-        case .camera: appModel.blobs.isEnabled ? "Tracking" : "Camera"
-        }
     }
 
     private var closeButton: some View {
@@ -484,9 +432,9 @@ struct GVEffectBrowser: View {
     private var unifiedPanel: some View {
         VStack(spacing: 0) {
             selector
-                .padding(.horizontal, 10)
-                .padding(.top, 10)
-                .padding(.bottom, 9)
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
             GVRule().padding(.horizontal, 10)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

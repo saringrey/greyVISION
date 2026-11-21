@@ -2,6 +2,11 @@ import SwiftUI
 
 /// The instrument's palette and type.
 ///
+/// Taken from the splash film: a surreal still life of porcelain backdrops,
+/// chrome and steel, cobalt lattices, a vermilion sphere, terminal-green
+/// growth and olive wood. Porcelain is the type, cool steel-ink the ground,
+/// cobalt the selection, green the armed state and vermilion the record.
+///
 /// Six colours carry meaning and nothing else does. The previous palette had
 /// eleven, and the two violets in particular were used interchangeably, which
 /// is how every control ended up outlined in the same accent: if the accent is
@@ -16,7 +21,7 @@ enum GVTheme {
 
     /// Near-black canvas. Everything sits on this.
     static var void: Color {
-        Color(red: 0, green: 0, blue: 0)
+        Color(red: 0.030, green: 0.042, blue: 0.078)
     }
 
     /// Warm off-white. Primary type and anything the operator reads to work.
@@ -24,45 +29,45 @@ enum GVTheme {
     /// Deliberately not pure white: against a black field, 1.0 white haloes on
     /// OLED and reads as a light source rather than as printed type.
     static var bone: Color {
-        Color(red: 0.941, green: 0.937, blue: 0.925)
+        Color(red: 0.925, green: 0.922, blue: 0.898)
     }
 
     /// Secondary telemetry and inactive labels. Present, not competing.
     static var ash: Color {
-        Color(white: 0.48)
+        Color(red: 0.50, green: 0.53, blue: 0.58)
     }
 
     /// Selected, active, operator-chosen. The only accent on an idle screen,
     /// and on an idle screen there should be at most one or two of them.
     static var violet: Color {
-        Color.white
+        Color(red: 0.56, green: 0.66, blue: 1.0)
     }
 
     /// The deep end of the violet ramp. Gradients, glows and edges fade toward
     /// this; it is never a standalone state colour.
     static var violetDeep: Color {
-        Color.white
+        Color(red: 0.20, green: 0.29, blue: 0.70)
     }
 
     /// Armed, ready, succeeded. Never decoration.
     static var acid: Color {
-        Color(red: 0.64, green: 1.0, blue: 0.12)
+        Color(red: 0.38, green: 0.88, blue: 0.54)
     }
 
     /// Recording, destructive, critical. Never decoration.
     static var record: Color {
-        Color(red: 1.0, green: 0.16, blue: 0.32)
+        Color(red: 0.93, green: 0.26, blue: 0.17)
     }
 
     /// Linear RGB passed to interaction shaders. Keeping this beside the
     /// visible palette prevents press treatments from inventing a separate
     /// accent that does not exist anywhere else in the instrument.
-    static let interactionPulseRGB = SIMD3<Float>(1, 1, 1)
+    static let interactionPulseRGB = SIMD3<Float>(0.56, 0.66, 1.0)
 
     /// Warning that is genuinely a warning — thermal pressure, dropped frames.
     /// Muted on purpose so it cannot be mistaken for `record`.
     static var warn: Color {
-        Color(red: 0.92, green: 0.66, blue: 0.20)
+        Color(red: 0.80, green: 0.66, blue: 0.32)
     }
 
     // MARK: - Semantic state
@@ -81,10 +86,9 @@ enum GVTheme {
     }
 
     /// The dimmest mark the instrument draws: unlit tick marks, an inactive
-    /// toggle, a control that is present but has nothing to say. Filed with
-    /// state rather than with surfaces — it was never a plate.
+    /// toggle, a control that is present but has nothing to say.
     static var faint: Color {
-        Color(white: 0.20)
+        Color(red: 0.25, green: 0.27, blue: 0.31)
     }
 
     static func color(_ state: State) -> Color {
@@ -100,26 +104,23 @@ enum GVTheme {
 
     // MARK: - Surfaces
 
-    /// Three tiers, not eleven.
-    ///
-    /// `primary` backs anything holding controls. `secondary` is almost
-    /// invisible and exists only to separate a group from the camera behind
-    /// it. `armed` is the sole tier that earns a violet edge.
+    /// Three tiers, distilled. Charcoal plates separate groups without heavy
+    /// outlines; only the armed tier carries a clear state edge.
     static var surfacePrimary: Color {
-        Color.black.opacity(0.68)
+        Color(red: 0.103, green: 0.121, blue: 0.167).opacity(0.82)
     }
 
     static var surfaceSecondary: Color {
-        Color.black.opacity(0.30)
+        Color(red: 0.095, green: 0.112, blue: 0.155).opacity(0.46)
     }
 
     static var surfaceArmed: Color {
-        Color.black.opacity(0.74)
+        Color(red: 0.125, green: 0.145, blue: 0.198).opacity(0.90)
     }
 
     /// Shared elevation tint so panels feel lit by the same source.
     static var elevationShadow: Color {
-        violetDeep.opacity(0.04)
+        Color.black.opacity(0.22)
     }
 
     /// Compact camera chrome keeps its existing dimensions while sharing text roles.

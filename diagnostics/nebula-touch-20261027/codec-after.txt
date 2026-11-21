@@ -1,0 +1,16 @@
+The following is a diff from the previous accessibility tree for Window: "GreyVision Title QA" with ~ and + representing changed and added elements, respectively. Removed elements are summarized by ID range.
+~			3 splitter (settable, float) -1
++					40 text Description: Encoding, Secondary Actions: Cancel
++					41 text Description: 4 FORMATS, Secondary Actions: Cancel
++					42 button Description: H.264, Help: Selects this format., Value: not selected, ID: boot.codec.h.264, Secondary Actions: Cancel
++					43 button (selected) Description: HEVC, Help: Selects this format., Value: selected, ID: boot.codec.hevc, Secondary Actions: Cancel
++					44 button Description: 422 HQ, Help: Selects this format., Value: not selected, ID: boot.codec.prores-422-hq, Secondary Actions: Cancel
++					45 button Description: 4444XQ, Help: Selects this format., Value: not selected, ID: boot.codec.prores-4444-xq, Secondary Actions: Cancel
+~					7 button Description: CODEC, HEVC, Help: Closes the format chooser., Value: Expanded, ID: boot.codec, Secondary Actions: Cancel
+~				12 button app.grid.3x3
+~				13 button camera.viewfinder
+~				14 button record.circle
+~				15 button
+~		16 splitter (settable, float) 586.5
+~		19 toggle button Help: Capture Keyboard, Value: off
+~		20 toggle button Help: Enter resize mode, Value: off

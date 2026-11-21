@@ -1,0 +1,9 @@
+The following is a diff from the previous accessibility tree for Window: "GreyVision Title QA" with ~ and + representing changed and added elements, respectively. Removed elements are summarized by ID range.
+~			3 splitter (disabled, settable, float) -1
+~				12 button Description: Home, ID: app.grid.3x3
+~				13 button Description: Screenshot, ID: camera.viewfinder
+~				14 button Description: Record, ID: record.circle
+~				15 button Rotate Left
+~		16 splitter (disabled, settable, float) 586.5
+~		19 toggle button Description: Capture Keyboard, Value: off
+~		20 toggle button Description: Resize mode, Help: Enter resize mode, Value: off

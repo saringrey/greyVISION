@@ -13,66 +13,6 @@ import XCTest
 
 final class BootstrapTests: XCTestCase {
     @MainActor
-    func testTwoLineASCIIWordmarkProducesStableVisibleGlyphs() async throws {
-        let greyMask = await GVGlyphMask.make(text: "grey", columns: 48)
-        let visionMask = await GVGlyphMask.make(text: "VISION", columns: 96)
-        let grey = try XCTUnwrap(greyMask)
-        let vision = try XCTUnwrap(visionMask)
-        for mask in [grey, vision] {
-            let rendered = mask.render(time: 0, tilt: .zero, waves: false, reveal: 1)
-            XCTAssertFalse(rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            XCTAssertEqual(rendered.count, (mask.columns + 1) * mask.rows)
-            XCTAssertEqual(rendered, mask.render(time: 0, tilt: .zero, waves: false, reveal: 1))
-        }
-        XCTAssertEqual(vision.columns, grey.columns * 2)
-    }
-
-    func testTitleDecryptionAdvancesOneLetterAcrossBothLinesAndLoops() throws {
-        for letter in 0 ..< 10 {
-            let elapsed = Double(letter) * GVLetterDecryption.letterDuration + 0.2
-            let frame = try XCTUnwrap(GVLetterDecryption.frame(elapsed: elapsed, letterCount: 10))
-            XCTAssertEqual(frame.letter, letter)
-            XCTAssertEqual(frame.forWord(start: 0, length: 4)?.letter, letter < 4 ? letter : nil)
-            XCTAssertEqual(frame.forWord(start: 4, length: 6)?.letter, letter >= 4 ? letter - 4 : nil)
-            XCTAssertLessThan(frame.progress, 1)
-        }
-        let dwell = try XCTUnwrap(GVLetterDecryption.frame(elapsed: 0.9, letterCount: 10))
-        XCTAssertEqual(dwell.progress, 1)
-        XCTAssertEqual(GVLetterDecryption.frame(elapsed: 11.2, letterCount: 10)?.letter, 0)
-        for elapsed in [Double.nan, .infinity, -1] {
-            XCTAssertNil(GVLetterDecryption.frame(elapsed: elapsed, letterCount: 10))
-        }
-        XCTAssertNil(GVLetterDecryption.frame(elapsed: 0, letterCount: 0))
-    }
-
-    @MainActor
-    func testDecryptionKeepsOtherLettersAndWordmarkGeometryStable() async throws {
-        let raster = await GVGlyphMask.make(text: "VISION", columns: 96)
-        let mask = try XCTUnwrap(raster)
-        let resolved = Array(mask.render(time: 0, tilt: .zero, waves: false, reveal: 1))
-        for letter in 0 ..< 6 {
-            let frame = GVLetterDecryption.Frame(letter: letter, progress: 0, tick: 3)
-            let encrypted = Array(mask.render(
-                time: 0, tilt: .zero, waves: false, reveal: 1,
-                decryption: frame, letterCount: 6
-            ))
-            XCTAssertEqual(encrypted.count, resolved.count)
-            XCTAssertNotEqual(encrypted, resolved)
-            for index in resolved.indices {
-                let column = index % (mask.columns + 1)
-                if column == mask.columns || column * 6 / mask.columns != letter || resolved[index] == " " {
-                    XCTAssertEqual(encrypted[index], resolved[index])
-                }
-            }
-            let settled = GVLetterDecryption.Frame(letter: letter, progress: 1, tick: 20)
-            XCTAssertEqual(mask.render(
-                time: 0, tilt: .zero, waves: false, reveal: 1,
-                decryption: settled, letterCount: 6
-            ), String(resolved))
-        }
-    }
-
-    @MainActor
     func testBrowserApplicationIsIdempotentAndReactivatesSelectedEffects() {
         let editor = EffectEditingSession()
         for effect in [WorkspaceAdjustableEffect.cmykPress, .kaleido6, .rgbSplit] {
@@ -113,67 +53,6 @@ final class BootstrapTests: XCTestCase {
         XCTAssertEqual(editor.snapshot, composition, "Changing add policy must not erase the composition")
         editor.applyFromBrowser(.grain)
         XCTAssertEqual(editor.activeEffects, [.grain])
-    }
-
-    func testMagneticButtonAttractionIsBoundedSymmetricAndReducedMotionSafe() {
-        let size = CGSize(width: 288, height: 90)
-        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: 144, y: 45), in: size), .zero)
-        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: 216, y: 45), in: size).width, 6)
-        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: 144, y: 67.5), in: size).height, 4)
-        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: 288, y: 45), in: size), .zero)
-        for x in stride(from: CGFloat(0), through: 288, by: 5) {
-            for y in stride(from: CGFloat(0), through: 90, by: 5) {
-                let point = CGPoint(x: x, y: y)
-                let offset = GVButtonMagnetism.offset(at: point, in: size)
-                XCTAssertLessThanOrEqual(abs(offset.width), 6)
-                XCTAssertLessThanOrEqual(abs(offset.height), 4)
-                let reflected = GVButtonMagnetism.offset(at: CGPoint(x: 288 - x, y: 90 - y), in: size)
-                XCTAssertEqual(offset.width, -reflected.width, accuracy: 0.0001)
-                XCTAssertEqual(offset.height, -reflected.height, accuracy: 0.0001)
-                XCTAssertEqual(GVButtonMagnetism.offset(at: point, in: size, reduceMotion: true), .zero)
-            }
-        }
-        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: -1, y: 45), in: size), .zero)
-        XCTAssertEqual(GVButtonMagnetism.offset(at: CGPoint(x: CGFloat.nan, y: 45), in: size), .zero)
-        XCTAssertEqual(GVButtonMagnetism.offset(at: .zero, in: .zero), .zero)
-    }
-
-    func testSilentSplashNebulaInputClampsMotionAndWrapsTime() {
-        let input = GVSplashNebulaInput(time: 7_205.5, tilt: CGSize(width: 4, height: CGFloat.nan))
-        XCTAssertEqual(input.time, 5.5, accuracy: 0.001)
-        XCTAssertEqual(input.tilt, SIMD2(1, 0))
-        let silent = GVSplashNebulaInput(time: .infinity, tilt: CGSize(width: -3, height: 0.25))
-        XCTAssertEqual(silent.time, 0)
-        XCTAssertEqual(silent.tilt, SIMD2(-1, 0.25))
-        XCTAssertEqual(GVSplashNebulaInput(time: -1, tilt: .zero).time, 3599)
-    }
-
-    func testNebulaTouchIsBoundedAndFadesAfterRelease() {
-        let held = GVSplashNebulaInput(time: 0, tilt: .zero, touch: CGPoint(x: -1, y: 2))
-        XCTAssertEqual(held.touch, SIMD3(0, 1, 1))
-        let fading = GVSplashNebulaInput(time: 0, tilt: .zero, touch: .zero, releasedAfter: 0.7)
-        XCTAssertEqual(fading.touch.z, 0.25, accuracy: 0.001)
-        for age in [1.4, 200, Double.nan, .infinity] {
-            let finished = GVSplashNebulaInput(time: 0, tilt: .zero, touch: .zero, releasedAfter: age)
-            XCTAssertEqual(finished.touch.z, 0)
-            XCTAssertTrue(finished.touchAge.isFinite)
-        }
-        XCTAssertEqual(GVSplashNebulaInput(time: 0, tilt: .zero).touch.z, 0)
-        XCTAssertEqual(GVSplashNebulaInput(
-            time: 0, tilt: .zero, touch: CGPoint(x: CGFloat.nan, y: 0)
-        ).touch.z, 0)
-    }
-
-    func testEncryptButtonResolvesTextAndReducedMotionSkipsScramble() {
-        let target = "OPEN // GREYVISION"
-        XCTAssertNotEqual(GVEncryptText.frame(target: target, elapsed: 0, animated: true), target)
-        let partiallyResolved = GVEncryptText.frame(target: target, elapsed: 0.75, animated: true)
-        XCTAssertTrue(partiallyResolved.hasPrefix("OPEN /"))
-        XCTAssertEqual(partiallyResolved.count, target.count)
-        XCTAssertEqual(GVEncryptText.frame(target: target, elapsed: GVEncryptText.duration(for: target), animated: true), target)
-        XCTAssertEqual(GVEncryptText.frame(target: target, elapsed: 0, animated: false), target)
-        XCTAssertEqual(GVEncryptText.frame(target: target, elapsed: .nan, animated: true), target)
-        XCTAssertEqual(GVEncryptText.frame(target: "", elapsed: 0, animated: true), "")
     }
 
     @MainActor

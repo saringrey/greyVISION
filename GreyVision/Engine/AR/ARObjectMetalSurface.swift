@@ -1077,6 +1077,8 @@ private final class ARObjectRenderer: NSObject, MTKViewDelegate, @unchecked Send
             makeAsteroid(allocator: allocator)
         case .baby, .melissa:
             loadScannedMeshOrProceduralFallback(shape: shape, allocator: allocator)
+        case .vase, .pear, .column, .screw, .dna, .spaceFrame, .oliveTree, .interchange:
+            GVStillLifeMeshes.make(shape, allocator: allocator)
         }
 
         guard let mesh else { return nil }

@@ -7,19 +7,13 @@ struct WorkspaceEffectParameterDeck: View {
     @ObservedObject var editor: EffectEditingSession
     let isFavorite: Bool
     let onFavoriteToggled: () -> Void
-    let onSelectEffect: (WorkspaceAdjustableEffect) -> Void
     let onClose: () -> Void
 
     @EnvironmentObject private var toasts: GVToastBox
     @EnvironmentObject private var cameraRuntime: CameraRuntime
     @GestureState private var pressingDatamosh = false
     @State private var showDatamoshMotion = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var showStack = false
-    /// Which stack slot this deck is editing. Nil means "the first slot for
-    /// this effect", which is what every call site meant before slots could
-    /// be duplicated.
     var body: some View {
         VStack(spacing: GVMetrics.gap) {
             headerRow
@@ -30,18 +24,8 @@ struct WorkspaceEffectParameterDeck: View {
                     .font(.caption2)
                     .foregroundStyle(GVTheme.ash)
             }
-
-            if showStack {
-                WorkspaceEffectStackStrip(
-                    editor: editor,
-                    editing: effect,
-                    onSelect: onSelectEffect
-                )
-                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
-            }
         }
         .gvCompactDeckPlate()
-        .animation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion), value: showStack)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.parameters.\(effect.rawValue)")
     }
@@ -168,13 +152,6 @@ struct WorkspaceEffectParameterDeck: View {
                 editor.setStackArmed(!editor.isStackArmed)
             } label: {
                 Label(editor.isStackArmed ? "Replace effects" : "Add effects to stack", systemImage: "plus")
-            }
-            Button {
-                withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
-                    showStack.toggle()
-                }
-            } label: {
-                Label(showStack ? "Hide render stack" : "Edit render stack", systemImage: "square.3.layers.3d")
             }
             Button {
                 randomize()

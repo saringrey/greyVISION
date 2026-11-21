@@ -40,6 +40,14 @@ enum ARObjectShape: UInt32, CaseIterable, Identifiable, Codable, Sendable {
     case crystal = 24
     case waveGrid = 25
     case asteroid = 26
+    case vase = 27
+    case pear = 28
+    case column = 29
+    case screw = 30
+    case dna = 31
+    case spaceFrame = 32
+    case oliveTree = 33
+    case interchange = 34
 
     var id: UInt32 {
         rawValue
@@ -74,6 +82,14 @@ enum ARObjectShape: UInt32, CaseIterable, Identifiable, Codable, Sendable {
         case .crystal: "CRYSTAL"
         case .waveGrid: "WAVE MESH"
         case .asteroid: "ASTEROID"
+        case .vase: "VASE"
+        case .pear: "PEAR"
+        case .column: "COLUMN"
+        case .screw: "SCREW"
+        case .dna: "DNA"
+        case .spaceFrame: "SPACE FRAME"
+        case .oliveTree: "OLIVE TREE"
+        case .interchange: "INTERCHANGE"
         }
     }
 
@@ -106,6 +122,14 @@ enum ARObjectShape: UInt32, CaseIterable, Identifiable, Codable, Sendable {
         case .crystal: "Crystal"
         case .waveGrid: "Wave"
         case .asteroid: "Asteroid"
+        case .vase: "Vase"
+        case .pear: "Pear"
+        case .column: "Column"
+        case .screw: "Screw"
+        case .dna: "DNA"
+        case .spaceFrame: "Frame"
+        case .oliveTree: "Olive"
+        case .interchange: "Overpass"
         }
     }
 
@@ -138,6 +162,14 @@ enum ARObjectShape: UInt32, CaseIterable, Identifiable, Codable, Sendable {
         case .crystal: "DOUBLE-TERMINATED QUARTZ"
         case .waveGrid: "SINUSOIDAL TOPOGRAPHIC SHEET"
         case .asteroid: "CRATERED FRACTAL METEOROID"
+        case .vase: "STILL-LIFE AMPHORA"
+        case .pear: "STILL-LIFE PEAR WITH LEAF"
+        case .column: "FLUTED DORIC COLUMN"
+        case .screw: "THREADED COUNTERSUNK SCREW"
+        case .dna: "DOUBLE HELIX WITH BASE PAIRS"
+        case .spaceFrame: "ARCHED STEEL SPACE FRAME"
+        case .oliveTree: "WINDSWEPT OLIVE ON EARTH"
+        case .interchange: "THREE-DECK HIGHWAY KNOT"
         }
     }
 
@@ -170,6 +202,14 @@ enum ARObjectShape: UInt32, CaseIterable, Identifiable, Codable, Sendable {
         case .crystal: "rhombus"
         case .waveGrid: "squareshape.split.3x3"
         case .asteroid: "aqi.medium"
+        case .vase: "vase"
+        case .pear: "leaf"
+        case .column: "building.columns"
+        case .screw: "screwdriver"
+        case .dna: "allergens"
+        case .spaceFrame: "square.grid.3x3.topleft.filled"
+        case .oliveTree: "tree"
+        case .interchange: "road.lanes"
         }
     }
 }
@@ -875,19 +915,20 @@ struct ARObjectParameters: Codable, Equatable, Sendable {
 }
 
 enum ARObjectPalette {
+    /// The splash film's still-life colours.
     static let names: [String] = [
-        "Violet", "Ice", "Acid", "Ember", "Cyan", "Rose", "Gold", "Bone"
+        "Cobalt", "Steel", "Green", "Vermilion", "Ocean", "Terracotta", "Olive", "Porcelain"
     ]
 
     static let colors: [SIMD3<Float>] = [
-        SIMD3(0.72, 0.28, 1.0), // violet hot
-        SIMD3(0.30, 0.55, 1.0), // ice
-        SIMD3(0.62, 0.94, 0.36), // acid
-        SIMD3(0.98, 0.46, 0.12), // ember
-        SIMD3(0.12, 0.88, 0.72), // cyan
-        SIMD3(1.0, 0.42, 0.62), // rose
-        SIMD3(1.0, 0.82, 0.24), // gold
-        SIMD3(0.92, 0.91, 0.88) // bone
+        SIMD3(0.25, 0.38, 0.92), // cobalt lattice
+        SIMD3(0.58, 0.64, 0.74), // chrome steel
+        SIMD3(0.36, 0.86, 0.52), // terminal green
+        SIMD3(0.93, 0.28, 0.16), // vermilion sphere
+        SIMD3(0.12, 0.30, 0.55), // ocean
+        SIMD3(0.74, 0.44, 0.30), // terracotta earth
+        SIMD3(0.56, 0.62, 0.32), // olive leaf
+        SIMD3(0.93, 0.92, 0.89) // porcelain
     ]
 
     static func rgb(forHue hue: Float) -> SIMD3<Float> {
@@ -1017,6 +1058,30 @@ struct GVObjectPreset: Identifiable, Equatable, Sendable {
             parameters: ARObjectParameters(
                 size: 0.95, spin: 0.65, glow: 0.55, material: .celToon, wireOverlay: false,
                 tintIndex: 6, metallic: 0.5, rimSharpness: 2.4
+            ).sanitized
+        ),
+        GVObjectPreset(
+            id: "still_life",
+            name: "Still Life",
+            detail: "Porcelain vase, pear and column under studio light",
+            symbol: "vase",
+            shapes: [.vase, .pear, .column, .sphere, .box],
+            parameters: ARObjectParameters(
+                size: 1.0, spin: 0.18, glow: 0.45, material: .solidRim, wireOverlay: false,
+                tintIndex: 7, metallic: 0.35, rimSharpness: 2.6,
+                spinAxis: .yaw
+            ).sanitized
+        ),
+        GVObjectPreset(
+            id: "splash_specimens",
+            name: "Specimens",
+            detail: "The splash film's chrome screw, helix, frame, olive and overpass",
+            symbol: "allergens",
+            shapes: [.screw, .dna, .spaceFrame, .oliveTree, .interchange],
+            parameters: ARObjectParameters(
+                size: 1.1, spin: 0.35, glow: 0.8, material: .chrome, wireOverlay: false,
+                tintIndex: 1, metallic: 0.9, rimSharpness: 2.6,
+                spinAxis: .yaw, bobAmplitude: 0.015, bobSpeed: 0.5
             ).sanitized
         )
     ]

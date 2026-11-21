@@ -52,7 +52,7 @@ extension ButtonStyle where Self == GVPressButtonStyle {
     }
 
     static var gvPressPrimary: GVPressButtonStyle {
-        GVPressButtonStyle(scale: 0.955, haptic: true)
+        GVPressButtonStyle(scale: 0.96, haptic: true)
     }
 }
 

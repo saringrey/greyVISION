@@ -201,7 +201,7 @@ extension View {
     /// for controls; passive rails and deck plates leave it disabled.
     func gvLiquidGlass(
         radius: CGFloat,
-        tint: Color = Color.black.opacity(0.34),
+        tint: Color = Color(red: 0.103, green: 0.121, blue: 0.167).opacity(0.50),
         interactive: Bool = false
     ) -> some View {
         gvMaterial(
@@ -224,27 +224,22 @@ extension View {
         }
     }
 
-    /// The shared charcoal material for every bottom-sheet deck: gradient,
-    /// top hairline, hairline stroke, depth shadow. One source so the effect,
-    /// depth, AR and blob decks cannot drift apart again.
+    /// The shared charcoal material for every bottom-sheet deck.
     func gvCompactDeckPlate() -> some View {
         modifier(GVCompactDeckPlateModifier())
     }
 }
 
 private struct GVCompactDeckPlateModifier: ViewModifier {
-    /// Matches the capture pill below it: same surface, a radius that reads
-    /// as the pill's rounded cousin, and the same maximum width so the deck's
-    /// edges line up with the pill's instead of overhanging it.
-    static let radius: CGFloat = 26
+    static let radius: CGFloat = 18
 
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, GVMetrics.stepRelated + 2)
-            .padding(.top, GVMetrics.gap + 2)
-            .padding(.bottom, GVMetrics.gap)
+            .padding(.horizontal, GVMetrics.stepInternal)
+            .padding(.top, GVMetrics.gapTight)
+            .padding(.bottom, GVMetrics.gapHair)
             .gvChromePlate(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
-            .frame(maxWidth: 390)
+            .frame(maxWidth: 360)
     }
 }
 
@@ -343,7 +338,7 @@ private struct GVGlassChipStyle: ButtonStyle {
                     .strokeBorder(stroke, lineWidth: 0.75)
             }
             .frame(height: height)
-            .scaleEffect(reduceMotion ? 1 : (pressed ? 0.95 : 1))
+            .scaleEffect(reduceMotion ? 1 : (pressed ? 0.96 : 1))
             .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: pressed)
             .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: active)
             .opacity(dimmed && !active ? 0.55 : 1)
@@ -379,7 +374,7 @@ struct GVParameterPager: View {
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(GVPressStyle(scale: 0.9))
+                .buttonStyle(GVPressStyle())
                 .disabled(page == 0)
                 .accessibilityLabel("Previous parameter page")
                 .accessibilityHint("Shows parameter page \(max(page, 1)) of \(pageCount)")
@@ -396,7 +391,7 @@ struct GVParameterPager: View {
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(GVPressStyle(scale: 0.9))
+                .buttonStyle(GVPressStyle())
                 .disabled(page == pageCount - 1)
                 .accessibilityLabel("Next parameter page")
                 .accessibilityHint("Shows parameter page \(min(page + 2, pageCount)) of \(pageCount)")

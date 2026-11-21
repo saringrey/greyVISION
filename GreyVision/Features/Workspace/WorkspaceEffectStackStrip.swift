@@ -1,5 +1,7 @@
 import SwiftUI
 
+// Composition pane removed; stack strip remains available for reuse if needed.
+
 /// The render stack, as an editable strip.
 ///
 /// `CameraEffectStackParameters` has carried ordered, individually identified
@@ -12,13 +14,12 @@ import SwiftUI
 ///
 /// This is that model's control surface. One horizontal strip of slots in
 /// render order, left to right, with the focused slot's operations underneath.
-/// Two rows, no sheet, no navigation — it opens inside the parameter deck the
-/// operator is already looking at.
+/// Two rows inside Composition; parameter controls stay in the deck below.
 struct WorkspaceEffectStackStrip: View {
     @ObservedObject var editor: EffectEditingSession
     /// The effect the parameter deck is currently editing, so its slot reads
     /// as the focused one without the strip owning a second source of truth.
-    let editing: WorkspaceAdjustableEffect
+    let editing: WorkspaceAdjustableEffect?
     /// Owned by the deck, not by the strip: the deck edits whichever slot is
     /// focused, so focus has to outlive the strip being collapsed.
     let onSelect: (WorkspaceAdjustableEffect) -> Void
@@ -35,13 +36,13 @@ struct WorkspaceEffectStackStrip: View {
         if let focusedSlot = editor.focusedSlot, let match = slots.first(where: { $0.id == focusedSlot }) {
             return match
         }
-        return slots.first { $0.effect == editing }
+        return slots.first { $0.effect == editing } ?? slots.first
     }
 
     var body: some View {
         VStack(spacing: 6) {
             if slots.isEmpty {
-                Text("Stack empty · Enable an effect to begin")
+                Text(editor.rgbSplitParameters.isEnabled ? "RGB Split active" : "No active effects")
                     .font(.system(size: 12, weight: .regular))
                     .foregroundStyle(GVTheme.ash)
                     .frame(height: 30)
@@ -110,7 +111,7 @@ struct WorkspaceEffectStackStrip: View {
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
                 .gvGlassChip(radius: 8, active: focused || configuration.isPressed, tint: .white)
-                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
                 .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
         }
     }
@@ -165,11 +166,15 @@ struct WorkspaceEffectStackStrip: View {
     // MARK: - Actions
 
     private func move(by offset: Int) {
-        guard let slot = activeSlot, let position = editor.moveFocused(by: offset) else { return }
+        guard let slot = activeSlot else { return }
+        editor.focusedSlot = slot.id
+        guard let position = editor.moveFocused(by: offset) else { return }
         toasts.show("\(slot.effect.label) moved to position \(position)")
     }
 
     private func toggleActive() {
+        guard let slot = activeSlot else { return }
+        editor.focusedSlot = slot.id
         editor.toggleFocused()
     }
 
@@ -177,16 +182,22 @@ struct WorkspaceEffectStackStrip: View {
     /// audition one node of a deep stack and get the rest back by re-powering
     /// rather than by rebuilding.
     private func soloActive() {
+        guard let slot = activeSlot else { return }
+        editor.focusedSlot = slot.id
         guard let effect = editor.soloFocused() else { return }
         toasts.show("Soloing \(effect.label)")
     }
 
     private func removeActive() {
+        guard let slot = activeSlot else { return }
+        editor.focusedSlot = slot.id
         guard let effect = editor.removeFocused() else { return }
         toasts.show("\(effect.label) removed")
     }
 
     private func duplicateActive() {
+        guard let slot = activeSlot else { return }
+        editor.focusedSlot = slot.id
         guard let effect = editor.duplicateFocused() else { return }
         toasts.show("\(effect.label) duplicated")
     }

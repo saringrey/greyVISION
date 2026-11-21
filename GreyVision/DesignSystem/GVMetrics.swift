@@ -15,38 +15,27 @@ enum GVMetrics {
     // MARK: - Spacing
 
     /// Inside a control, between a label and its value.
-    static let gapHair: CGFloat = 3
+    static let gapHair: CGFloat = 2
     /// Between related controls on the same row.
-    static let gapTight: CGFloat = 5
+    static let gapTight: CGFloat = 4
     /// Between groups within a panel.
-    static let gap: CGFloat = 8
+    static let gap: CGFloat = 6
     /// Between panels.
-    static let gapWide: CGFloat = 13
+    static let gapWide: CGFloat = 10
     /// Panel inset from the display edge.
-    static let screenInset: CGFloat = 12
+    static let screenInset: CGFloat = 8
     /// Inset for chrome drawn level with the display's top corner curve.
-    ///
-    /// `screenInset` is measured for content that sits below the curve, where
-    /// the edge is straight. The recording header sits about twenty points
-    /// higher than the row it replaces — deliberately, so the interface does
-    /// not slump when RECORD is pressed — which puts its outer ends inside the
-    /// corner radius on every current iPhone. At that height the display eats
-    /// roughly thirty points before the glass is flat, so anything pinned to
-    /// the leading or trailing end up there needs this instead.
-    static let cornerShoulderInset: CGFloat = 25
+    static let cornerShoulderInset: CGFloat = 20
 
     // MARK: - Layout scale
 
-    /// The deliberate grid. `gap*` above are the dense in-control steps; these
-    /// are the structural ones, and anything positioning a panel or a section
-    /// should use them rather than a literal. Controls were ending up 3pt
-    /// apart purely because there was room.
-    static let stepMicro: CGFloat = 4
-    static let stepInternal: CGFloat = 8
-    static let stepRelated: CGFloat = 12
-    static let stepStandard: CGFloat = 16
-    static let stepSection: CGFloat = 24
-    static let stepMajor: CGFloat = 32
+    /// Compact structural steps.
+    static let stepMicro: CGFloat = 2
+    static let stepInternal: CGFloat = 6
+    static let stepRelated: CGFloat = 8
+    static let stepStandard: CGFloat = 12
+    static let stepSection: CGFloat = 16
+    static let stepMajor: CGFloat = 24
 
     // MARK: - Radii
 
@@ -65,16 +54,10 @@ enum GVMetrics {
 
     // MARK: - Controls
 
-    /// Standard control height. Every plate, pill and button in a rail uses
-    /// this so their baselines line up.
-    ///
-    /// 40, not 34. The instrument reads dense because the type is small and the
-    /// spacing is tight — that is the look. The *targets* being small was never
-    /// part of it, just harder to hit on a phone held one-handed while pointing
-    /// the camera at something.
-    static let controlHeight: CGFloat = 40
+    /// Compact visual control height. Interaction targets remain >= 44pt.
+    static let controlHeight: CGFloat = 34
     /// Cards carrying a label, a detail line and a status row.
-    static let cardHeight: CGFloat = 56
+    static let cardHeight: CGFloat = 48
     /// Minimum tappable dimension. Controls may be drawn smaller than this
     /// as long as their content shape is expanded to meet it.
     static let touchTarget: CGFloat = 44
@@ -98,14 +81,13 @@ enum GVMetrics {
 }
 
 extension GVTheme {
-    /// The single separator colour. Replaces a spread of white opacities
-    /// between 0.08 and 0.24 that were all trying to be the same line.
+    /// The single separator colour. Soft on charcoal, clear enough for structure.
     static var separator: Color {
-        Color.white.opacity(0.11)
+        Color.white.opacity(0.10)
     }
 
     /// Border for a control the operator has selected.
     static var separatorActive: Color {
-        GVTheme.violet.opacity(0.7)
+        GVTheme.violet.opacity(0.55)
     }
 }

@@ -18,10 +18,26 @@ import UIKit
 @MainActor
 final class GVEffectThumbnailStore: ObservableObject {
     static let shared = GVEffectThumbnailStore()
-    nonisolated static let side = 256
+    /// The render side, as scaled into the tile. Phone tiles are ~64pt; the
+    /// iPad ones ~70pt. 128 is a crisp upscale of both and roughly a
+    /// quarter of the pixel count of the old 256 renders — most of a
+    /// per-render cost is pixels, so this is where most of the lag came from.
+    nonisolated static let side = 128
 
     private let cache = NSCache<NSString, UIImage>()
-    private let queue = DispatchQueue(label: "greyvision.thumbnails", qos: .utility)
+    /// One block at a time serialized the whole grid behind whichever
+    /// effect was rendering. The gates below bound the work instead; the
+    /// queue is concurrent so a codec render waiting on its gate never
+    /// blocks a style render that fits a slot.
+    private let queue = DispatchQueue(label: "greyvision.thumbnails", qos: .utility, attributes: .concurrent)
+    /// Up to four style renders run at once — far above the Metal
+    /// contention a few tens of 128px shaders create, and far below what
+    /// would spend the GPU on tiles the operator is not looking at.
+    private let pool = DispatchSemaphore(value: 4)
+    /// The three codec effects encode for up to two seconds each; two
+    /// slots keep those from saturating the pool and starving the cheap
+    /// renders behind them.
+    private let codecGate = DispatchSemaphore(value: 2)
     private var inFlight: Set<WorkspaceAdjustableEffect> = []
     private var unavailable: Set<WorkspaceAdjustableEffect> = []
     /// Which reference each cached preview was rendered over.
@@ -40,7 +56,7 @@ final class GVEffectThumbnailStore: ObservableObject {
     private init() {
         cache.countLimit = 320
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        directory = base.appendingPathComponent("EffectThumbnails-Metal-v2", isDirectory: true)
+        directory = base.appendingPathComponent("EffectThumbnails-Metal-v3", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
@@ -55,19 +71,16 @@ final class GVEffectThumbnailStore: ObservableObject {
         unavailable.contains(effect)
     }
 
-    /// Taps a fresh frame and re-renders the requested previews over it. The
-    /// browser calls this on open; with no live source it changes nothing.
+    /// Captures one live frame and renders previews over it once, so previews
+    /// remain stable stills rather than refreshing/animating on each open.
     func refreshFromLiveSource() {
-        guard !refreshing else { return }
+        guard !refreshing, generation == 0 else { return }
         refreshing = true
-        wanted.removeAll()
         Task { @MainActor in
             defer { refreshing = false }
             guard let frame = await GVSourceFrameTap.shared.nextFrame() else { return }
             reference = frame
-            generation += 1
-            // `wanted` stays: a render still in flight over the old frame
-            // checks it when it lands and goes again over this one.
+            generation = 1
             wanted.forEach(request)
         }
     }
@@ -84,8 +97,11 @@ final class GVEffectThumbnailStore: ObservableObject {
         // Only the stock card is worth keeping across launches.
         let url = target == 0 ? directory.appendingPathComponent("\(effect.rawValue).png") : nil
         inFlight.insert(effect)
+        let gate = Self.renderer?.codecVariant(effect) != nil ? codecGate : pool
         queue.async { [weak self] in
+            gate.wait()
             autoreleasepool {
+                defer { gate.signal() }
                 let stored = url.flatMap { UIImage(contentsOfFile: $0.path) }
                 let image = stored ?? Self.renderer?.render(effect, over: reference)
                 // Disk encoding/writes belong off the main thread too.
@@ -257,7 +273,7 @@ final class GVEffectSampleRenderer {
         return makeImage(output)
     }
 
-    private func codecVariant(_ effect: WorkspaceAdjustableEffect) -> GVDatamoshEngine.Variant? {
+    func codecVariant(_ effect: WorkspaceAdjustableEffect) -> GVDatamoshEngine.Variant? {
         switch effect {
         case .datamosh: .datamosh
         case .liquidMosh: .liquidMosh

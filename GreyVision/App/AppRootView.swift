@@ -11,10 +11,6 @@ struct AppRootView: View {
     @State private var rotationRefreshTask: Task<Void, Never>?
     @State private var idleTimerPolicy = GVIdleTimerPolicy()
     @State private var idleTimerTask: Task<Void, Never>?
-    /// The cold-start terminal plays once per process, and only when the
-    /// process starts at the splash — not on a launch straight into the
-    /// workspace, and never twice when the operator returns to the splash.
-    @State private var terminalBootPending = true
     /// Posted by the workspace whenever the operator touches the viewfinder.
     static let operatorDidInteract = Notification.Name("GVOperatorDidInteract")
 
@@ -25,22 +21,13 @@ struct AppRootView: View {
 
                 switch appModel.route {
                 case .gate, .boot:
-                    BootView()
+                    GVLaunchSplash()
                         .transition(routeTransition)
                 case .workspace:
                     WorkspaceView()
                         .transition(routeTransition)
                 }
-
-                if showsTerminalBoot {
-                    GVTerminalBoot(report: .current(setup: appModel.setup)) {
-                        terminalBootPending = false
-                    }
-                    .transition(.identity)
-                    .zIndex(10)
-                }
             }
-            .environment(\.gvBootCeremonyActive, showsTerminalBoot)
             .onChange(of: geometry.size, initial: true) { _, _ in
                 scheduleCaptureOrientationRefresh()
             }
@@ -74,7 +61,6 @@ struct AppRootView: View {
             refreshIdleTimerPolicy()
         }
         .onAppear {
-            if appModel.route == .workspace { terminalBootPending = false }
             UIDevice.current.beginGeneratingDeviceOrientationNotifications()
             refreshIdleTimerPolicy()
             scheduleCaptureOrientationRefresh()
@@ -89,11 +75,6 @@ struct AppRootView: View {
             UIApplication.shared.isIdleTimerDisabled = false
             appModel.stopAll()
         }
-    }
-
-    private var showsTerminalBoot: Bool {
-        terminalBootPending && appModel.route != .workspace && appModel.preferences.startupAnimationEnabled
-            && !reduceMotion && !appModel.isUITesting
     }
 
     private var routeTransition: AnyTransition {

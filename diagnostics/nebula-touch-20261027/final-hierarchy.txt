@@ -1,0 +1,43 @@
+Window: "GreyVision Title QA", App: Device Hub.
+0 standard window GreyVision Title QA – iOS 27.0, ID: com.apple.dt.DeviceKit.DeviceManagementWindow-AppWindow-1, Secondary Actions: Raise
+	1 split group
+		2 split group com.apple.dt.DeviceKit.DeviceManagementWindow-AppWindow-1, SidebarNavigationSplitView
+			3 splitter (settable, float) -1
+			4 container
+				5 container
+					6 element Description: grey VISION, Help: Opens creator links., ID: boot.social, Secondary Actions: Cancel
+					7 text Description: Encoding, Secondary Actions: Cancel
+					8 text Description: 4 FORMATS, Secondary Actions: Cancel
+					9 button Description: H.264, Help: Selects this format., Value: not selected, ID: boot.codec.h.264, Secondary Actions: Cancel
+					10 button (selected) Description: HEVC, Help: Selects this format., Value: selected, ID: boot.codec.hevc, Secondary Actions: Cancel
+					11 button Description: 422 HQ, Help: Selects this format., Value: not selected, ID: boot.codec.prores-422-hq, Secondary Actions: Cancel
+					12 button Description: 4444XQ, Help: Selects this format., Value: not selected, ID: boot.codec.prores-4444-xq, Secondary Actions: Cancel
+					13 button Description: CODEC, HEVC, Help: Closes the format chooser., Value: Expanded, ID: boot.codec, Secondary Actions: Cancel
+					14 button Description: FPS, 60, Help: Opens the format chooser., Value: Collapsed, ID: boot.fps, Secondary Actions: Cancel
+					15 button Description: RES, 4K, Help: Opens the format chooser., Value: Collapsed, ID: boot.resolution, Secondary Actions: Cancel
+					16 button Description: Open camera, Help: Starts the camera using the selected capture format., ID: boot.launch, Secondary Actions: Cancel
+					17 text Description: MADE WITH LOVE BY GREY, ID: boot.attribution, Secondary Actions: Cancel
+				18 button app.grid.3x3
+				19 button camera.viewfinder
+				20 button record.circle
+				21 button
+		22 splitter (settable, float) 586.5
+	23 toolbar
+		24 button Description: Show Sidebar, Secondary Actions: Increment, Decrement, Delete, Cancel
+		25 toggle button Help: Capture Keyboard, Value: off
+		26 toggle button Help: Enter resize mode, Value: off
+		27 radio button Description: Edit, Help: Settings, Value: 0, ID: slider.horizontal.3
+		28 radio button Description: Text Document, Help: Reports, Value: 0, ID: text.document
+		29 radio button Description: Info, Value: 0, ID: info
+		30 pop up button more toolbar items
+	31 text GreyVision Title QA iOS 27.0
+	32 menu button Window sharing
+33 menu bar
+	34 Device Hub
+	35 File
+	36 Edit
+	37 View
+	38 Device
+	39 Controls
+	40 Window
+	41 Help

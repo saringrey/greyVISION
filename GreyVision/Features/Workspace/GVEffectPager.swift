@@ -51,11 +51,18 @@ struct GVEffectPager<Item: Identifiable, Tile: View>: View {
                         ForEach(0 ..< pages, id: \.self) { index in
                             pageView(index, layout: layout)
                                 .frame(width: gridSize.width, height: gridSize.height, alignment: .top)
-                                .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                                    content
-                                        .opacity(phase.isIdentity ? 1 : 0.35)
-                                        .scaleEffect(reduceMotion || phase.isIdentity ? 1 : 0.92)
-                                        .blur(radius: reduceMotion || phase.isIdentity ? 0 : 3)
+                                .scrollTransition(.interactive, axis: .horizontal) { [reduceMotion] content, phase in
+                                    // Smoothstep keeps the page flat near rest and gives
+                                    // a reversing swipe the same continuous depth curve.
+                                    let distance = min(abs(phase.value), 1)
+                                    let depth = distance * distance * (3 - 2 * distance)
+                                    return content
+                                        .opacity(1 - depth * (reduceMotion ? 0.08 : 0.18))
+                                        .scaleEffect(reduceMotion ? 1 : 1 - depth * 0.035)
+                                        .rotation3DEffect(
+                                            .degrees(reduceMotion ? 0 : phase.value * 3),
+                                            axis: (x: 0, y: 1, z: 0), perspective: 0.25
+                                        )
                                 }
                                 .id(index)
                         }
@@ -65,26 +72,43 @@ struct GVEffectPager<Item: Identifiable, Tile: View>: View {
                 .scrollTargetBehavior(.paging)
                 .scrollPosition(id: $page)
                 .scrollIndicators(.hidden)
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                 meter(pages: pages)
             }
-            .onChange(of: layout.perPage) { _, _ in page = 0 }
+            .onChange(of: layout.perPage) { _, _ in jump(to: 0) }
+            .onChange(of: pages) { _, count in
+                if let page, page >= count { jump(to: count - 1) }
+            }
         }
-        .onChange(of: resetKey) { _, _ in page = 0 }
+        .onChange(of: resetKey) { _, _ in jump(to: 0) }
+    }
+
+    /// Shelf changes and resizing replace content in place instead of
+    /// inheriting a parent animation and travelling through unrelated pages.
+    private func jump(to index: Int) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { page = index }
     }
 
     private func pageView(_ index: Int, layout: Layout) -> some View {
         let start = index * layout.perPage
         let slice = items[min(start, items.count) ..< min(start + layout.perPage, items.count)]
-        return LazyVGrid(
-            columns: Array(repeating: GridItem(.fixed(layout.side), spacing: spacing), count: layout.columns),
-            alignment: .leading,
-            spacing: spacing
-        ) {
-            ForEach(Array(slice.enumerated()), id: \.element.id) { offset, item in
-                tile(item, offset)
-                    .frame(width: layout.side, height: layout.rowHeight)
+        // Laziness belongs at the page boundary. Building the small, bounded
+        // grid together keeps rows from appearing halfway through a swipe.
+        return Grid(alignment: .topLeading, horizontalSpacing: spacing, verticalSpacing: spacing) {
+            ForEach(0 ..< layout.rows, id: \.self) { row in
+                GridRow {
+                    let rowStart = row * layout.columns
+                    let rowItems = slice.dropFirst(rowStart).prefix(layout.columns)
+                    ForEach(Array(rowItems.enumerated()), id: \.element.id) { offset, item in
+                        tile(item, start + rowStart + offset)
+                            .frame(width: layout.side, height: layout.rowHeight)
+                    }
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         // A new shelf replays its entrance rather than diffing tiles in place.
         .id("\(resetKey)-\(index)")
     }
@@ -104,7 +128,11 @@ struct GVEffectPager<Item: Identifiable, Tile: View>: View {
                 HStack(spacing: 4) {
                     ForEach(0 ..< pages, id: \.self) { index in
                         Button {
-                            withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) { page = index }
+                            if reduceMotion {
+                                jump(to: index)
+                            } else {
+                                withAnimation(GVMotion.cinematic) { page = index }
+                            }
                         } label: {
                             Capsule()
                                 .fill(GVTheme.bone.opacity(index == current ? 0.95 : 0.22))

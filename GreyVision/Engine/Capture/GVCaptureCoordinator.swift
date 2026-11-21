@@ -130,6 +130,12 @@ final class GVRecordingTransaction: ObservableObject {
     // Adapters - created lazily, owned by the transaction
     private lazy var processedFramesAdapter = GVProcessedFramesAdapter()
 
+    /// Records the screen itself — image and interface — for every non-RAW
+    /// take, so the saved movie is what the operator actually saw.
+    private let screenRecorder = GVScreenRecorder()
+    /// True while the current take belongs to `screenRecorder`.
+    private var screenTake = false
+
     /// Current recording path based on source mode.
     private func recordingPath(for sourceMode: WorkspaceSourceMode) -> GVRecordingPath {
         sourceMode == .objects ? .objects : .processedFrames
@@ -151,6 +157,7 @@ final class GVRecordingTransaction: ObservableObject {
         cameraRuntime: CameraRuntime,
         objectsRuntime: ARObjectRuntime
     ) -> Bool {
+        if screenTake || screenRecorder.isActive { return true }
         switch path {
         case .processedFrames:
             return cameraRuntime.isRecording || cameraRuntime.recordingMailbox.isStartPending
@@ -221,6 +228,13 @@ final class GVRecordingTransaction: ObservableObject {
                     }
                     self.activeAdapter = nil
                     started = await cameraRuntime.startNativeRAWRecording(codec: codec)
+                } else if GVScreenRecorder.isAvailable {
+                    // The screen recorder owns the whole take; neither render
+                    // loop writes a movie of its own.
+                    self.activeAdapter = nil
+                    self.screenTake = true
+                    started = await self.screenRecorder.start()
+                    if !started { self.screenTake = false }
                 } else if path == .objects {
                     // The objects runtime owns its own writer; the AR surface
                     // vends the drawable size on its next update. A second,
@@ -242,6 +256,11 @@ final class GVRecordingTransaction: ObservableObject {
                 // already asked to stop, and the button would read idle over a
                 // recording take.
                 if Task.isCancelled {
+                    if self.screenTake {
+                        await self.screenRecorder.cancel()
+                        self.screenTake = false
+                        return
+                    }
                     switch path {
                     case .objects:
                         if started { objectsRuntime.cancelRecordingStart() }
@@ -260,7 +279,7 @@ final class GVRecordingTransaction: ObservableObject {
                 self.pendingStartPath = nil
                 self.recordingStartTime = Date()
 
-                if path == .processedFrames, !rawCapture {
+                if path == .processedFrames, !rawCapture, !self.screenTake {
                     guard let codec = configuration.videoCodec.avVideoCodecType else {
                         throw GVRecordingTransactionError.startFailed(path, "VIDEO CODEC UNAVAILABLE")
                     }
@@ -306,6 +325,15 @@ final class GVRecordingTransaction: ObservableObject {
             return
         }
 
+        if screenTake {
+            if pendingStartPath != nil {
+                cancelPendingStart(path: path, cameraRuntime: cameraRuntime, objectsRuntime: objectsRuntime)
+                return
+            }
+            finishScreenTake(path: path)
+            return
+        }
+
         // If we're only in pending-start, cancel it.
         if pendingStartPath != nil, activeAdapter == nil, !objectsRuntime.isRecording {
             cancelPendingStart(path: path, cameraRuntime: cameraRuntime, objectsRuntime: objectsRuntime)
@@ -344,6 +372,36 @@ final class GVRecordingTransaction: ObservableObject {
         }
     }
 
+    /// Finalises a screen take, files it in the take library and exports it
+    /// to Photos, then reports through the same outcome path as every writer.
+    private func finishScreenTake(path: GVRecordingPath) {
+        state = .finalizing(path: path)
+        statusMessage = "REC // FINALIZING"
+        let source: GVTake.Source = path == .objects ? .objects : .camera
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let url = await self.screenRecorder.stop() else {
+                self.screenTake = false
+                self.handleTakeResult(.failure(GVRecordingTransactionError.finalizeFailed(path, "NO FRAMES CAPTURED")))
+                return
+            }
+            self.screenTake = false
+            do {
+                let take = try await GVTakeArchive.shared.completeRecording(
+                    at: url,
+                    source: source,
+                    exporter: GVSystemPhotosExporter()
+                )
+                if take.photosStatus == .failed, let reason = take.photosError {
+                    GVLog.recording.error("Photos export failed for take \(take.id, privacy: .public): \(reason, privacy: .public)")
+                }
+                self.handleTakeResult(.success(take))
+            } catch {
+                self.handleTakeResult(.failure(error))
+            }
+        }
+    }
+
     /// Cancel a pending start that hasn't fully begun.
     private func cancelPendingStart(
         path: GVRecordingPath,
@@ -352,6 +410,8 @@ final class GVRecordingTransaction: ObservableObject {
     ) {
         startTask?.cancel()
         startTask = nil
+        // A screen take still starting is torn down by the start task's own
+        // cancellation branch, once ReplayKit has answered.
         switch path {
         case .objects:
             objectsRuntime.cancelRecordingStart()
@@ -441,6 +501,13 @@ final class GVRecordingTransaction: ObservableObject {
         }
         if let adapter = activeAdapter {
             await adapter.abort()
+        }
+        if screenTake {
+            // A take cut short by backgrounding is still footage; file it.
+            screenTake = false
+            if let url = await screenRecorder.stop() {
+                _ = try? await GVTakeArchive.shared.completeRecording(at: url, source: .camera, exporter: GVSystemPhotosExporter())
+            }
         }
         // Also abort the camera runtime's writer
         cameraRuntime.recordingMailbox.requestStop()

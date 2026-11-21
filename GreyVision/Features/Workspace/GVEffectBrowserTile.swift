@@ -33,26 +33,26 @@ struct GVEffectTileFace: View {
     let model: GVEffectTileModel
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             preview
                 .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(model.active ? 0.9 : 0.09),
-                                      lineWidth: model.active ? 1.5 : 0.75)
+                        .strokeBorder(Color.white.opacity(model.active ? 0.7 : 0.08),
+                                      lineWidth: model.active ? 1.25 : 0.75)
                 }
                 .overlay(alignment: .topTrailing) { badges }
             Text(model.name)
-                .gvSystemFont(12.5, model.active ? .semibold : .medium, maxScale: 1.45)
+                .gvSystemFont(11.5, model.active ? .semibold : .medium, maxScale: 1.3)
                 .foregroundStyle(model.active ? GVTheme.bone : GVTheme.bone.opacity(0.8))
                 .lineLimit(2)
+                // A single long word ("Burnthrough") shrinks to fit rather
+                // than breaking mid-word onto a second line.
+                .minimumScaleFactor(0.75)
                 .multilineTextAlignment(.center)
-                // Two lines are reserved whether or not the name fills them,
-                // so a row of tiles stays a row of tiles however long the
-                // names are and however large the type is set.
-                .frame(maxWidth: .infinity, minHeight: 30, alignment: .top)
+                .frame(maxWidth: .infinity, minHeight: 26, alignment: .top)
         }
     }
 
@@ -116,27 +116,17 @@ struct GVEffectTileFace: View {
     }
 }
 
-/// Loading placeholder. A diagonal sheen passes over the empty plate while
-/// the thumbnail store renders, so "not ready" reads as progress, not as
-/// broken.
+/// Static loading placeholder. Distilled: no animated sweep, just a quiet plate.
 private struct GVTileShimmer: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var sweep = false
-
     var body: some View {
-        GeometryReader { geometry in
-            LinearGradient(colors: [.clear, .white.opacity(0.09), .clear],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-                .frame(width: geometry.size.width * 1.6)
-                .offset(x: sweep ? geometry.size.width : -geometry.size.width * 1.6)
-        }
-        .clipped()
-        .background(Color.white.opacity(0.045))
-        .accessibilityHidden(true)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: false)) { sweep = true }
-        }
+        Rectangle()
+            .fill(Color.white.opacity(0.045))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.05), lineWidth: 0.75)
+                    .padding(12)
+            }
+            .accessibilityHidden(true)
     }
 }
 
@@ -168,23 +158,14 @@ struct GVEffectTileStyle: ButtonStyle {
 }
 
 extension View {
-    /// Tiles tip back and fade as they scroll toward either edge, and settle
-    /// flat in the middle of the grid.
+    /// Distilled: keep tiles visually stable while scrolling (no 3D tilt/fade).
     func gvTileScrollDepth(reduceMotion: Bool) -> some View {
-        scrollTransition(.interactive, axis: .vertical) { content, phase in
-            content
-                .opacity(phase.isIdentity ? 1 : 0.55)
-                .scaleEffect(reduceMotion || phase.isIdentity ? 1 : 0.94)
-                .rotation3DEffect(.degrees(reduceMotion ? 0 : phase.value * -10),
-                                  axis: (x: 1, y: 0, z: 0), perspective: 0.6)
-        }
+        self
     }
 
-    /// Staggered rise for the first screenful after a shelf change. Later
-    /// tiles, created lazily as the grid scrolls, arrive without delay so a
-    /// fast fling never waits on an entrance.
+    /// Distilled: no staggered entrance animation; content appears immediately.
     func gvTileEntrance(index: Int, reduceMotion: Bool) -> some View {
-        modifier(GVTileEntrance(index: index, reduceMotion: reduceMotion))
+        self
     }
 }
 

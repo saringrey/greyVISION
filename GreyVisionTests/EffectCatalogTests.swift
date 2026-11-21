@@ -5,6 +5,21 @@ import UIKit
 import XCTest
 
 final class EffectCatalogTests: XCTestCase {
+    @MainActor
+    func testActiveShelfHasUniqueIdentitiesForDuplicateStackSlots() throws {
+        let editor = EffectEditingSession()
+        editor.select(.vhs)
+        let original = try XCTUnwrap(editor.focusedSlot)
+        editor.effectStack.duplicate(original)
+        let items = editor.activeEffects.map { effect in
+            GVEffectIndexItem(effect: effect, name: effect.label, active: true,
+                              favorite: false, cost: 1, needsAudio: false, accessibilityValue: "active")
+        }
+        let section = GVEffectIndexSection(id: "active", title: "Active", items: items)
+        XCTAssertEqual(section.items.map(\.id), [WorkspaceAdjustableEffect.vhs.rawValue])
+        XCTAssertEqual(editor.effectStack.orderedSlots.count, 2, "Browsing must retain both render slots")
+    }
+
     func testEveryEffectDefaultsToFullBlendWithoutOverwritingSavedMix() throws {
         XCTAssertEqual(CameraEffectParameters().blend, 1)
         for effect in WorkspaceAdjustableEffect.allCases {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Collections live in Settings; the viewfinder dock contains only live adjustments.
+/// Saved compositions open from the Composition toolbar in the dock.
 enum GVCollectionPlate: String, CaseIterable, Identifiable, Hashable {
     case recipes
     var id: String { rawValue }
@@ -36,12 +36,15 @@ struct WorkspaceDockView: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            WorkspaceLiveAdjustments(editor: editor, recording: recording, hidesSourceControls: $hidesSourceControls)
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: DockContentHeightKey.self, value: proxy.size.height)
-                    }
+            VStack(spacing: 4) {
+                WorkspaceLiveAdjustments(editor: editor, recording: recording, hidesSourceControls: $hidesSourceControls)
+            }
+            .padding(.vertical, 2)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(key: DockContentHeightKey.self, value: proxy.size.height)
                 }
+            }
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(height: min(contentHeight, maximumHeight))
@@ -80,7 +83,6 @@ private struct WorkspaceLiveAdjustments: View {
                     effect: effect, editor: editor,
                     isFavorite: preferences.isFavorite(effect.rawValue),
                     onFavoriteToggled: { preferences.toggleFavorite(effect.rawValue) },
-                    onSelectEffect: { editor.focus($0) },
                     onClose: { editor.focus(nil) }
                 )
             } else if !hidesSourceControls {

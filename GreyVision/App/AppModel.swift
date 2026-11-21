@@ -85,7 +85,7 @@ final class AppModel: ObservableObject {
         guard route == .boot else { return }
         sourceMode = .camera
         runtimeStatus = .queued
-        entrySettleStart = isUITesting ? nil : Date()
+        entrySettleStart = nil
         route = .workspace
         beginEngineStart()
     }

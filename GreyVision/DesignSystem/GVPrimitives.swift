@@ -214,7 +214,7 @@ private struct GVGlassButtonStyle: ButtonStyle {
                         lineWidth: configuration.isPressed ? 1.3 : 1
                     )
             )
-            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.975 : 1))
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
             .colorEffect(
                 ShaderLibrary.pressPulse(
                     .float(Float(Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600))),
@@ -301,7 +301,7 @@ struct GVGridField: View {
                 path.move(to: CGPoint(x: 0, y: y))
                 path.addLine(to: CGPoint(x: size.width, y: y))
             }
-            context.stroke(path, with: .color(GVTheme.violetDeep.opacity(0.09)), lineWidth: 0.5)
+            context.stroke(path, with: .color(Color.white.opacity(0.05)), lineWidth: 0.5)
         }
         .mask(
             RadialGradient(
