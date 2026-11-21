@@ -55,18 +55,6 @@ final class BootstrapTests: XCTestCase {
         XCTAssertEqual(editor.activeEffects, [.grain])
     }
 
-    @MainActor
-    func testReticleDefaultsOnAndPreservesNewOptOut() throws {
-        let suite = "ReticleTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set(false, forKey: "gv.preferences.cam.reticle")
-        let preferences = GVPreferences(defaults: defaults)
-        XCTAssertTrue(preferences.reticleEnabled)
-        preferences.reticleEnabled = false
-        XCTAssertFalse(GVPreferences(defaults: defaults).reticleEnabled)
-    }
-
     func testDiagnosticsBeginIdleAndEmpty() async {
         let store = DiagnosticsStore()
         let snapshot = await store.snapshot()

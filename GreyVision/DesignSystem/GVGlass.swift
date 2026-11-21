@@ -334,59 +334,15 @@ struct AnyShape: Shape {
 // MARK: - Chrome plate
 
 extension View {
-    /// The workspace's bottom-chrome surface: frosted material under a black
-    /// veil, with a hairline edge. The capture pill and every parameter deck
-    /// above it share it, so the bottom of the screen reads as one family
-    /// instead of a refracting glass slab stacked on a frosted pill.
-    func gvChromePlate(_ shape: some InsettableShape) -> some View {
-        modifier(GVChromePlate(shape: shape))
-    }
-}
-
-private struct GVChromePlate<S: InsettableShape>: ViewModifier {
-    let shape: S
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    /// A charcoal plate with subtle depth. Distilled: less contrasty edge
-    /// treatment and softer shadow to keep chrome quiet over live imagery.
-    func body(content: Content) -> some View {
-        content
-            .background {
-                if reduceTransparency {
-                    shape.fill(Color(red: 0.095, green: 0.112, blue: 0.155))
-                } else {
-                    ZStack {
-                        shape.fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.142, green: 0.165, blue: 0.223).opacity(0.94),
-                                    Color(red: 0.099, green: 0.116, blue: 0.159).opacity(0.96),
-                                    Color(red: 0.077, green: 0.091, blue: 0.126).opacity(0.98)
-                                ],
-                                startPoint: .topLeading, endPoint: .bottomTrailing
-                            )
-                        )
-                        GVSplashPlate()
-                            .clipShape(shape)
-                            .opacity(0.22)
-                    }
-                }
-            }
-            .overlay {
-                shape.strokeBorder(
-                    Color.white.opacity(0.10),
-                    lineWidth: 0.6
-                )
-                .allowsHitTesting(false)
-            }
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .fill(LinearGradient(colors: [.clear, .white.opacity(0.08), .clear],
-                                         startPoint: .leading, endPoint: .trailing))
-                    .frame(height: 1)
-                    .padding(.horizontal, 18)
-                    .allowsHitTesting(false)
-            }
-            .shadow(color: .black.opacity(0.30), radius: 14, y: 6)
+    /// The workspace's chrome surface: the splash tracker plate — x-ray black,
+    /// a hairline, lime corner brackets — shared by the capture row, the
+    /// camera deck, every parameter deck and the effect dock, so the whole
+    /// interface reads as one family with the splash it opened from.
+    ///
+    /// `tag` hangs a splash-style label off the top-left corner;
+    /// `bracketInset` pulls the brackets in, as the splash does when a box
+    /// locks on.
+    func gvChromePlate(_ shape: some InsettableShape, tag: String? = nil, bracketInset: CGFloat = 0) -> some View {
+        modifier(GVSplashDockPlate(shape: shape, tag: tag, bracketInset: bracketInset))
     }
 }

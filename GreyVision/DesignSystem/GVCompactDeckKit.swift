@@ -231,7 +231,7 @@ extension View {
 }
 
 private struct GVCompactDeckPlateModifier: ViewModifier {
-    static let radius: CGFloat = 18
+    static let radius: CGFloat = GVSplashDock.radius
 
     func body(content: Content) -> some View {
         content

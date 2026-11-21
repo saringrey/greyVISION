@@ -40,7 +40,7 @@ swiftformat --lint .
 
 step "swiftlint lint"
 # Not --strict: the renderer and dock still carry recorded size/complexity
-# debt. See docs/CURRENT_STATE.md. Warnings are visible; they do not gate.
+# debt. Warnings are visible; they do not gate.
 swiftlint lint
 
 step "simulator test"

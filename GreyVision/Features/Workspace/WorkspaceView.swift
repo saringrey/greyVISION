@@ -32,8 +32,6 @@ struct WorkspaceView: View {
     @State private var adjustRevealSignal = 0
     /// What the Photo button shows, from the renderer's capture messages.
     @State private var shutterState = GVShutterState.idle
-    /// Bumped when a capture begins; drives the viewfinder flash.
-    @State private var shutterFlashTick = 0
     @State private var shutterResetTask: Task<Void, Never>?
     @State private var keyboardOverlap: CGFloat = 0
     @StateObject private var hud = GVHUDState()
@@ -50,12 +48,6 @@ struct WorkspaceView: View {
     /// press rather than the tap, because tapping still means "turn the link
     /// on" and the code only needs reading once per Mac.
     @State private var showPairingSheet = false
-    @State private var settingsAdvancedExpanded = false
-
-    /// Shared cadence anchor for every 4 Hz telemetry consumer (status line,
-    /// both scrims). One start instant means their periodic timers fire in
-    /// lockstep instead of four phase-shifted invalidations per second.
-    @State private var telemetryTickStart = Date.now
 
     @State private var spectrumResizeStart: Double?
 
@@ -126,13 +118,11 @@ struct WorkspaceView: View {
         GVInteractionHaptics.select()
     }
 
-    /// Follows a photo from shutter to Photos: flash when it starts, then the
-    /// outcome on the button for a moment before it settles back.
+    /// Follows a photo from shutter to Photos: the outcome shows on the
+    /// button for a moment before it settles back. No on-screen flash — the
+    /// button and the haptic are the confirmation, and the frame stays clean.
     private func updateShutter(for message: String?) {
         let next = GVShutterState(message: message)
-        if next == .capturing, shutterState != .capturing {
-            shutterFlashTick &+= 1
-        }
         shutterState = next
         shutterResetTask?.cancel()
         guard next == .saved || next == .failed else { return }
@@ -199,7 +189,7 @@ struct WorkspaceView: View {
                 geometry.size.height * (isLandscape ? 0.42 : 0.34),
                 isLandscape ? 176 : 292
             )
-            let fixedChromeHeight: CGFloat = isLandscape ? 164 : 184
+            let fixedChromeHeight: CGFloat = isLandscape ? 134 : 150
 
             // Landscape puts a notch inset on one side and a rounded-corner
             // inset on the other, and the chrome stack is sized to the safe
@@ -298,14 +288,14 @@ struct WorkspaceView: View {
                     .padding(.leading, -bleedLeading)
                     .padding(.trailing, -bleedTrailing)
                     // Level with the Dynamic Island rather than below it.
-                    // The row already reserves a centre gap the width of
-                    // the cutout, so the wordmark and the button cluster
-                    // land in the shoulders either side and the band under
-                    // the island — previously ~48pt of nothing — is gone.
-                    // Touches are unaffected: the cutout only intercepts
-                    // within its own bounds, and neither control overlaps
-                    // it.
-                    .padding(.top, geometry.safeAreaInsets.top > 30 ? 3 : 8)
+                    // The row reserves a centre gap the width of the cutout,
+                    // so the camera button and the mark land in the
+                    // shoulders either side. The island's centre sits about
+                    // 29.5pt down on every Dynamic Island iPhone; the row is
+                    // centred on that line. Notched and older phones keep a
+                    // small fixed inset.
+                    .padding(.top, Self.shoulderTopInset(safeTop: geometry.safeAreaInsets.top,
+                                                         portrait: !isLandscape))
 
                     if let activeTopDeck {
                         EffectChromeObserver(editor: effectEditor) {
@@ -396,7 +386,8 @@ struct WorkspaceView: View {
 
                         detachedCaptureControls
                             .padding(.horizontal, 20)
-                            .padding(.top, 8)
+                            // Room for the plate's tracker tag above it.
+                            .padding(.top, 18)
                             .padding(.bottom, 8)
                     }
                     .overlay(alignment: .top) {
@@ -549,9 +540,6 @@ struct WorkspaceView: View {
             }
         }
         .onChange(of: isChromeHidden) { _, _ in refreshAmbientSampling() }
-        .onChange(of: controlLock.lockCamera) { _, locked in
-            if locked, activeTopDeck == .camera { activeTopDeck = nil }
-        }
         // The desktop shows a live record indicator, so the take's state has
         // to reach it the same way the composition does.
         .onChange(of: isTakeLive) { _, live in
@@ -829,8 +817,6 @@ struct WorkspaceView: View {
                 GVTrackingOverlay(runtime: blobRuntime)
                     .transition(.opacity)
             }
-
-            GVShutterFlash(trigger: shutterFlashTick)
         }
         .clipped()
         // #25. The fast path. Simultaneous so the viewfinder's own tap, pan
@@ -1089,7 +1075,8 @@ struct WorkspaceView: View {
         .buttonStyle(GVPressStyle())
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
-        .gvChromePlate(Capsule(style: .continuous))
+        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous),
+                       tag: recording ? "REC" : "CAPTURE")
         .frame(maxWidth: 390)
         .opacity(isChromeHidden && !recording ? 0 : 1)
         .allowsHitTesting(!isChromeHidden || recording)
@@ -1108,9 +1095,15 @@ struct WorkspaceView: View {
         .contentShape(Rectangle())
     }
 
+    /// Puts the 56pt top row's centre on the Dynamic Island's centre line.
+    private static func shoulderTopInset(safeTop: CGFloat, portrait: Bool) -> CGFloat {
+        guard portrait else { return 8 }
+        if safeTop > 50 { return max(0, 29.5 - 56 / 2) }
+        return safeTop > 30 ? 3 : 8
+    }
+
     private enum WorkspaceTopDeck: String, Identifiable {
         case camera
-        case settings
 
         var id: String {
             rawValue
@@ -1121,6 +1114,12 @@ struct WorkspaceView: View {
 // MARK: - Top shell + control decks
 
 private extension WorkspaceView {
+    /// The top shell. Two shoulders either side of the Dynamic Island and
+    /// nothing in between: the one camera button sits in the left shoulder,
+    /// the mark in the right. Both are centred in their shoulder and level
+    /// with the island, so they read as part of the hardware outline rather
+    /// than as a toolbar pinned under it. Mid-take the running timecode takes
+    /// the button's place.
     func topPanel(for geometry: GeometryProxy) -> some View {
         let portrait = geometry.size.width < geometry.size.height
         let compact = geometry.size.width < 400
@@ -1129,79 +1128,32 @@ private extension WorkspaceView {
         let islandReserve = portrait
             ? min(max(geometry.size.width * 0.30, compact ? 104 : 122), 146)
             : 0
+        // In portrait each control is centred in its shoulder; in landscape
+        // there is no island, so they go to the ends of the row.
+        let leading: Alignment = portrait ? .center : .leading
+        let trailing: Alignment = portrait ? .center : .trailing
 
-        return VStack(spacing: GVMetrics.stepInternal) {
-            HStack(spacing: 0) {
-                // Mid-take the shoulders swap: the running timecode takes the
-                // left and the mark moves to the right shoulder — where the
-                // recorded screen carries its watermark — so take state reads
-                // from across the room whether or not the operator has
-                // summoned the interface back.
+        return HStack(spacing: 0) {
+            Group {
                 if isTakeLive {
-                    HStack(spacing: GVMetrics.stepRelated) {
-                        recordingTimecode
-                    }
-                    .padding(.leading, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Color.clear
-                        .frame(width: islandReserve)
-                        .accessibilityHidden(true)
-
-                    wordmarkButton(portrait: portrait, compact: compact)
-                        .padding(.trailing, 6)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    recordingTimecode
                 } else {
-                    // A small optical lead shifts the mark away from the
-                    // rounded glass and lines it up with the telemetry strip
-                    // below (inset by `horizontalInset + 6`).
-                    wordmarkButton(portrait: portrait, compact: compact)
-                        .padding(.leading, 6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Color.clear
-                        .frame(width: islandReserve)
-                        .accessibilityHidden(true)
-
-                    HStack(spacing: 7) {
-                        shellChip(
-                            symbol: "camera.aperture",
-                            id: "camera",
-                            active: activeTopDeck == .camera,
-                            usesCharcoalPlate: true
-                        ) { toggleTopDeck(.camera) }
-
-                        shellChip(
-                            symbol: "slider.horizontal.3",
-                            id: "settings",
-                            active: activeTopDeck == .settings,
-                            usesCharcoalPlate: true
-                        ) { toggleTopDeck(.settings) }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    shellChip(active: activeTopDeck == .camera) { toggleTopDeck(.camera) }
                 }
             }
-            .padding(.horizontal, horizontalInset)
-            .frame(height: panelHeight)
+            .padding(.leading, portrait ? 0 : 6)
+            .frame(maxWidth: .infinity, alignment: leading)
 
-            GVTelemetryStrip(
-                statsMailbox: renderStats,
-                onExposureNotice: showTopNotice,
-                tickStart: telemetryTickStart
-            )
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .gvChromePlate(Capsule(style: .continuous))
-            .padding(.horizontal, horizontalInset)
+            Color.clear
+                .frame(width: islandReserve)
+                .accessibilityHidden(true)
 
-            if let field = hud.activeField {
-                GVFieldAdjuster(field: field, statsMailbox: renderStats, onNotice: showTopNotice)
-                    .padding(.horizontal, horizontalInset)
-                    .padding(.top, GVMetrics.stepMicro)
-                    .transition(.opacity)
-            }
+            wordmarkButton(portrait: portrait, compact: compact)
+                .padding(.trailing, portrait ? 0 : 6)
+                .frame(maxWidth: .infinity, alignment: trailing)
         }
-        .animation(GVMotion.resolved(GVMotion.scan, reduceMotion: reduceMotion), value: hud.activeField)
+        .padding(.horizontal, horizontalInset)
+        .frame(height: panelHeight)
         .gvDecay(decay)
     }
 
@@ -1216,57 +1168,47 @@ private extension WorkspaceView {
             )
             .accessibilityIdentifier("workspace.screen")
             .accessibilityLabel("grey VISION")
+            .frame(minHeight: GVMetrics.touchTarget)
             .contentShape(Rectangle())
         }
         .buttonStyle(GVPressStyle())
     }
 
-    /// Top-shell control. The settings trigger receives the same compact
-    /// charcoal plate used by the workspace dock; camera navigation remains a
-    /// lightweight shell glyph.
-    func shellChip(
-        symbol: String,
-        id: String,
-        active: Bool,
-        usesCharcoalPlate _: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        let glyph: Color = active ? Color.black : GVTheme.bone.opacity(0.8)
-
-        return Button {
-            action()
-        } label: {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(glyph)
-                .frame(width: 45, height: 44)
+    /// The one top-shell control: opens the camera deck, which holds the lens,
+    /// the frame and every capture and app setting.
+    func shellChip(active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "camera.aperture")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(active ? Color.black : GVTheme.bone.opacity(0.9))
+                .symbolEffect(.rotate, value: active)
+                .symbolEffectsRemoved(reduceMotion)
+                .frame(width: 46, height: 44)
         }
-        .buttonStyle(GVGlassShellChipStyle(active: active))
+        .buttonStyle(GVShellChipStyle(active: active))
         .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: active)
-        .accessibilityLabel(id == "camera" ? "Camera tools" : "Capture settings")
+        .accessibilityLabel("Camera and settings")
         .accessibilityValue(active ? "expanded" : "collapsed")
-        .accessibilityIdentifier("workspace.\(id)")
+        .accessibilityIdentifier("workspace.camera")
     }
 
-    private struct GVGlassShellChipStyle: ButtonStyle {
+    private struct GVShellChipStyle: ButtonStyle {
         let active: Bool
 
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
         func makeBody(configuration: Configuration) -> some View {
-            let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-            // The same dithered black-and-white plate as the dock; on, it
-            // fills white like every other selected control.
+            let shape = RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous)
+            // The splash's tracker plate; on, it fills like every other
+            // selected control and the brackets close in.
             configuration.label
                 .background {
                     if active {
-                        shape.fill(GVTheme.bone).shadow(color: .white.opacity(0.35), radius: 8)
+                        shape.fill(GVTheme.bone).shadow(color: .white.opacity(0.3), radius: 8)
                     }
                 }
-                .gvChromePlate(shape)
-                .frame(width: 45, height: 44)
+                .gvChromePlate(shape, bracketInset: configuration.isPressed || active ? 3 : 0)
                 .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
-                .brightness(configuration.isPressed ? 0.02 : 0)
                 .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
         }
     }
@@ -1276,16 +1218,11 @@ private extension WorkspaceView {
             showTopNotice("Interface locked")
             return
         }
-        if deck == .camera, controlLock.lockCamera {
-            showTopNotice("Camera controls locked")
-            return
-        }
-        // A deck and a field control are both popouts under the same row.
         hud.clearField()
         activeTopDeck = activeTopDeck == deck ? nil : deck
     }
 
-    /// The mid-take clock that replaces the top-right chips. Same register as
+    /// The mid-take clock that replaces the camera button. Same register as
     /// the recording HUD's header: lit pip, monospaced digits, nothing else.
     private var recordingTimecode: some View {
         TimelineView(.periodic(from: .now, by: 0.5)) { _ in
@@ -1312,51 +1249,49 @@ private extension WorkspaceView {
     private func topControlDeck(_ deck: WorkspaceTopDeck, geometry: GeometryProxy, maximumHeight: CGFloat) -> some View {
         switch deck {
         case .camera:
-            ScrollView(.vertical, showsIndicators: false) {
-                cameraControlDeck(geometry: geometry)
-            }
-            .scrollBounceBehavior(.basedOnSize)
-        case .settings:
-            captureSettingsDeck(availableWidth: max(0, geometry.size.width - 20), maximumHeight: maximumHeight)
+            cameraDeck(availableWidth: max(0, geometry.size.width - 20), maximumHeight: maximumHeight)
         }
     }
 
-    func cameraControlDeck(geometry: GeometryProxy) -> some View {
-        let availableWidth = geometry.size.width - 20
-        return Group {
-            if appModel.sourceMode == .lidar {
-                alternateSourceConsole(title: "LIDAR", status: "CAMERA CONTROLS LOCKED") {
-                    appModel.deactivateDepthMode()
-                }
-            } else if appModel.sourceMode == .objects {
-                alternateSourceConsole(title: "AR OBJECTS", status: "TAP PREVIEW TO PLACE") {
-                    appModel.deactivateObjectMode()
-                }
-            } else {
-                CameraControlsView()
-            }
-        }
-        .frame(width: min(380, availableWidth), alignment: .center)
-        .frame(maxWidth: 620, alignment: .center)
-        .accessibilityIdentifier("workspace.camera.deck")
-    }
-
-    /// While LiDAR or AR Objects own the camera, the camera console offers
-    /// the one thing that makes sense: going back.
-    private func alternateSourceConsole(title: String, status: String, onReturn: @escaping () -> Void) -> some View {
-        GVConsolePanel(title: title, status: status) {
-            GVConsoleSection(label: "SOURCE") {
-                GVConsoleKey(symbol: "camera.aperture", label: "Camera", value: "Return", action: onReturn)
-            }
+    private var cameraDeckStatus: String? {
+        if effectEditor.isGlobalBypassed { return "FX OFF" }
+        switch appModel.sourceMode {
+        case .lidar: return "LIDAR"
+        case .objects: return "AR OBJECTS"
+        default: return controlLock.lockCamera ? "LOCKED" : nil
         }
     }
 
-    /// System switches. Capture actions live on the primary row / floating pair.
-    /// Capture and app preferences; composition edits live beside the stack.
-    func captureSettingsDeck(availableWidth: CGFloat, maximumHeight: CGFloat) -> some View {
-        GVSettingsConsolePanel(status: effectEditor.isGlobalBypassed ? "FX OFF" : nil,
+    /// Everything that used to be split across a camera deck and a settings
+    /// deck, in one place: lens and frame first, then capture, the Mac link
+    /// and the app. Labs and Developer were switches that changed nothing a
+    /// creator could see, so they are gone; Restart stays, because a wedged
+    /// camera pipeline is a real thing to recover from.
+    func cameraDeck(availableWidth: CGFloat, maximumHeight: CGFloat) -> some View {
+        GVSettingsConsolePanel(title: "CAMERA",
+                               symbol: "camera.aperture",
+                               status: cameraDeckStatus,
                                maximumHeight: maximumHeight,
-                               onClose: { toggleTopDeck(.settings) }) {
+                               onClose: { toggleTopDeck(.camera) }) {
+            switch appModel.sourceMode {
+            case .lidar:
+                GVConsoleSection(label: "SOURCE") {
+                    GVConsoleKey(symbol: "camera.aperture", label: "Camera", value: "Return") {
+                        appModel.deactivateDepthMode()
+                    }
+                }
+            case .objects:
+                GVConsoleSection(label: "SOURCE") {
+                    GVConsoleKey(symbol: "camera.aperture", label: "Camera", value: "Return") {
+                        appModel.deactivateObjectMode()
+                    }
+                }
+            default:
+                if !controlLock.lockCamera {
+                    CameraControlsView(onNotice: showTopNotice)
+                }
+            }
+
             GVConsoleSection(label: "CAPTURE") {
                 GVConsoleKey(symbol: preferences.captureCountdownSeconds == 0 ? "timer" : "timer.circlepath",
                              label: "Timer",
@@ -1429,50 +1364,16 @@ private extension WorkspaceView {
                     }
                 }
                 .accessibilityIdentifier("workspace.help")
-            }
 
-            DisclosureGroup(isExpanded: $settingsAdvancedExpanded) {
-                GVSettingsGrid {
-                    // Two switches, not one: developer reveals Restart Engine,
-                    // experimental has nothing to do with it.
-                    GVConsoleKey(symbol: preferences.experimentalEnabled ? "flask.fill" : "flask",
-                                 label: "Labs", value: preferences.experimentalEnabled ? "ON" : "OFF",
-                                 active: preferences.experimentalEnabled) {
-                        preferences.experimentalEnabled.toggle()
-                        showTopNotice(preferences.experimentalEnabled ? "Experimental features on" : "Experimental features off")
-                    }
-                    .accessibilityIdentifier("workspace.experimental")
-
-                    GVConsoleKey(symbol: "wrench.and.screwdriver", label: "Developer",
-                                 value: preferences.developerEnabled ? "ON" : "OFF",
-                                 active: preferences.developerEnabled) {
-                        preferences.developerEnabled.toggle()
-                        showTopNotice(preferences.developerEnabled ? "Developer tools shown" : "Developer tools hidden")
-                    }
-                    .accessibilityIdentifier("workspace.developer")
-
-                    if preferences.developerEnabled {
-                        GVConsoleKey(symbol: "arrow.clockwise", label: "Restart") {
-                            appModel.restartEngine()
-                            showTopNotice("Restarting camera pipeline")
-                        }
-                        .accessibilityIdentifier("workspace.restart")
-                    }
+                GVConsoleKey(symbol: "arrow.clockwise", label: "Restart") {
+                    appModel.restartEngine()
+                    showTopNotice("Restarting camera pipeline")
                 }
-            } label: {
-                Label("Advanced", systemImage: "slider.horizontal.2.square")
-                    .font(GVTheme.mono(12, .medium))
-                    .tracking(0.35)
-                    .foregroundStyle(GVTheme.bone.opacity(0.9))
-                    .frame(minHeight: 46)
+                .accessibilityIdentifier("workspace.restart")
             }
-            .tint(GVTheme.bone.opacity(0.65))
-            .padding(.horizontal, 4)
-            .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: settingsAdvancedExpanded)
-            .accessibilityIdentifier("workspace.settings.advanced")
         }
         .frame(width: min(380, availableWidth), alignment: .center)
-        .accessibilityIdentifier("workspace.settings.deck")
+        .accessibilityIdentifier("workspace.camera.deck")
     }
 
     private struct GVGlassActionButtonStyle: ButtonStyle {
@@ -1686,13 +1587,13 @@ private struct GVCoachCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let lines: [(String, String)] = [
-        ("Camera tools", "Composition guides, flip, and torch in the camera menu"),
+        ("Camera button", "Lens, flip, torch, timer and Mac link, top left"),
         ("Effects", "Choose a look to return to the preview and its adjustments"),
         ("Double-tap a dial", "Reset a parameter to its default"),
         ("Photo / Video", "Capture a still or start a take from the bottom row"),
         ("Saved material", "Open Recipes from the Composition toolbar"),
         ("Clean preview", "Use Bypass in Composition to compare your image"),
-        ("Self timer", "Delay the shutter from the settings deck")
+        ("Self timer", "Delay the shutter from the camera menu")
     ]
 
     var body: some View {

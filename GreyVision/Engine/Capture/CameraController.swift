@@ -552,8 +552,28 @@ final class CameraController: NSObject, @unchecked Sendable, FrameSource {
             torchAvailable: device.hasTorch,
             requestedVideoCodec: configuration.videoCodec,
             availableVideoCodecs: availableVideoCodecs,
-            whiteBalanceLocked: device.whiteBalanceMode == .locked
+            whiteBalanceLocked: device.whiteBalanceMode == .locked,
+            lensZoomFactors: Self.lensStops(for: device),
+            displayZoomMultiplier: Double(device.displayVideoZoomFactorMultiplier)
         )
+    }
+
+    /// The zoom factors the Lens key steps through: the widest factor, then
+    /// every point where a virtual device hands over to its next physical
+    /// lens. A single-lens camera with headroom gets a 2× crop stop so the
+    /// key still has somewhere to go.
+    private static func lensStops(for device: AVCaptureDevice) -> [Double] {
+        let minimum = Double(device.minAvailableVideoZoomFactor)
+        let maximum = Double(device.maxAvailableVideoZoomFactor)
+        var stops = [minimum]
+        for factor in device.virtualDeviceSwitchOverVideoZoomFactors.map(\.doubleValue)
+            where factor > minimum + 0.01 && factor <= maximum {
+            stops.append(factor)
+        }
+        if stops.count == 1, maximum >= minimum * 2 {
+            stops.append(minimum * 2)
+        }
+        return stops
     }
 
     private func configureDevice(

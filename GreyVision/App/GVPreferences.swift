@@ -128,26 +128,6 @@ final class GVPreferences: ObservableObject {
         didSet { defaults.set(gridEnabled, forKey: "gv.preferences.cam.grid") }
     }
 
-    @Published var histogramEnabled: Bool {
-        didSet { defaults.set(histogramEnabled, forKey: "gv.preferences.cam.histogram") }
-    }
-
-    @Published var peakingEnabled: Bool {
-        didSet { defaults.set(peakingEnabled, forKey: "gv.preferences.cam.peaking") }
-    }
-
-    @Published var zebraEnabled: Bool {
-        didSet { defaults.set(zebraEnabled, forKey: "gv.preferences.cam.zebra") }
-    }
-
-    @Published var reticleEnabled: Bool {
-        didSet { defaults.set(reticleEnabled, forKey: "gv.preferences.cam.reticle.v2") }
-    }
-
-    @Published var ndShutterEnabled: Bool {
-        didSet { defaults.set(ndShutterEnabled, forKey: "gv.preferences.cam.ndShutter") }
-    }
-
     /// Menu track playback. Session-only by design — persisting it would mean
     /// the song starts on a later launch without the operator choosing it,
     /// which is the behaviour that was just removed.
@@ -197,21 +177,9 @@ final class GVPreferences: ObservableObject {
         soundEnabled = soundVal
 
         defaults.register(defaults: [
-            "gv.preferences.cam.grid": false,
-            "gv.preferences.cam.histogram": false,
-            "gv.preferences.cam.peaking": false,
-            "gv.preferences.cam.zebra": false,
-            // New default also applies to existing installs, then preserves
-            // any subsequent choice to turn the reticle off.
-            "gv.preferences.cam.reticle.v2": true,
-            "gv.preferences.cam.ndShutter": false
+            "gv.preferences.cam.grid": false
         ])
         gridEnabled = defaults.bool(forKey: "gv.preferences.cam.grid")
-        histogramEnabled = defaults.bool(forKey: "gv.preferences.cam.histogram")
-        peakingEnabled = defaults.bool(forKey: "gv.preferences.cam.peaking")
-        zebraEnabled = defaults.bool(forKey: "gv.preferences.cam.zebra")
-        reticleEnabled = defaults.bool(forKey: "gv.preferences.cam.reticle.v2")
-        ndShutterEnabled = defaults.bool(forKey: "gv.preferences.cam.ndShutter")
 
         // Stored names pass through the retirement table, so a favourite or
         // recent that named a removed effect points at its replacement.

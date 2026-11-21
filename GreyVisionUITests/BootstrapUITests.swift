@@ -56,7 +56,7 @@ final class BootstrapUITests: XCTestCase {
         app.buttons["workspace.global-bypass"].tap()
         XCTAssertEqual(app.buttons["workspace.global-bypass"].value as? String, "on")
         app.buttons["workspace.global-bypass"].tap()
-        app.buttons["workspace.settings"].tap()
+        app.buttons["workspace.camera"].tap()
         XCTAssertTrue(app.buttons["workspace.countdown"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.state, .runningForeground)
     }
@@ -141,12 +141,9 @@ final class BootstrapUITests: XCTestCase {
             app.descendants(matching: .any)["workspace.camera.deck"]
                 .waitForExistence(timeout: 3)
         )
-        // The deck is scrub rows now, not +/- buttons. ZOOM and EXPOSURE are
-        // the two that map to live capture-device setters, so they are the two
-        // worth asserting; TORCH, WB and FOCUS are capability-gated.
-        XCTAssertTrue(app.sliders["workspace.camera.zoom"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.sliders["workspace.camera.exposure"].exists)
-        XCTAssertFalse(app.staticTexts["CAMERA CONTROL"].exists)
+        // One deck holds the lens, the frame and every setting.
+        XCTAssertTrue(app.buttons["workspace.tool.lens"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["workspace.countdown"].exists)
     }
 
     /// Search and recents are the two routes into 133 effects that do not
@@ -207,12 +204,11 @@ final class BootstrapUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 5))
 
-        let settingsButton = app.buttons["workspace.settings"]
+        // One button in the top shell, not two.
         let cameraButton = app.buttons["workspace.camera"]
-        XCTAssertTrue(settingsButton.waitForExistence(timeout: 3))
-        XCTAssertTrue(cameraButton.exists)
+        XCTAssertTrue(cameraButton.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["workspace.settings"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["workspace.camera.deck"].exists)
-        XCTAssertFalse(app.descendants(matching: .any)["workspace.settings.deck"].exists)
         // Record and photo moved out of the hidden settings deck into a
         // permanent capture row beside the FX toggle: a take must be
         // startable whenever the shot is framed, deck open or not.
@@ -234,30 +230,9 @@ final class BootstrapUITests: XCTestCase {
                 .waitForExistence(timeout: 3)
         )
 
-        settingsButton.tap()
+        cameraButton.tap()
         XCTAssertTrue(
             app.descendants(matching: .any)["workspace.camera.deck"]
-                .waitForNonExistence(timeout: 3)
-        )
-        XCTAssertTrue(
-            app.descendants(matching: .any)["workspace.settings.deck"]
-                .waitForExistence(timeout: 3)
-        )
-        XCTAssertTrue(app.buttons["workspace.clear-effects"].waitForExistence(timeout: 3))
-
-        // Record drives the writer now rather than printing a Gate 5 notice,
-        // and the simulator has no capture hardware to record from — proving
-        // the recording path is a device test, not this one. Clear Effects is
-        // the deck action that is deterministic everywhere, so it is the one
-        // used to prove the deck's buttons are live.
-        app.buttons["workspace.clear-effects"].tap()
-        XCTAssertTrue(
-            app.descendants(matching: .any)["workspace.toast"].waitForExistence(timeout: 3)
-        )
-
-        settingsButton.tap()
-        XCTAssertTrue(
-            app.descendants(matching: .any)["workspace.settings.deck"]
                 .waitForNonExistence(timeout: 3)
         )
         // The capture row is permanent: closing the deck does not take the
@@ -339,56 +314,6 @@ final class BootstrapUITests: XCTestCase {
                 .waitForExistence(timeout: 3)
         )
         XCTAssertTrue(app.sliders["workspace.parameter.feedback.zoom"].exists)
-    }
-
-    /// Tapping a reading in the status line has to open the control for that
-    /// reading and nothing else.
-    ///
-    /// It used to open whichever deck was nearest — and for frame rate,
-    /// resolution and codec the deck it opened contains no such control, so a
-    /// third of the row was tappable and did nothing.
-    func testTappingAStatusReadingOpensThatFieldsControlAlone() {
-        let app = XCUIApplication()
-        app.launchArguments = ["--uitesting-workspace"]
-        app.launch()
-
-        XCTAssertTrue(app.descendants(matching: .any)["workspace.screen"].waitForExistence(timeout: 5))
-
-        let frameRate = app.descendants(matching: .any)["workspace.status.frameRate"]
-        XCTAssertTrue(frameRate.waitForExistence(timeout: 3))
-        frameRate.tap()
-
-        let control = app.descendants(matching: .any)["workspace.field.frameRate"]
-        XCTAssertTrue(control.waitForExistence(timeout: 3), "FPS must open an FPS control")
-        XCTAssertFalse(
-            app.descendants(matching: .any)["workspace.settings.deck"].exists,
-            "FPS must not open the generic settings deck"
-        )
-        XCTAssertFalse(
-            app.descendants(matching: .any)["workspace.field.iso"].exists,
-            "Only the tapped field's control opens"
-        )
-
-        // A second tap on the same reading puts it away.
-        frameRate.tap()
-        XCTAssertTrue(control.waitForNonExistence(timeout: 3))
-
-        // Codec is the other end of the range: a device-reported list rather
-        // than three fixed rates.
-        let codec = app.descendants(matching: .any)["workspace.status.codec"]
-        XCTAssertTrue(codec.exists)
-        codec.tap()
-        XCTAssertTrue(
-            app.descendants(matching: .any)["workspace.field.codec"].waitForExistence(timeout: 3)
-        )
-        XCTAssertFalse(app.descendants(matching: .any)["workspace.field.frameRate"].exists)
-
-        // Dynamic range has no setter anywhere in the capture layer, so its
-        // control states that rather than drawing a picker that does nothing.
-        app.descendants(matching: .any)["workspace.status.dynamicRange"].tap()
-        let range = app.descendants(matching: .any)["workspace.field.dynamicRange"]
-        XCTAssertTrue(range.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["workspace.field.dynamicRange.hdr"].exists)
     }
 
     func testLiDARCategoryIsPresentAndTruthfulOnSimulator() throws {

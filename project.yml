@@ -52,24 +52,6 @@ targets:
     deploymentTarget: "18.0"
     sources:
       - path: GreyVision
-        excludes:
-          # Spec/planning notes, not source.
-          - ".kiro/**"
-          # Agent 3 prototypes overlap production composition and gesture
-          # models. Keep the delivery on disk without compiling duplicate
-          # same-module declarations into the shipping application.
-          - "Features/Interaction/GestureCoordinator.swift"
-          - "Features/Interaction/GestureRecordingAutomation.swift"
-          - "Features/Interaction/InteractionModule.swift"
-          - "Features/Interaction/MacroEngine.swift"
-          - "Features/Interaction/ModulationEngine.swift"
-          - "Features/Interaction/UIStateMachine.swift"
-          - "Features/Interaction/WildCardMutate.swift"
-          - "Features/Performance/**"
-          - "Features/Workspace/PresetSceneMorph.swift"
-          - "Features/Workspace/EffectBrowser.swift"
-          - "Engine/Capture/PerformanceMetadata.swift"
-          - "Engine/Capture/PerformanceRecorder.swift"
     info:
       path: GreyVision/Resources/Info.plist
       properties:
