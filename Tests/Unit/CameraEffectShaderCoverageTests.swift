@@ -165,7 +165,8 @@ final class CameraEffectShaderCoverageTests: XCTestCase {
     private func shaderSource() throws -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let shader = testFile
-            .deletingLastPathComponent() // GreyVisionTests
+            .deletingLastPathComponent() // Tests/Unit
+            .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // repository root
             .appendingPathComponent("GreyVision/Resources/Shaders/CameraShaders.metal")
         guard FileManager.default.fileExists(atPath: shader.path) else {

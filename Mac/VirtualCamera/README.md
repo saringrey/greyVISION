@@ -29,8 +29,8 @@ It does **not** publish a virtual camera and cannot turn GreyVision’s processe
 |---|---|
 | `GreyVision/Features/Workspace/WorkspaceView.swift` | Adds **Mac Cam** beside Clear FX and Audio. Starting it displays the one-time pairing code. |
 | `GreyVision/Engine/Broadcast/` | Existing iPhone-side Bonjour, TLS-PSK, low-latency HEVC/H.264 transport. |
-| `GreyVisionVirtualCamera/` | New macOS host app plus the embedded `GreyVisionCameraExtension`. |
-| `GreyVisionVirtualCamera/Sources/CameraExtension/GreyVisionCameraExtension.swift` | Browses, authenticates, decodes, and publishes the iPhone feed as the virtual camera. |
+| `Mac/VirtualCamera/` | New macOS host app plus the embedded `GreyVisionCameraExtension`. |
+| `Mac/VirtualCamera/Sources/CameraExtension/GreyVisionCameraExtension.swift` | Browses, authenticates, decodes, and publishes the iPhone feed as the virtual camera. |
 
 Both targets compile: the iOS app builds for Simulator, and the macOS host app plus Camera Extension build unsigned.
 
