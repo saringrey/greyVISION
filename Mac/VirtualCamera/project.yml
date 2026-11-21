@@ -26,9 +26,9 @@ targets:
       # literal, so the two could never complete a handshake. Reaching into the
       # phone's tree is what the Mac app already does; there is now no second
       # copy of either file anywhere.
-      - path: ../GreyVision/Engine/Broadcast/GVBroadcastProtocol.swift
+      - path: ../../GreyVision/Engine/Broadcast/GVBroadcastProtocol.swift
         group: Shared
-      - path: ../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
+      - path: ../../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
         group: Shared
     info:
       path: Resources/Host-Info.plist
@@ -60,9 +60,9 @@ targets:
       - Sources/CameraExtension
       - path: Sources/Shared/GVVirtualCameraConfiguration.swift
         group: Shared
-      - path: ../GreyVision/Engine/Broadcast/GVBroadcastProtocol.swift
+      - path: ../../GreyVision/Engine/Broadcast/GVBroadcastProtocol.swift
         group: Shared
-      - path: ../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
+      - path: ../../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
         group: Shared
     info:
       path: Resources/CameraExtension-Info.plist
