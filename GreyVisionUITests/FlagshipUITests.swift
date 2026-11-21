@@ -307,17 +307,13 @@ final class FlagshipUITests: XCTestCase {
         if coach.exists { coach.tap() }
         capture("Default center reticle")
         app.buttons["workspace.camera"].tap()
-        let reticle = app.buttons["workspace.tool.reticle"]
-        XCTAssertTrue(reticle.waitForExistence(timeout: 5))
-        XCTAssertEqual(reticle.value as? String, "active")
-        for removed in ["level", "hold", "anamorphic"] {
+        // The crosshair is always drawn, so it has no switch; the lens key
+        // took its place and the aids that did nothing are gone.
+        XCTAssertTrue(app.buttons["workspace.tool.lens"].waitForExistence(timeout: 5))
+        for removed in ["reticle", "zebra", "peaking", "histogram", "shutter", "level", "hold", "anamorphic"] {
             XCTAssertFalse(app.buttons["workspace.tool.\(removed)"].exists)
         }
         capture("Simplified camera tools")
-        reticle.tap()
-        XCTAssertEqual(reticle.value as? String, "inactive")
-        reticle.tap()
-        XCTAssertEqual(reticle.value as? String, "active")
     }
 
     func testCreatorSplashAndOpenGateLaunch() {

@@ -15,3 +15,12 @@ __pycache__/
 .build/
 SupportingContinuityCameraInYourMacOSApp/
 moltamp-widgets/
+
+# Screenshots, captures and build output stay local. The app's own images
+# live in GreyVision/Resources; nothing at the repository root is shipped.
+/diagnostics/
+/*.png
+/*.jpg
+/*.mp4
+*.app/
+build.db

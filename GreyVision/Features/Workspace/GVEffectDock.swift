@@ -66,7 +66,8 @@ struct GVEffectDock: View {
     }
 
     var body: some View {
-        VStack(spacing: 6) {
+        // Spaced for the tracker tags that hang off each plate's corner.
+        VStack(spacing: 18) {
             if let category {
                 strip(for: category)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -100,7 +101,7 @@ struct GVEffectDock: View {
             catalogueButton
         }
         .padding(5)
-        .gvLiquidGlass(radius: 24)
+        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous), tag: "EFFECTS")
         .accessibilityIdentifier("workspace.browser.categories")
     }
 
@@ -130,7 +131,7 @@ struct GVEffectDock: View {
             .foregroundStyle(isOpen ? Color.black : GVTheme.bone.opacity(0.88))
             .frame(maxWidth: .infinity, minHeight: 58)
             .background {
-                let tile = RoundedRectangle(cornerRadius: 19, style: .continuous)
+                let tile = RoundedRectangle(cornerRadius: 5, style: .continuous)
                 if isOpen {
                     tile.fill(ambient.hue)
                 } else {
@@ -166,7 +167,7 @@ struct GVEffectDock: View {
             .foregroundStyle(GVTheme.bone.opacity(0.88))
             .frame(maxWidth: .infinity, minHeight: 58)
             .background {
-                let tile = RoundedRectangle(cornerRadius: 19, style: .continuous)
+                let tile = RoundedRectangle(cornerRadius: 5, style: .continuous)
                 tile.fill(Color.white.opacity(0.05)).overlay(tile.fill(ambient.hue.opacity(0.10)))
             }
             .contentShape(Rectangle())
@@ -247,7 +248,8 @@ struct GVEffectDock: View {
         }
         .padding(.top, 8)
         .padding(.bottom, 8)
-        .gvLiquidGlass(radius: 20)
+        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous),
+                       tag: item.displayLabel)
     }
 
     /// Replace or stack, as one small switch on the strip it governs.
@@ -305,7 +307,7 @@ struct GVEffectDock: View {
         } label: {
             VStack(spacing: 5) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(Color.white.opacity(0.06))
                     if let image = thumbnails.image(for: effect) {
                         Image(uiImage: image)
@@ -318,10 +320,19 @@ struct GVEffectDock: View {
                     }
                 }
                 .frame(width: 66, height: 66)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .strokeBorder(active ? ambient.hue : Color.white.opacity(0.08), lineWidth: active ? 2 : 0.75)
+                }
+                .overlay {
+                    // A live effect is a tracked object, as on the splash.
+                    if active {
+                        GVTrackerBrackets(arm: 9)
+                            .stroke(GVSplashDock.lime, style: StrokeStyle(lineWidth: 1, lineCap: .square))
+                            .padding(-2)
+                            .accessibilityHidden(true)
+                    }
                 }
                 .overlay(alignment: .topTrailing) {
                     if favorite {

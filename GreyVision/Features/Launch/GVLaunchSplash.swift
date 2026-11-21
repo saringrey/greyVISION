@@ -13,6 +13,9 @@ struct GVLaunchSplash: View {
     @State private var pointer = GVSplashPointer()
     @State private var isSocialPresented = false
     @State private var isOpening = false
+    /// The +CAMERA button's frame, shared with the stage (which reveals the
+    /// true-colour film inside it) and the bottom shade (which leaves it out).
+    @State private var lensFrame: CGRect = .zero
 
     var body: some View {
         GeometryReader { proxy in
@@ -32,6 +35,17 @@ struct GVLaunchSplash: View {
                     .init(color: .clear, location: 0.70),
                     .init(color: .black.opacity(0.58), location: 1),
                 ], startPoint: .top, endPoint: .bottom)
+                // The shade would dull the lens; punch the button out of it.
+                .mask {
+                    ZStack {
+                        Rectangle()
+                        Rectangle()
+                            .frame(width: lensFrame.width, height: lensFrame.height)
+                            .position(x: lensFrame.midX, y: lensFrame.midY)
+                            .blendMode(.destinationOut)
+                    }
+                    .compositingGroup()
+                }
                 .allowsHitTesting(false)
 
                 VStack(spacing: 0) {
@@ -48,7 +62,11 @@ struct GVLaunchSplash: View {
 
                     Spacer()
 
-                    GVBracketButton(title: "+CAMERA", action: openCamera)
+                    GVBracketButton(title: "+CAMERA", tag: "CAM 00  LIVE", action: openCamera)
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                            lensFrame = frame
+                            pointer.lensRect = frame
+                        }
                         .disabled(isOpening)
                         .accessibilityLabel("Open camera")
                         .accessibilityIdentifier("boot.launch")
@@ -87,34 +105,43 @@ struct GVLaunchSplash: View {
 
 // MARK: - Bracket button
 
-/// A label framed by four corner brackets and nothing else. Pressing snaps the
-/// brackets in tight around the label; Reduce Motion keeps them still and only
-/// changes brightness.
+/// A label framed by four lime tracker brackets, with a tracker tag hanging
+/// off its corner — the splash's own "tracked object", made pressable.
+///
+/// The inside is a lens: the stage keeps the button's rect revealed, so while
+/// the whole splash plays as an x-ray, the button shows the film in true
+/// colour, inverted against everything around it, with a scan line sweeping
+/// through. The label is set dark to read on that light image. Pressing snaps
+/// the brackets in tight; Reduce Motion keeps them still.
 struct GVBracketButton: View {
     let title: String
+    var tag: String?
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 16, weight: .semibold))
                 .tracking(2.4)
                 .padding(.horizontal, 28)
                 .frame(minWidth: 172, minHeight: 58)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(GVBracketStyle())
+        .buttonStyle(GVBracketStyle(tag: tag))
     }
 }
 
 private struct GVBracketStyle: ButtonStyle {
+    let tag: String?
+
     func makeBody(configuration: Configuration) -> some View {
-        GVBracketFace(label: configuration.label, pressed: configuration.isPressed)
+        GVBracketFace(label: configuration.label, tag: tag, pressed: configuration.isPressed)
     }
 }
 
 private struct GVBracketFace<Label: View>: View {
     let label: Label
+    let tag: String?
     let pressed: Bool
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -124,39 +151,25 @@ private struct GVBracketFace<Label: View>: View {
         let inset: CGFloat = still ? 0 : (pressed ? 7 : 0)
         let arm: CGFloat = still ? 12 : (pressed ? 9 : 12)
         label
-            .foregroundStyle(.white.opacity(pressed ? 1 : 0.88))
+            .foregroundStyle(Color.black.opacity(pressed ? 1 : 0.88))
+            // A pale halo keeps the dark label legible on the film's darker
+            // shots.
+            .shadow(color: .white.opacity(0.7), radius: 1.5)
             .scaleEffect(pressed && !still ? 0.96 : 1)
             .overlay {
-                GVCornerBrackets(inset: inset, arm: arm)
-                    .stroke(.white.opacity(pressed ? 1 : 0.8),
+                GVTrackerBrackets(inset: inset, arm: arm)
+                    .stroke(GVSplashDock.lime.opacity(pressed ? 1 : 0.95),
                             style: StrokeStyle(lineWidth: pressed ? 2 : 1.5, lineCap: .square))
                     .allowsHitTesting(false)
             }
-            .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+            .overlay(alignment: .topLeading) {
+                if let tag {
+                    GVTrackerTag(text: tag)
+                        .offset(y: -13)
+                        .allowsHitTesting(false)
+                }
+            }
             .opacity(isEnabled ? 1 : 0.45)
             .animation(.spring(response: 0.16, dampingFraction: 0.7), value: pressed)
-    }
-}
-
-/// Four L-shaped corners. `inset` moves them toward the centre.
-private struct GVCornerBrackets: Shape {
-    var inset: CGFloat
-    var arm: CGFloat
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(inset, arm) }
-        set { inset = newValue.first; arm = newValue.second }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        let box = rect.insetBy(dx: inset, dy: inset)
-        let length = min(arm, box.width / 2, box.height / 2)
-        var path = Path()
-        for (corner, dx, dy) in [(CGPoint(x: box.minX, y: box.minY), 1.0, 1.0), (CGPoint(x: box.maxX, y: box.minY), -1.0, 1.0),
-                                 (CGPoint(x: box.minX, y: box.maxY), 1.0, -1.0), (CGPoint(x: box.maxX, y: box.maxY), -1.0, -1.0)] {
-            path.move(to: CGPoint(x: corner.x, y: corner.y + dy * length))
-            path.addLine(to: corner)
-            path.addLine(to: CGPoint(x: corner.x + dx * length, y: corner.y))
-        }
-        return path
     }
 }

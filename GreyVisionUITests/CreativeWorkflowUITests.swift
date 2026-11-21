@@ -103,7 +103,7 @@ final class CreativeWorkflowUITests: XCTestCase {
     func testSelfTimerDelaysTheShutterAndCanBeCancelled() {
         let app = launchWorkspace()
 
-        app.buttons["workspace.settings"].tap()
+        app.buttons["workspace.camera"].tap()
         let timer = app.buttons["workspace.countdown"]
         XCTAssertTrue(timer.waitForExistence(timeout: 3))
         // The delay is a preference, so it may still be on a 10 or 30 second
@@ -113,9 +113,9 @@ final class CreativeWorkflowUITests: XCTestCase {
         }
         XCTAssertTrue(timer.label.contains("3s"), "The self-timer has to offer a three second stop")
 
-        app.buttons["workspace.settings"].tap()
+        app.buttons["workspace.camera"].tap()
         XCTAssertTrue(
-            app.descendants(matching: .any)["workspace.settings.deck"].waitForNonExistence(timeout: 3)
+            app.descendants(matching: .any)["workspace.camera.deck"].waitForNonExistence(timeout: 3)
         )
 
         app.buttons["workspace.capture.photo"].tap()

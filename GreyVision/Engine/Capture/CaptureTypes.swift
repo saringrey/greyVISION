@@ -110,6 +110,11 @@ struct ActiveCameraInfo: Sendable, Equatable {
     let requestedVideoCodec: CaptureSetupDraft.VideoCodec
     let availableVideoCodecs: [CaptureSetupDraft.VideoCodec]
     let whiteBalanceLocked: Bool
+    /// Zoom factors where the device changes physical lens, lowest first.
+    let lensZoomFactors: [Double]
+    /// Multiplier from device zoom factor to the number the operator reads
+    /// (0.5× on a camera whose widest lens is an ultra wide).
+    let displayZoomMultiplier: Double
 }
 
 enum CapturedFrameOrientation: Int, Codable, Equatable, Sendable {

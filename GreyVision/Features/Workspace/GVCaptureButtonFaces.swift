@@ -145,24 +145,3 @@ struct GVRecordButtonFace: View {
         return String(format: "%02d:%02d", total / 60, total % 60)
     }
 }
-
-/// The shutter flash: a brief white veil over the viewfinder when a photo is
-/// taken, so the capture is felt in the picture itself, not only in the hand.
-struct GVShutterFlash: View {
-    let trigger: Int
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var opacity = 0.0
-
-    var body: some View {
-        Color.white
-            .opacity(opacity)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-            .onChange(of: trigger) { _, _ in
-                // Reduce Motion keeps a softer, slower veil rather than none:
-                // the confirmation still matters, the strobe does not.
-                opacity = reduceMotion ? 0.35 : 0.85
-                withAnimation(.easeOut(duration: reduceMotion ? 0.5 : 0.28)) { opacity = 0 }
-            }
-    }
-}

@@ -373,6 +373,17 @@ final class CameraRuntime: ObservableObject {
         controller.setZoom(clamped)
     }
 
+    /// Steps to the next lens stop, wrapping back to the widest. Returns the
+    /// label of the lens now in use, or nil when there is only one.
+    @discardableResult
+    func cycleLens() -> String? {
+        let stops = snapshot.lensZoomFactors
+        guard stops.count > 1 else { return nil }
+        let next = stops[(snapshot.currentLensIndex + 1) % stops.count]
+        setZoom(next)
+        return snapshot.lensLabel(for: next)
+    }
+
     func setExposureBias(_ bias: Double) {
         guard !snapshot.isSynthetic else { return }
         let clamped = min(max(bias, snapshot.minimumExposureBias), snapshot.maximumExposureBias)
@@ -530,7 +541,9 @@ final class CameraRuntime: ObservableObject {
             torchEnabled: false,
             whiteBalanceLocked: info.whiteBalanceLocked,
             interruptionReason: nil,
-            errorMessage: nil
+            errorMessage: nil,
+            lensZoomFactors: info.lensZoomFactors,
+            displayZoomMultiplier: info.displayZoomMultiplier
         )
     }
 

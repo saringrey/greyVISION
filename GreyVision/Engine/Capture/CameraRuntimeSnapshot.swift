@@ -56,6 +56,22 @@ struct CameraRuntimeSnapshot: Sendable, Equatable {
     var exposureLocked = false
     var interruptionReason: String?
     var errorMessage: String?
+    /// Device zoom factors where the camera changes physical lens. Empty on
+    /// the synthetic source and before a device is running.
+    var lensZoomFactors: [Double] = []
+    /// Device zoom factor × this = the zoom the operator reads.
+    var displayZoomMultiplier: Double = 1
+
+    /// The lens stop the current zoom sits on: the highest stop at or below it.
+    var currentLensIndex: Int {
+        lensZoomFactors.lastIndex { $0 <= zoom + 0.01 } ?? 0
+    }
+
+    /// "0.5×", "1×", "2×" — a device zoom factor as the operator reads it.
+    func lensLabel(for factor: Double) -> String {
+        let shown = (factor * displayZoomMultiplier * 10).rounded() / 10
+        return shown == shown.rounded() ? "\(Int(shown))×" : String(format: "%.1f×", shown)
+    }
 
     static let idle = CameraRuntimeSnapshot(
         state: .idle,

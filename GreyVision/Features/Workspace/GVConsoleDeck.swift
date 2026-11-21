@@ -11,31 +11,33 @@ private extension EnvironmentValues {
     }
 }
 
-/// A compact instrument panel with reactive tiles and a restrained light field.
-/// The heading stays in place while longer groups scroll inside the plate.
+/// The camera deck's plate: the splash tracker surface with the deck's name
+/// hung off its corner as a lime tag. The tag is the heading; the row under
+/// it carries only the live status and the way out. Longer groups scroll
+/// inside the plate while that row stays put.
 struct GVSettingsConsolePanel<Content: View>: View {
+    var title = "SETTINGS"
+    var symbol = "slider.horizontal.3"
     var status: String?
     let maximumHeight: CGFloat
     let onClose: () -> Void
     @ViewBuilder let content: () -> Content
-    @ScaledMetric(relativeTo: .caption) private var headingSize: CGFloat = 12
     @ScaledMetric(relativeTo: .caption2) private var statusSize: CGFloat = 11
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 8) {
-                Label("SETTINGS", systemImage: "slider.horizontal.3")
-                    .font(GVTheme.mono(headingSize, .semibold))
-                    .tracking(1.1)
-                    .foregroundStyle(GVTheme.bone)
-                    .accessibilityAddTraits(.isHeader)
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(GVTheme.bone.opacity(0.7))
+                    .accessibilityHidden(true)
+                Text(status.map { "// \($0)" } ?? "// READY")
+                    .font(GVTheme.mono(statusSize, .medium))
+                    .tracking(0.8)
+                    .foregroundStyle(GVTheme.bone.opacity(0.6))
+                    .lineLimit(1)
                 Spacer(minLength: 4)
-                if let status {
-                    Text(status)
-                        .font(GVTheme.mono(statusSize, .medium))
-                        .foregroundStyle(GVTheme.bone.opacity(0.65))
-                        .lineLimit(1)
-                }
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .medium))
@@ -44,15 +46,18 @@ struct GVSettingsConsolePanel<Content: View>: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(GVPressStyle())
-                .accessibilityLabel("Close settings")
+                .accessibilityLabel("Close \(title.lowercased())")
                 .accessibilityIdentifier("workspace.settings.close")
             }
             .padding(.leading, 16)
             .padding(.trailing, 4)
-            .padding(.vertical, 3)
+            .padding(.top, 4)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(title.capitalized)
+            .accessibilityAddTraits(.isHeader)
 
             Rectangle()
-                .fill(GVTheme.bone.opacity(0.1))
+                .fill(GVSplashDock.lime.opacity(0.25))
                 .frame(height: 0.5)
                 .padding(.horizontal, 16)
 
@@ -68,48 +73,10 @@ struct GVSettingsConsolePanel<Content: View>: View {
             .environment(\.consoleUsesSettingsTiles, true)
         }
         .frame(maxHeight: maximumHeight)
-        .background { GVSettingsLightField() }
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .gvChromePlate(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .accessibilityElement(children: .contain)
-    }
-}
-
-/// Compact camera console. Settings use the same sections and actions in
-/// a scrolling tile layout through `GVSettingsConsolePanel`.
-struct GVConsolePanel<Content: View>: View {
-    let title: String
-    var status: String?
-    @ViewBuilder let content: () -> Content
-
-    private static var radius: CGFloat { 20 }
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Self.radius, style: .continuous)
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(title)
-                    .font(GVTheme.mono(12, .bold))
-                    .tracking(1.4)
-                    .foregroundStyle(GVTheme.bone)
-                if let status {
-                    Text("// \(status)")
-                        .font(GVTheme.mono(10, .medium))
-                        .foregroundStyle(GVTheme.bone.opacity(0.5))
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-            content()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background {
-            GVSplashPlate()
-                .clipShape(shape)
-        }
-        .modifier(GVSplashBorder(radius: Self.radius))
-        .shadow(color: .black.opacity(0.5), radius: 14, y: 6)
+        .clipShape(shape)
+        .gvChromePlate(shape, tag: title)
+        // The tag hangs above the plate; keep it clear of the row above.
+        .padding(.top, 14)
         .accessibilityElement(children: .contain)
     }
 }
@@ -127,10 +94,10 @@ struct GVConsoleSection<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(usesSettingsTiles ? label.capitalized : label)
-                .font(usesSettingsTiles ? .system(size: headingSize, weight: .medium) : GVTheme.mono(9, .semibold))
-                .tracking(usesSettingsTiles ? 1.1 : 1.6)
-                .foregroundStyle(GVTheme.bone.opacity(usesSettingsTiles ? 0.6 : 0.45))
+            Text(label.uppercased())
+                .font(GVTheme.mono(usesSettingsTiles ? headingSize - 1 : 9, .semibold))
+                .tracking(1.6)
+                .foregroundStyle(GVTheme.bone.opacity(0.5))
                 .padding(.horizontal, usesSettingsTiles ? 4 : 0)
                 .padding(.bottom, usesSettingsTiles ? 3 : 0)
                 .accessibilityAddTraits(.isHeader)
@@ -183,7 +150,7 @@ struct GVConsoleKey: View {
     }
 
     private var settingsTile: some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
         return Button(action: action) {
             VStack(spacing: 7) {
                 ZStack(alignment: .topTrailing) {
@@ -215,9 +182,17 @@ struct GVConsoleKey: View {
             .foregroundStyle(GVTheme.bone.opacity(active ? 1 : 0.75))
             .padding(10)
             .frame(maxWidth: .infinity, minHeight: 100)
-            .background(active ? Color.white.opacity(0.08) : Color.white.opacity(0.025), in: shape)
+            .background(active ? Color.white.opacity(0.09) : Color.white.opacity(0.025), in: shape)
             .overlay {
-                shape.strokeBorder(.white.opacity(active ? 0.18 : 0.04), lineWidth: 0.65)
+                shape.strokeBorder(.white.opacity(active ? 0.18 : 0.05), lineWidth: 0.65)
+            }
+            .overlay {
+                // An on key is a tracked object: it gets the splash brackets.
+                if active {
+                    GVTrackerBrackets(arm: 8)
+                        .stroke(GVSplashDock.lime.opacity(0.85), style: StrokeStyle(lineWidth: 1, lineCap: .square))
+                        .accessibilityHidden(true)
+                }
             }
             .contentShape(shape)
         }
@@ -231,7 +206,7 @@ struct GVConsoleKey: View {
     }
 
     private var key: some View {
-        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
         return Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: symbol)
@@ -272,38 +247,5 @@ struct GVConsoleKey: View {
         .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: active)
         .accessibilityLabel(label)
         .accessibilityValue([value, active ? "on" : nil].compactMap { $0 }.joined(separator: ", "))
-    }
-}
-
-/// A lightweight procedural light field, rendered only while the settings deck is visible.
-/// Its clock invalidates this decoration rather than the controls or camera workspace.
-private struct GVSettingsLightField: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20,
-                                paused: reduceMotion || scenePhase != .active)) { timeline in
-            Canvas { context, size in
-                let time = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
-                let center = CGPoint(x: size.width * (0.5 + 0.3 * sin(time * 0.25)),
-                                     y: size.height * (0.35 + 0.2 * cos(time * 0.2)))
-                context.fill(Path(CGRect(origin: .zero, size: size)), with: .radialGradient(
-                    Gradient(colors: [.white.opacity(0.09), .clear]),
-                    center: center, startRadius: 0, endRadius: max(size.width, size.height) * 0.7))
-                var grid = Path()
-                for x in stride(from: CGFloat(0), through: size.width, by: 24) {
-                    grid.move(to: CGPoint(x: x, y: 0))
-                    grid.addLine(to: CGPoint(x: x, y: size.height))
-                }
-                for y in stride(from: CGFloat(0), through: size.height, by: 24) {
-                    grid.move(to: CGPoint(x: 0, y: y))
-                    grid.addLine(to: CGPoint(x: size.width, y: y))
-                }
-                context.stroke(grid, with: .color(.white.opacity(0.025)), lineWidth: 0.5)
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }

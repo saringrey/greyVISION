@@ -49,12 +49,7 @@ struct CameraSurfaceView: View {
         .background(Color.black)
         .overlay {
             if appModel.sourceMode == .camera, cameraRuntime.snapshot.state == .running {
-                CameraAssistOverlay(
-                    gridEnabled: preferences.gridEnabled,
-                    reticleEnabled: preferences.reticleEnabled,
-                    histogramEnabled: preferences.histogramEnabled,
-                    statsMailbox: statsMailbox
-                )
+                CameraAssistOverlay(gridEnabled: preferences.gridEnabled)
             }
         }
         .onChange(of: cameraRuntime.snapshot.deviceID) { _, _ in
@@ -96,12 +91,9 @@ struct CameraSurfaceView: View {
                 case .ratio_16_9: 2
                 case .ratio_1_1: 3
                 }
-                let overlayVector = SIMD4<Float>(
-                    preferences.peakingEnabled ? 1 : 0,
-                    aspectCode,
-                    preferences.zebraEnabled ? 1 : 0,
-                    0 // Reticle is preview chrome, not part of the processed image.
-                )
+                // x: peaking, z: zebra — both retired from the camera deck, so
+                // held off. The shader still reads the slots.
+                let overlayVector = SIMD4<Float>(0, aspectCode, 0, 0)
                 ZStack {
                     CameraMetalSurface(
                         runtime: cameraRuntime,
@@ -342,31 +334,24 @@ private func packedBlobFields(_ blobs: [TrackedBlob], region: CGRect) -> [SIMD4<
 /// SwiftUI capture aids that do not belong in the image-processing shader.
 /// They are intentionally outside the Metal surface, so they remain responsive
 /// while the renderer is rebuilding and never consume preview gestures.
+///
+/// The centre crosshair is always drawn: it is the instrument's aiming mark,
+/// not an option.
 private struct CameraAssistOverlay: View {
     let gridEnabled: Bool
-    let reticleEnabled: Bool
-    let histogramEnabled: Bool
-    let statsMailbox: CameraRenderStatsMailbox
 
     var body: some View {
         ZStack {
             if gridEnabled {
                 CameraThirdsGrid()
             }
-            if reticleEnabled {
-                ZStack {
-                    Rectangle().frame(width: 22, height: 1)
-                    Rectangle().frame(width: 1, height: 22)
-                }
-                .foregroundStyle(.white.opacity(0.9))
-                .shadow(color: .black.opacity(0.85), radius: 1)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ZStack {
+                Rectangle().frame(width: 22, height: 1)
+                Rectangle().frame(width: 1, height: 22)
             }
-            if histogramEnabled {
-                CameraLumaMeter(statsMailbox: statsMailbox)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(12)
-            }
+            .foregroundStyle(.white.opacity(0.9))
+            .shadow(color: .black.opacity(0.85), radius: 1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -390,25 +375,3 @@ private struct CameraThirdsGrid: View {
     }
 }
 
-/// A compact, live luminance balance meter. The renderer already samples the
-/// top, deck and bottom image bands for adaptive chrome; exposing those values
-/// here makes the Histogram control meaningful without a second readback pass.
-private struct CameraLumaMeter: View {
-    let statsMailbox: CameraRenderStatsMailbox
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.25)) { _ in
-            let stats = statsMailbox.latest
-            let samples = [stats.topChromeLoad, stats.deckChromeLoad, stats.bottomChromeLoad]
-            HStack(alignment: .bottom, spacing: 2) {
-                ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
-                    Capsule()
-                        .fill(GVTheme.bone.opacity(0.72))
-                        .frame(width: 3, height: 5 + CGFloat(min(max(sample, 0), 1)) * 24)
-                }
-            }
-            .padding(5)
-            .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-        }
-    }
-}

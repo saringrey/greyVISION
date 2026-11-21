@@ -13,6 +13,10 @@ final class GVSplashPointer {
         didSet { movedAt = CACurrentMediaTime() }
     }
     private(set) var movedAt: CFTimeInterval = 0
+    /// Where the +CAMERA button sits, in stage points. The stage keeps this
+    /// rect permanently revealed — the true-colour film showing through the
+    /// x-ray — so the button reads as a lens onto the real image.
+    var lensRect: CGRect?
 }
 
 /// The splash video as an x-ray, with "tracked object" boxes that reveal the
@@ -59,6 +63,10 @@ struct GVSplashStage: UIViewRepresentable {
         private let reveal = CALayer()
         private let hud = CALayer()
         private var tiles: [GVSplashBoxLayers] = []
+        /// The +CAMERA lens: a standing tile in the colour mask, and a lime
+        /// scan line that sweeps through it like the splash tracker's cursor.
+        private let lens = CALayer()
+        private let lensScan = CALayer()
 
         private var tracker = GVSplashTracker()
         private var endObserver: NSObjectProtocol?
@@ -75,6 +83,12 @@ struct GVSplashStage: UIViewRepresentable {
                 media.masksToBounds = true
             }
             color.mask = reveal
+            lens.backgroundColor = UIColor.white.cgColor
+            lens.isHidden = true
+            reveal.addSublayer(lens)
+            lensScan.backgroundColor = GVSplashBoxLayers.lime.cgColor
+            lensScan.isHidden = true
+            hud.addSublayer(lensScan)
             layer.addSublayer(xray)
             layer.addSublayer(color)
             layer.addSublayer(hud)
@@ -229,6 +243,7 @@ struct GVSplashStage: UIViewRepresentable {
 
             CATransaction.begin()
             CATransaction.setDisableActions(true)
+            renderLens()
             for (index, tile) in tiles.enumerated() {
                 guard index < boxes.count else { tile.hide(); continue }
                 let box = boxes[index]
@@ -236,6 +251,28 @@ struct GVSplashStage: UIViewRepresentable {
                 tile.show(box, linkTo: next, text: label(for: box))
             }
             CATransaction.commit()
+        }
+
+        /// The button's rect shows the film in true colour — the opposite of
+        /// the x-ray around it — with a lime line sweeping down through it.
+        /// Reduce Motion keeps the lens and drops the sweep.
+        private func renderLens() {
+            guard let rect = pointer.lensRect?.integral, rect.width > 1, rect.height > 1 else {
+                lens.isHidden = true
+                lensScan.isHidden = true
+                return
+            }
+            lens.isHidden = false
+            lens.frame = rect
+            guard !reduceMotion else {
+                lensScan.isHidden = true
+                return
+            }
+            let period = 2.6
+            let phase = CACurrentMediaTime().truncatingRemainder(dividingBy: period) / period
+            lensScan.isHidden = false
+            lensScan.frame = CGRect(x: rect.minX, y: rect.minY + rect.height * phase, width: rect.width, height: 1)
+            lensScan.opacity = Float(sin(phase * .pi)) * 0.85
         }
 
         private func label(for box: GVSplashTracker.Box) -> String {
