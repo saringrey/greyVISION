@@ -12,10 +12,6 @@ configs:
   Debug: debug
   Release: release
 
-configFiles:
-  Debug: Config/Debug.xcconfig
-  Release: Config/Release.xcconfig
-
 settings:
   base:
     MARKETING_VERSION: 5.0.0
@@ -120,7 +116,7 @@ targets:
     platform: iOS
     deploymentTarget: "18.0"
     sources:
-      - path: GreyVisionTests
+      - path: Tests/Unit
     dependencies:
       - target: GreyVision
     settings:
@@ -135,7 +131,7 @@ targets:
     platform: iOS
     deploymentTarget: "18.0"
     sources:
-      - path: GreyVisionUITests
+      - path: Tests/UI
     dependencies:
       - target: GreyVision
     settings:

@@ -46,7 +46,7 @@ struct GVARStudioDeck: View {
             }
             .frame(minHeight: 52)
         }
-        .gvCompactDeckPlate()
+        .gvCompactDeckPlate(tag: "AR OBJECTS")
         .fileImporter(isPresented: $importing, allowedContentTypes: Self.modelTypes) { result in
             do {
                 let model = try runtime.importUserModel(from: result.get())

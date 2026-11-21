@@ -1,7 +1,7 @@
 // Host-only regression check; no app build, simulator, or XCTest runner needed.
 // swiftc -swift-version 6 -D TRACKING_BURN_IN_SELF_CHECK -o /tmp/gv-tracking-check \
 //   GreyVision/Engine/Vision/Tracking/{GVTrackingModel,GVTrackingFeed,GVTrackingDisplayList,GVVisionDetector}.swift \
-//   GreyVision/Engine/Rendering/GVTrackingBurnIn.swift GreyVisionTests/TrackingBurnInSelfCheck.swift
+//   GreyVision/Engine/Rendering/GVTrackingBurnIn.swift Tests/Unit/TrackingBurnInSelfCheck.swift
 // /tmp/gv-tracking-check [existing.metallib | GreyVision/Resources/Shaders/TrackingShaders.metal]
 #if TRACKING_BURN_IN_SELF_CHECK
 import CoreGraphics

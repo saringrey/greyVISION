@@ -26,7 +26,7 @@ struct DepthEffectParameterDeck: View {
             knobRow
             GVParameterPager(page: $parameterPage, pageCount: pageCount)
         }
-        .gvCompactDeckPlate()
+        .gvCompactDeckPlate(tag: "LIDAR")
         .onChange(of: effect) { _, _ in parameterPage = 0 }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.parameters.depth.\(effect.rawValue)")

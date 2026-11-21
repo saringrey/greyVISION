@@ -29,7 +29,7 @@ struct GVEffectTileModel: Equatable {
 /// has to fight the picture for the same square, and the effect's picture is
 /// the more useful of the two.
 struct GVEffectTileFace: View {
-    static let cornerRadius: CGFloat = 14
+    static let cornerRadius: CGFloat = 4
     let model: GVEffectTileModel
 
     var body: some View {
@@ -40,8 +40,17 @@ struct GVEffectTileFace: View {
                 .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(model.active ? 0.7 : 0.08),
-                                      lineWidth: model.active ? 1.25 : 0.75)
+                        .strokeBorder(Color.white.opacity(model.active ? 0.5 : 0.08),
+                                      lineWidth: model.active ? 1 : 0.75)
+                }
+                .overlay {
+                    // A live effect is a tracked object, as on the splash.
+                    if model.active {
+                        GVTrackerBrackets(arm: 10)
+                            .stroke(GVSplashDock.lime, style: StrokeStyle(lineWidth: 1, lineCap: .square))
+                            .padding(-2)
+                            .accessibilityHidden(true)
+                    }
                 }
                 .overlay(alignment: .topTrailing) { badges }
             Text(model.name)
@@ -136,7 +145,7 @@ private struct GVTileShimmer: View {
 /// tile's footprint never changes — neighbours do not shuffle while a finger
 /// is down.
 struct GVEffectTileStyle: ButtonStyle {
-    static let cornerRadius: CGFloat = 14
+    static let cornerRadius: CGFloat = 4
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {

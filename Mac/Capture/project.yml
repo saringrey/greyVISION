@@ -19,16 +19,16 @@ targets:
       # A hand-kept duplicate is how a protocol drifts: the previous copy had
       # already diverged (its header decode required an exact length where the
       # phone's accepts at least that many bytes).
-      - path: ../GreyVision/Engine/Broadcast/GVBroadcastProtocol.swift
+      - path: ../../GreyVision/Engine/Broadcast/GVBroadcastProtocol.swift
         group: Shared
-      - path: ../GreyVision/Engine/Broadcast/GVBroadcastControlSurface.swift
+      - path: ../../GreyVision/Engine/Broadcast/GVBroadcastControlSurface.swift
         group: Shared
       # The TLS key derivation, for the same reason. This app used to keep its
       # own copy, and that copy ignored the passcode it was handed and derived
       # the key from a literal — so the two sides "matched" on a key that was in
       # everyone's binary, while the camera extension used the real code and
       # could never connect to either.
-      - path: ../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
+      - path: ../../GreyVision/Engine/Broadcast/GVBroadcastKeyMaterial.swift
         group: Shared
     info:
       path: Resources/Info.plist

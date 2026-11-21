@@ -139,11 +139,11 @@ private struct GVScrollProgressLine: ViewModifier {
                         ? max(geometry.size.width * (visibleWidth / contentWidth), 26)
                         : 0
                     ZStack(alignment: .leading) {
-                        Capsule()
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
                             .fill(Color.white.opacity(0.04))
                             .frame(width: geometry.size.width)
                         if contentWidth > visibleWidth + 8 {
-                            Capsule()
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .fill(Color.white.opacity(0.16))
                                 .frame(width: fillWidth)
                                 .offset(x: progress * (geometry.size.width - fillWidth))
@@ -224,21 +224,26 @@ extension View {
         }
     }
 
-    /// The shared charcoal material for every bottom-sheet deck.
-    func gvCompactDeckPlate() -> some View {
-        modifier(GVCompactDeckPlateModifier())
+    /// The shared splash-tracker plate for every bottom-sheet deck. `tag`
+    /// names what the deck is editing, hung off its corner as on the splash.
+    func gvCompactDeckPlate(tag: String? = nil) -> some View {
+        modifier(GVCompactDeckPlateModifier(tag: tag))
     }
 }
 
 private struct GVCompactDeckPlateModifier: ViewModifier {
     static let radius: CGFloat = GVSplashDock.radius
+    let tag: String?
 
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, GVMetrics.stepInternal)
             .padding(.top, GVMetrics.gapTight)
             .padding(.bottom, GVMetrics.gapHair)
-            .gvChromePlate(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
+            .gvChromePlate(RoundedRectangle(cornerRadius: Self.radius, style: .continuous), tag: tag)
+            // The tag hangs above the plate; reserve its room so a clipping
+            // container above does not cut it off.
+            .padding(.top, tag == nil ? 0 : 14)
             .frame(maxWidth: 360)
     }
 }
@@ -330,11 +335,11 @@ private struct GVGlassChipStyle: ButtonStyle {
         let pressed = configuration.isPressed
         configuration.label
             .background {
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(fill(pressed: pressed))
             }
             .overlay {
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .strokeBorder(stroke, lineWidth: 0.75)
             }
             .frame(height: height)
@@ -454,10 +459,10 @@ struct GVRailSlider: View {
             GeometryReader { geometry in
                 let width = geometry.size.width
                 ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(Color(white: 0.13))
                         .overlay(
-                            Capsule(style: .continuous)
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.8)
                         )
 
@@ -470,7 +475,7 @@ struct GVRailSlider: View {
                         .frame(width: 1.4, height: 7)
                         .offset(x: 6 + (width - 14) * defaultFraction)
 
-                    Capsule(style: .continuous)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(
                             LinearGradient(
                                 colors: [Color.white.opacity(0.95), Color.white.opacity(0.55)],

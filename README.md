@@ -7,14 +7,11 @@ graph, with a Mac link that streams the processed picture to a paired Mac.
 
 | Path | What it is |
 |---|---|
-| `GreyVision/` | The iPhone app. `App/` boot and routing, `Engine/` capture, rendering, audio, depth, AR and the Mac link, `Features/` the splash and workspace, `DesignSystem/` shared chrome. |
-| `GreyVisionTests/`, `GreyVisionUITests/` | Unit and UI tests. |
-| `GreyVisionMacCapture/` | The Mac app that receives the Mac Cam stream. Own `project.yml`. |
-| `GreyVisionVirtualCamera/` | The macOS camera extension. On hold until a paid developer account; see its README. |
-| `tools/splash-extend/` | Rebuilds the splash film's outpainted stills. |
-| `scripts/` | Build, install and verification scripts. |
-| `docs/ARCHITECTURE.md` | How the app is put together. |
-| `CONTEXT.md`, `PRODUCT.md` | Domain language and product brief. |
+| `GreyVision/` | The iPhone app. `App/` boot and routing, `Engine/` capture, rendering, audio, depth, AR and the Mac link, `Features/` the splash and workspace, `DesignSystem/` shared chrome, `Resources/` assets, shaders and fonts. |
+| `Tests/` | `Unit/` and `UI/` test targets for the iPhone app. |
+| `Mac/` | `Capture/` is the Mac app that receives the Mac Cam stream. `VirtualCamera/` is the macOS camera extension, on hold until a paid developer account. Each has its own `project.yml`. |
+| `docs/` | Architecture, product brief, domain language and the on-device test pass. |
+| `scripts/` | Build, install and verification scripts, plus `splash-extend/` for the splash film's outpainted stills. |
 
 ## Build and run
 
@@ -26,6 +23,7 @@ open GreyVision.xcodeproj         # scheme GreyVision
 
 ./scripts/run-simulator.sh        # build, install and launch in the simulator
 ./scripts/install-iphone.sh       # signed build onto a paired iPhone
+GV_DEVICE_UDID="Nick's iPhone" ./scripts/install-iphone.sh   # pick a phone by name or UDID
 ./scripts/verify.sh               # generate, format, lint, tests, device build
 ```
 

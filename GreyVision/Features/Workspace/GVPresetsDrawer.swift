@@ -43,7 +43,7 @@ struct GVPresetsDrawer: View {
             list
             footerRow
         }
-        .gvCompactDeckPlate()
+        .gvCompactDeckPlate(tag: "RECIPES")
         .padding(.horizontal, 6)
         .background(alignment: .top) { Color.clear }
         .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
