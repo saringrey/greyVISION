@@ -150,8 +150,8 @@ struct GVEffectDashboardSelector: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(6)
-        .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
             .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.75))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.browser.tray.\(group.rawValue)")

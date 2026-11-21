@@ -144,7 +144,7 @@ struct GVEffectBrowser: View {
     @FocusState private var searchFocused: Bool
 
     private static let spacing: CGFloat = 8
-    private static let panelRadius: CGFloat = 24
+    private static let panelRadius: CGFloat = GVSplashDock.radius
     private let surface = Color.white.opacity(0.045)
 
     init(editor: EffectEditingSession, initialCategory: WorkspaceDockCategory) {
@@ -189,12 +189,13 @@ struct GVEffectBrowser: View {
         .accessibilityIdentifier("workspace.browser")
     }
 
-    /// The live picture, frosted and dimmed: the dashboard reads as glass laid
-    /// over the camera rather than a separate screen that replaced it.
+    /// The live picture, frosted and pushed down to the splash's x-ray black:
+    /// the catalogue reads as the same instrument laid over the camera rather
+    /// than a separate screen that replaced it.
     private var backdrop: some View {
         ZStack {
             Rectangle().fill(.ultraThinMaterial)
-            Color(red: 0.08, green: 0.084, blue: 0.092).opacity(0.72)
+            Color(red: 0.012, green: 0.018, blue: 0.03).opacity(0.84)
         }
         .ignoresSafeArea()
     }
@@ -314,9 +315,9 @@ struct GVEffectBrowser: View {
             }
         }
         .padding(3)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75)
         )
         .fixedSize()
@@ -335,7 +336,7 @@ struct GVEffectBrowser: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background {
                     if selected {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(GVTheme.bone)
+                        RoundedRectangle(cornerRadius: 4, style: .continuous).fill(GVTheme.bone)
                     }
                 }
                 .contentShape(Rectangle())
@@ -382,9 +383,9 @@ struct GVEffectBrowser: View {
         }
         .padding(.leading, 11)
         .frame(height: 38)
-        .background(Color.white.opacity(searchFocused ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color.white.opacity(searchFocused ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .strokeBorder(Color.white.opacity(searchFocused ? 0.32 : 0), lineWidth: 1)
         )
         .frame(minHeight: GVMetrics.touchTarget)
@@ -394,7 +395,8 @@ struct GVEffectBrowser: View {
     private var selectorPanel: some View {
         selector
             .padding(10)
-            .gvLiquidGlass(radius: Self.panelRadius)
+            .gvChromePlate(RoundedRectangle(cornerRadius: Self.panelRadius, style: .continuous), tag: "FAMILIES")
+            .padding(.top, 14)
     }
 
     private var selector: some View {
@@ -441,14 +443,16 @@ struct GVEffectBrowser: View {
                 .padding(.top, 2)
         }
         .padding(.bottom, 10)
-        .gvLiquidGlass(radius: Self.panelRadius)
+        .gvChromePlate(RoundedRectangle(cornerRadius: Self.panelRadius, style: .continuous), tag: "CATALOGUE")
+        .padding(.top, 14)
     }
 
     private var contentPanel: some View {
         content
             .padding(10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .gvLiquidGlass(radius: Self.panelRadius)
+            .gvChromePlate(RoundedRectangle(cornerRadius: Self.panelRadius, style: .continuous), tag: "CATALOGUE")
+            .padding(.top, 14)
     }
 
     @ViewBuilder
@@ -621,9 +625,9 @@ struct GVEffectBrowser: View {
             .padding(12)
             .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
             .background(surface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .strokeBorder(GVTheme.bone.opacity(active ? 0.55 : 0), lineWidth: 1)
             }
             .overlay(alignment: .topTrailing) {

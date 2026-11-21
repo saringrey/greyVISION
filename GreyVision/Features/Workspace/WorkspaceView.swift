@@ -50,6 +50,9 @@ struct WorkspaceView: View {
     @State private var showPairingSheet = false
 
     @State private var spectrumResizeStart: Double?
+    /// Device zoom when a pinch began on the bare viewfinder. Pinch resizes a
+    /// spectrum overlay when one is selected, and zooms the camera otherwise.
+    @State private var pinchZoomStart: Double?
 
     // MARK: Unified capture
 
@@ -492,9 +495,11 @@ struct WorkspaceView: View {
                 }
             }
         }
-        .overlay {
+        // First-run tips frame the real controls, found through their
+        // anchors, so they stay right through layout and rotation changes.
+        .overlayPreferenceValue(GVTipAnchorKey.self) { anchors in
             if coachPresented {
-                GVCoachCard {
+                GVFirstRunTips(anchors: anchors) {
                     withAnimation(GVMotion.resolved(GVMotion.collapse, reduceMotion: reduceMotion)) {
                         coachPresented = false
                     }
@@ -780,14 +785,26 @@ struct WorkspaceView: View {
                     onSpectrumOverlayPinch: { event in
                         switch event {
                         case .began:
-                            effectEditor.beginOverlayMove()
-                            spectrumResizeStart = effectEditor.spectrumOverlaySize
+                            if let size = effectEditor.spectrumOverlaySize {
+                                effectEditor.beginOverlayMove()
+                                spectrumResizeStart = size
+                            } else if !controlLock.lockCamera {
+                                pinchZoomStart = cameraRuntime.snapshot.zoom
+                            }
                         case let .changed(scale):
-                            guard let start = spectrumResizeStart else { return }
-                            effectEditor.resizeSpectrumOverlay(from: start, scale: Double(scale))
+                            if let start = spectrumResizeStart {
+                                effectEditor.resizeSpectrumOverlay(from: start, scale: Double(scale))
+                            } else if let start = pinchZoomStart {
+                                // The same device zoom the Lens key steps, so
+                                // the readout and the key follow the pinch.
+                                cameraRuntime.setZoom(start * Double(scale))
+                            }
                         case .ended:
-                            spectrumResizeStart = nil
-                            effectEditor.endOverlayMove()
+                            if spectrumResizeStart != nil {
+                                spectrumResizeStart = nil
+                                effectEditor.endOverlayMove()
+                            }
+                            pinchZoomStart = nil
                         }
                     },
                     onOverlayGesturePhase: { began in
@@ -1022,6 +1039,7 @@ struct WorkspaceView: View {
                     tint: effectDockPresented ? GVTheme.bone : GVTheme.bone.opacity(0.85)
                 )
             }
+            .gvTipAnchor(.effects)
             .accessibilityValue(effectDockPresented ? "expanded" : "collapsed")
             .accessibilityLabel("Browse effects")
             .accessibilityIdentifier("workspace.categories.all")
@@ -1051,6 +1069,7 @@ struct WorkspaceView: View {
             Button { requestCapture(.photo) } label: {
                 GVShutterButtonFace(state: shutterState)
             }
+            .gvTipAnchor(.capture)
             .accessibilityLabel("Capture photo")
             .accessibilityIdentifier("workspace.capture.photo")
             .accessibilityValue(cameraRuntime.screenshotMessage ?? "")
@@ -1077,11 +1096,48 @@ struct WorkspaceView: View {
         .padding(.vertical, 4)
         .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous),
                        tag: recording ? "REC" : "CAPTURE")
+        .overlay(alignment: .topTrailing) { lensReadout }
         .frame(maxWidth: 390)
         .opacity(isChromeHidden && !recording ? 0 : 1)
         .allowsHitTesting(!isChromeHidden || recording)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.capture.controls")
+    }
+
+    /// The zoom in use, hung off the capture plate's top-right corner like the
+    /// tag on its left. Follows pinch and the Lens key; a tap steps to the
+    /// next lens. Camera source only.
+    @ViewBuilder
+    private var lensReadout: some View {
+        let snapshot = cameraRuntime.snapshot
+        if appModel.sourceMode == .camera, snapshot.state == .running, !snapshot.lensZoomFactors.isEmpty {
+            Button {
+                guard !controlLock.lockCamera, !controlLock.lockUI else { return }
+                if let label = cameraRuntime.cycleLens() {
+                    GVInteractionHaptics.select()
+                    showTopNotice("Lens \(label)")
+                }
+            } label: {
+                Text(snapshot.lensLabel(for: snapshot.zoom))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(GVSplashDock.lime)
+                    .padding(.horizontal, 6)
+                    .frame(height: 15)
+                    .background(Color.black.opacity(0.85))
+                    .overlay(Rectangle().strokeBorder(GVSplashDock.lime.opacity(0.8), lineWidth: 0.75))
+                    .contentTransition(.numericText())
+                    .frame(minWidth: GVMetrics.touchTarget, minHeight: GVMetrics.touchTarget, alignment: .bottomTrailing)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(GVPressStyle())
+            .offset(x: 1, y: -GVMetrics.touchTarget + 1)
+            .opacity(isChromeHidden ? 0 : 1)
+            .accessibilityLabel("Lens")
+            .accessibilityValue(snapshot.lensLabel(for: snapshot.zoom))
+            .accessibilityHint("Steps to the next lens")
+            .accessibilityIdentifier("workspace.lens.readout")
+        }
     }
 
     private func captureLabel(_ title: String, symbol: String, tint: Color = GVTheme.bone) -> some View {
@@ -1186,6 +1242,7 @@ private extension WorkspaceView {
                 .frame(width: 46, height: 44)
         }
         .buttonStyle(GVShellChipStyle(active: active))
+        .gvTipAnchor(.camera)
         .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: active)
         .accessibilityLabel("Camera and settings")
         .accessibilityValue(active ? "expanded" : "collapsed")
@@ -1358,8 +1415,11 @@ private extension WorkspaceView {
                 GVConsoleKey(symbol: "lock", label: "Lock") { showControlLockSheet = true }
                     .accessibilityIdentifier("workspace.control-lock")
 
-                GVConsoleKey(symbol: "questionmark.circle", label: "Help") {
+                GVConsoleKey(symbol: "questionmark.circle", label: "Tips") {
                     withAnimation(GVMotion.resolved(GVMotion.tear, reduceMotion: reduceMotion)) {
+                        // The tips point at the camera button, so the deck
+                        // has to be out of the way first.
+                        activeTopDeck = nil
                         coachPresented = true
                     }
                 }
@@ -1579,64 +1639,3 @@ private struct SigilMark: View {
 }
 
 // swiftlint:enable file_length
-
-/// First-run (and Help-invoked) gesture card. Short guide to core gestures.
-private struct GVCoachCard: View {
-    let onClose: () -> Void
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private let lines: [(String, String)] = [
-        ("Camera button", "Lens, flip, torch, timer and Mac link, top left"),
-        ("Effects", "Choose a look to return to the preview and its adjustments"),
-        ("Double-tap a dial", "Reset a parameter to its default"),
-        ("Photo / Video", "Capture a still or start a take from the bottom row"),
-        ("Saved material", "Open Recipes from the Composition toolbar"),
-        ("Clean preview", "Use Bypass in Composition to compare your image"),
-        ("Self timer", "Delay the shutter from the camera menu")
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack {
-                Text("Field Guide")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                Spacer(minLength: 0)
-                GVDeckChip(label: "", symbol: "xmark", accessibilityLabel: "Close field guide", id: "coach.close") { onClose() }
-            }
-
-            ForEach(lines, id: \.0) { key, value in
-                HStack(alignment: .top, spacing: 10) {
-                    Text(key)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .frame(width: 168, alignment: .leading)
-                    Text(value)
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(GVTheme.bone.opacity(0.78))
-                }
-            }
-
-            Text("Tap anywhere to continue")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(GVTheme.ash.opacity(0.85))
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 6)
-        }
-        .padding(26)
-        .frame(maxWidth: 620)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(red: 0.09, green: 0.09, blue: 0.10).opacity(0.98))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
-        )
-        .padding(.horizontal, 26)
-        .transition(reduceMotion ? .opacity : .scale(scale: 0.94).combined(with: .opacity))
-        .onTapGesture { onClose() }
-    }
-}

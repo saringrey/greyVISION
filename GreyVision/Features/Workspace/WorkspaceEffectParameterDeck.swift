@@ -25,7 +25,7 @@ struct WorkspaceEffectParameterDeck: View {
                     .foregroundStyle(GVTheme.ash)
             }
         }
-        .gvCompactDeckPlate()
+        .gvCompactDeckPlate(tag: effect.label)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.parameters.\(effect.rawValue)")
     }
@@ -109,7 +109,7 @@ struct WorkspaceEffectParameterDeck: View {
                     .foregroundStyle(GVTheme.ash)
                     .padding(.horizontal, 6)
                     .frame(height: 18)
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75))
+                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75))
                     .accessibilityLabel("Effect \(position) in the chain")
             }
         }
@@ -163,8 +163,8 @@ struct WorkspaceEffectParameterDeck: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(GVTheme.bone.opacity(0.78))
                 .frame(width: 31, height: 27)
-                .background(Capsule(style: .continuous).fill(Color.white.opacity(0.05)))
-                .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75))
+                .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color.white.opacity(0.05)))
+                .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75))
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
@@ -245,7 +245,7 @@ struct WorkspaceEffectParameterDeck: View {
                     .font(GVTheme.mono(12, .semibold))
                     .foregroundStyle(GVTheme.bone)
                     .frame(minWidth: 56, minHeight: 44)
-                    .background(Capsule().fill(Color.white.opacity(cameraRuntime.datamoshTransport.mode == .hold ? 0.2 : 0.06)))
+                    .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color.white.opacity(cameraRuntime.datamoshTransport.mode == .hold ? 0.2 : 0.06)))
                     .gesture(DragGesture(minimumDistance: 0).updating($pressingDatamosh) { _, held, _ in held = true })
                     .onChange(of: pressingDatamosh) { _, held in
                         if held { cameraRuntime.sendDatamosh(.hold) }

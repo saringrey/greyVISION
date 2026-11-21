@@ -34,7 +34,7 @@ struct GVTrackingDeck: View {
         }
         .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: page)
         .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: parameters.mode)
-        .gvCompactDeckPlate()
+        .gvCompactDeckPlate(tag: "TRACKING")
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("workspace.parameters.blobs")
     }
