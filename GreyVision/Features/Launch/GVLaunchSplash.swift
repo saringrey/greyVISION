@@ -250,7 +250,21 @@ private struct GVSplashFormatRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(GVPressStyle())
-        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous))
+        // See-through: only the tracker brackets and a faint hairline, with a
+        // soft shadow on the type so it reads over any shot of the film.
+        .shadow(color: .black.opacity(0.75), radius: 3)
+        .overlay {
+            RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
+                .allowsHitTesting(false)
+        }
+        .overlay {
+            GVTrackerBrackets(arm: 9)
+                .stroke(GVSplashDock.lime.opacity(0.9), style: StrokeStyle(lineWidth: 1, lineCap: .square))
+                .padding(-1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .animation(.easeOut(duration: 0.15), value: value)
         .accessibilityLabel(label == "RES" ? "Resolution" : (label == "FPS" ? "Frame rate" : "Codec"))
         .accessibilityValue(value)
