@@ -563,12 +563,14 @@ final class GVSoundEngine {
 
 /// The splash's constant glitch noise.
 ///
-/// Two PCM files cut from the supplied glitch clip: `gv_splash_intro.wav`
-/// is its attack, and `gv_splash_tail.wav` is the sustained buzz just before
-/// the clip decays, with its end crossfaded into its own start so it loops
-/// with no seam. Both go to one player node back to back (intro once, tail
-/// on `.loops`), which is sample-accurate; looping the original MP3 with
-/// `AVAudioPlayer` left the clip's silent head and fade-out in every cycle.
+/// Two PCM files built from the supplied glitch clip
+/// (`scripts/splash-audio/make_bed.py`): `gv_splash_intro.wav` is the clip
+/// itself up to its slow dull rumble, crossfading into that rumble, and
+/// `gv_splash_tail.wav` is a 15-second drone resynthesised from the rumble
+/// alone (granular, low-passed, level-smoothed), with its end crossfaded into
+/// its start so it loops with no seam and no audible repeat. Both go to one
+/// player node back to back (intro once, tail on `.loops`), which is
+/// sample-accurate.
 @MainActor
 final class GVSplashBed {
     private let engine = AVAudioEngine()
