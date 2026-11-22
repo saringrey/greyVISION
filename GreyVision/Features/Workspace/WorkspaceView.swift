@@ -44,6 +44,7 @@ struct WorkspaceView: View {
     @StateObject private var controlLock = ControlLockManager()
     @StateObject private var beforeAfter = BeforeAfterManager()
     @State private var showControlLockSheet = false
+    @State private var showAboutSheet = false
     /// The Mac-link pairing code. Opened from the broadcast button's long
     /// press rather than the tap, because tapping still means "turn the link
     /// on" and the code only needs reading once per Mac.
@@ -536,6 +537,10 @@ struct WorkspaceView: View {
                     }
                 )
                 .zIndex(36)
+            }
+            if showAboutSheet {
+                GVAboutOverlay(isPresented: $showAboutSheet)
+                    .zIndex(37)
             }
         }
         .background {
@@ -1246,7 +1251,7 @@ private extension WorkspaceView {
                     .font(.system(size: 14, weight: .semibold))
                     .symbolEffect(.rotate, value: active)
                     .symbolEffectsRemoved(reduceMotion)
-                Text("CAMERA")
+                Text("SETTINGS")
                     .font(GVTheme.mono(10.5, .bold))
                     .tracking(1.4)
                     .lineLimit(1)
@@ -1274,7 +1279,7 @@ private extension WorkspaceView {
         .buttonStyle(GVPressStyle())
         .gvTipAnchor(.camera)
         .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: active)
-        .accessibilityLabel("Camera and settings")
+        .accessibilityLabel("Settings")
         .accessibilityValue(active ? "expanded" : "collapsed")
         .accessibilityIdentifier("workspace.camera")
     }
@@ -1313,7 +1318,7 @@ private extension WorkspaceView {
         .buttonStyle(GVShellChipStyle(active: active))
         .gvTipAnchor(.camera)
         .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: active)
-        .accessibilityLabel("Camera and settings")
+        .accessibilityLabel("Settings")
         .accessibilityValue(active ? "expanded" : "collapsed")
         .accessibilityIdentifier("workspace.camera")
     }
@@ -1394,7 +1399,7 @@ private extension WorkspaceView {
     /// creator could see, so they are gone; Restart stays, because a wedged
     /// camera pipeline is a real thing to recover from.
     func cameraDeck(availableWidth: CGFloat, maximumHeight: CGFloat) -> some View {
-        GVSettingsConsolePanel(title: "CAMERA",
+        GVSettingsConsolePanel(title: "SETTINGS",
                                symbol: "camera.aperture",
                                status: cameraDeckStatus,
                                maximumHeight: maximumHeight,
@@ -1496,6 +1501,14 @@ private extension WorkspaceView {
                     showTopNotice("Restarting camera pipeline")
                 }
                 .accessibilityIdentifier("workspace.restart")
+
+                GVConsoleKey(symbol: "info.circle", label: "About") {
+                    withAnimation(GVMotion.resolved(GVMotion.collapse, reduceMotion: reduceMotion)) {
+                        activeTopDeck = nil
+                        showAboutSheet = true
+                    }
+                }
+                .accessibilityIdentifier("workspace.about")
             }
         }
         .frame(width: min(380, availableWidth), alignment: .center)
