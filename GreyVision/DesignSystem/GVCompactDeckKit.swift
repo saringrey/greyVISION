@@ -139,11 +139,11 @@ private struct GVScrollProgressLine: ViewModifier {
                         ? max(geometry.size.width * (visibleWidth / contentWidth), 26)
                         : 0
                     ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .fill(Color.white.opacity(0.04))
                             .frame(width: geometry.size.width)
                         if contentWidth > visibleWidth + 8 {
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(Color.white.opacity(0.16))
                                 .frame(width: fillWidth)
                                 .offset(x: progress * (geometry.size.width - fillWidth))
@@ -335,16 +335,16 @@ private struct GVGlassChipStyle: ButtonStyle {
         let pressed = configuration.isPressed
         configuration.label
             .background {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(fill(pressed: pressed))
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .strokeBorder(stroke, lineWidth: 0.75)
             }
             .frame(height: height)
-            .scaleEffect(reduceMotion ? 1 : (pressed ? 0.96 : 1))
-            .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: pressed)
+            .scaleEffect(reduceMotion ? 1 : (pressed ? GVMotion.softPressScale : 1))
+            .animation(GVMotion.resolved(GVMotion.softPress(pressed), reduceMotion: reduceMotion), value: pressed)
             .animation(GVMotion.resolved(GVMotion.normal, reduceMotion: reduceMotion), value: active)
             .opacity(dimmed && !active ? 0.55 : 1)
     }
@@ -459,10 +459,10 @@ struct GVRailSlider: View {
             GeometryReader { geometry in
                 let width = geometry.size.width
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(Color(white: 0.13))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.8)
                         )
 
@@ -475,7 +475,7 @@ struct GVRailSlider: View {
                         .frame(width: 1.4, height: 7)
                         .offset(x: 6 + (width - 14) * defaultFraction)
 
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(
                             LinearGradient(
                                 colors: [Color.white.opacity(0.95), Color.white.opacity(0.55)],
@@ -519,10 +519,10 @@ struct GVRailSlider: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .fill(Color(white: 0.11).opacity(0.96))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
                                     .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.8)
                             )
                             .shadow(color: .black.opacity(0.5), radius: 4, y: 2)

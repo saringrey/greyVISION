@@ -1,0 +1,8 @@
+[0:v]format=yuva444p10le,split=3[o][t][b];
+[t]crop=1320:320:0:920,gblur=sigma=0.5:sigmaV=36,format=yuv444p10le[tb];
+color=black:s=1320x320:r=60:d=11,format=gray,geq=lum='255*max(0\,1-abs(Y-160)/150)'[tm];
+[tb][tm]alphamerge[ta];
+[b]crop=1320:320:0:1628,gblur=sigma=0.5:sigmaV=36,format=yuv444p10le[bb];
+color=black:s=1320x320:r=60:d=11,format=gray,geq=lum='255*max(0\,1-abs(Y-160)/150)'[bm];
+[bb][bm]alphamerge[ba];
+[o][ta]overlay=0:920:shortest=1[o1];[o1][ba]overlay=0:1628:shortest=1,format=yuv420p10le[v]

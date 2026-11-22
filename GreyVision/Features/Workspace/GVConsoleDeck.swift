@@ -13,8 +13,8 @@ private extension EnvironmentValues {
 
 /// The camera deck's plate: the splash tracker surface with the deck's name
 /// hung off its corner as a lime tag. The tag is the heading; the row under
-/// it carries only the live status and the way out. Longer groups scroll
-/// inside the plate while that row stays put.
+/// it carries only the live status and the way out. The groups fit on one
+/// page; they scroll only when the page cannot fit.
 struct GVSettingsConsolePanel<Content: View>: View {
     var title = "SETTINGS"
     var symbol = "slider.horizontal.3"
@@ -61,16 +61,14 @@ struct GVSettingsConsolePanel<Content: View>: View {
                 .frame(height: 0.5)
                 .padding(.horizontal, 16)
 
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 14) {
-                    content()
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-                .padding(.bottom, 16)
+            // Every setting on one page: compact five-across keys, laid out
+            // flat. Only if the page genuinely cannot fit (landscape, very
+            // large type) does it fall back to scrolling.
+            ViewThatFits(in: .vertical) {
+                page
+                ScrollView(.vertical) { page }
+                    .scrollBounceBehavior(.basedOnSize)
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .environment(\.consoleUsesSettingsTiles, true)
         }
         .frame(maxHeight: maximumHeight)
         .clipShape(shape)
@@ -78,6 +76,15 @@ struct GVSettingsConsolePanel<Content: View>: View {
         // The tag hangs above the plate; keep it clear of the row above.
         .padding(.top, 14)
         .accessibilityElement(children: .contain)
+    }
+
+    private var page: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            content()
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
     }
 }
 
@@ -89,7 +96,7 @@ struct GVConsoleSection<Content: View>: View {
     @ScaledMetric(relativeTo: .caption2) private var headingSize: CGFloat = 11
 
     private static var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 6), count: 4)
+        Array(repeating: GridItem(.flexible(), spacing: 6), count: 5)
     }
 
     var body: some View {
@@ -150,7 +157,7 @@ struct GVConsoleKey: View {
     }
 
     private var settingsTile: some View {
-        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
         return Button(action: action) {
             VStack(spacing: 7) {
                 ZStack(alignment: .topTrailing) {
@@ -206,7 +213,7 @@ struct GVConsoleKey: View {
     }
 
     private var key: some View {
-        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
         return Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: symbol)
@@ -229,11 +236,11 @@ struct GVConsoleKey: View {
             }
             .foregroundStyle(active ? Color.black : GVTheme.bone.opacity(0.82))
             .padding(.horizontal, 4)
-            .frame(maxWidth: .infinity, minHeight: 48)
+            .frame(maxWidth: .infinity, minHeight: 44)
             .background {
                 if active {
-                    shape.fill(GVTheme.bone)
-                        .shadow(color: .white.opacity(0.35), radius: 8)
+                    shape.fill(GVTheme.accent)
+                        .shadow(color: GVTheme.accent.opacity(0.4), radius: 8)
                 } else {
                     shape.fill(Color.white.opacity(0.05))
                         .overlay(shape.strokeBorder(Color.white.opacity(0.1), lineWidth: 0.75))

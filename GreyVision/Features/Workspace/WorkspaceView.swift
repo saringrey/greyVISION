@@ -143,6 +143,7 @@ struct WorkspaceView: View {
 
     /// A new subject to adjust brings the pane back even if it was hidden.
     private func revealAdjustPane() {
+        adjustRevealSignal &+= 1
         guard isAdjustPaneHidden else { return }
         withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
             isAdjustPaneHidden = false
@@ -204,7 +205,7 @@ struct WorkspaceView: View {
             let bleedLeading = isLandscape ? geometry.safeAreaInsets.leading : 0
             let bleedTrailing = isLandscape ? geometry.safeAreaInsets.trailing : 0
             let topDeckMaxHeight = min(
-                geometry.size.height * (isLandscape ? 0.38 : 0.48),
+                geometry.size.height * (isLandscape ? 0.38 : 0.58),
                 max(44, geometry.size.height - dockMaxHeight - fixedChromeHeight)
             )
             // A collection plate replaces the effect browser, so it gets the
@@ -305,7 +306,9 @@ struct WorkspaceView: View {
                             topControlDeck(activeTopDeck, geometry: geometry, maximumHeight: topDeckMaxHeight)
                         }
                         .frame(maxHeight: topDeckMaxHeight)
-                        .padding(.horizontal, 10)
+                        // Clear of the display's rounded corners on the
+                        // largest phones, where 10pt clipped the deck edges.
+                        .padding(.horizontal, 18)
                         .padding(.leading, -bleedLeading)
                         .padding(.trailing, -bleedTrailing)
                         .padding(.top, 7)
@@ -362,11 +365,13 @@ struct WorkspaceView: View {
                             maximumHeight: dockMaxHeight,
                             revealSignal: adjustRevealSignal
                         )
+                        // On the glass, never in a take or a screenshot.
+                        .gvHiddenFromCapture()
                         .frame(height: isDeckCollapsed ? 0 : nil, alignment: .bottom)
                         .clipped()
                         // The capture pill's inset, so the deck and the pill
                         // share edges.
-                        .padding(.horizontal, 20)
+                        .padding(.horizontal, 22)
                         .opacity(isDeckCollapsed ? 0 : 1)
                         .accessibilityHidden(isDeckCollapsed)
                         .allowsHitTesting(!isDeckCollapsed && !controlLock.lockEffectStack && !controlLock.lockUI)
@@ -382,16 +387,19 @@ struct WorkspaceView: View {
                                 },
                                 onClose: { effectDockPresented = false }
                             )
-                            .padding(.horizontal, 10)
+                            .gvHiddenFromCapture()
+                            .padding(.horizontal, 18)
                             .padding(.top, 6)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
 
                         detachedCaptureControls
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, 22)
                             // Room for the plate's tracker tag above it.
                             .padding(.top, 18)
-                            .padding(.bottom, 8)
+                            // Lifted clear of the home indicator and the
+                            // display's bottom corners.
+                            .padding(.bottom, 26)
                     }
                     .overlay(alignment: .top) {
                         GVToastCapsule(
@@ -653,6 +661,10 @@ struct WorkspaceView: View {
         .task { await runEffectAuditIfRequested() }
         .onChange(of: effectEditor.selectedEffect) { _, effect in
             if effect != nil { revealAdjustPane() }
+        }
+        // Closing the effect dock after a pick lands on the adjust pane.
+        .onChange(of: effectDockPresented) { _, presented in
+            if !presented, effectEditor.selectedEffect != nil { revealAdjustPane() }
         }
         .onChange(of: cameraRuntime.screenshotMessage) { _, message in
             updateShutter(for: message)
@@ -1181,24 +1193,37 @@ private extension WorkspaceView {
         let compact = geometry.size.width < 400
         let panelHeight: CGFloat = portrait ? 56 : 50
         let horizontalInset: CGFloat = portrait ? 12 : 11
-        let islandReserve = portrait
-            ? min(max(geometry.size.width * 0.30, compact ? 104 : 122), 146)
+        // The island is about 126pt wide on every island iPhone; the
+        // reserve is that plus nothing, so the pill can sit right against it.
+        let islandReserve: CGFloat = portrait
+            ? (geometry.safeAreaInsets.top > 50 ? 126 : min(max(geometry.size.width * 0.30, compact ? 104 : 122), 146))
             : 0
         // In portrait each control is centred in its shoulder; in landscape
         // there is no island, so they go to the ends of the row.
         let leading: Alignment = portrait ? .center : .leading
         let trailing: Alignment = portrait ? .center : .trailing
 
+        // On a Dynamic Island phone the left control is a long pill that
+        // runs from the shoulder's outer edge to the island and stops a few
+        // points short of it, the same height as the island and on its centre
+        // line, so the two read as one piece of hardware.
+        let islandPhone = portrait && geometry.safeAreaInsets.top > 50
+        let pillGap: CGFloat = 5
+        let pillWidth = max(0, (geometry.size.width - islandReserve) / 2 - horizontalInset - pillGap - 14)
+
         return HStack(spacing: 0) {
             Group {
                 if isTakeLive {
                     recordingTimecode
+                } else if islandPhone {
+                    shellPill(active: activeTopDeck == .camera, width: pillWidth) { toggleTopDeck(.camera) }
+                        .padding(.trailing, pillGap)
                 } else {
                     shellChip(active: activeTopDeck == .camera) { toggleTopDeck(.camera) }
                 }
             }
             .padding(.leading, portrait ? 0 : 6)
-            .frame(maxWidth: .infinity, alignment: leading)
+            .frame(maxWidth: .infinity, alignment: islandPhone && !isTakeLive ? .trailing : leading)
 
             Color.clear
                 .frame(width: islandReserve)
@@ -1212,6 +1237,50 @@ private extension WorkspaceView {
         .frame(height: panelHeight)
         .gvDecay(decay)
     }
+
+    /// The elongated left-shoulder control: camera and every setting.
+    func shellPill(active: Bool, width: CGFloat, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: "camera.aperture")
+                    .font(.system(size: 14, weight: .semibold))
+                    .symbolEffect(.rotate, value: active)
+                    .symbolEffectsRemoved(reduceMotion)
+                Text("CAMERA")
+                    .font(GVTheme.mono(10.5, .bold))
+                    .tracking(1.4)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 0)
+                Image(systemName: active ? "chevron.up" : "slider.horizontal.3")
+                    .font(.system(size: 11, weight: .semibold))
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .foregroundStyle(active ? Color.black : GVTheme.bone.opacity(0.92))
+            .padding(.horizontal, 13)
+            .frame(width: width, height: Self.islandHeight)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(active ? AnyShapeStyle(GVTheme.accent) : AnyShapeStyle(Color.black.opacity(0.62)))
+                    .background(Capsule(style: .continuous).fill(.ultraThinMaterial).opacity(active ? 0 : 1))
+            }
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(GVTheme.accent.opacity(active ? 0 : 0.55), lineWidth: 0.8)
+            }
+            .shadow(color: GVTheme.accent.opacity(active ? 0.45 : 0), radius: 8)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(GVPressStyle())
+        .gvTipAnchor(.camera)
+        .animation(GVMotion.resolved(GVMotion.snap, reduceMotion: reduceMotion), value: active)
+        .accessibilityLabel("Camera and settings")
+        .accessibilityValue(active ? "expanded" : "collapsed")
+        .accessibilityIdentifier("workspace.camera")
+    }
+
+    /// The Dynamic Island's height on every current island iPhone.
+    static let islandHeight: CGFloat = 37
 
     func wordmarkButton(portrait: Bool, compact: Bool) -> some View {
         Button {
@@ -1261,12 +1330,12 @@ private extension WorkspaceView {
             configuration.label
                 .background {
                     if active {
-                        shape.fill(GVTheme.bone).shadow(color: .white.opacity(0.3), radius: 8)
+                        shape.fill(GVTheme.accent).shadow(color: GVTheme.accent.opacity(0.45), radius: 8)
                     }
                 }
                 .gvChromePlate(shape, bracketInset: configuration.isPressed || active ? 3 : 0)
-                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
-                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? GVMotion.softPressScale : 1))
+                .animation(GVMotion.resolved(GVMotion.softPress(configuration.isPressed), reduceMotion: reduceMotion), value: configuration.isPressed)
         }
     }
 
@@ -1306,7 +1375,7 @@ private extension WorkspaceView {
     private func topControlDeck(_ deck: WorkspaceTopDeck, geometry: GeometryProxy, maximumHeight: CGFloat) -> some View {
         switch deck {
         case .camera:
-            cameraDeck(availableWidth: max(0, geometry.size.width - 20), maximumHeight: maximumHeight)
+            cameraDeck(availableWidth: max(0, geometry.size.width - 36), maximumHeight: maximumHeight)
         }
     }
 
@@ -1384,7 +1453,7 @@ private extension WorkspaceView {
                 renderQualityKey
             }
 
-            GVConsoleSection(label: "MAC LINK") {
+            GVConsoleSection(label: "SYSTEM") {
                 GVConsoleKey(symbol: broadcastRuntime.isArmed
                                 ? (broadcastRuntime.isConnected ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
                                 : "display.and.arrow.down",
@@ -1409,9 +1478,6 @@ private extension WorkspaceView {
 
                 GVConsoleKey(symbol: "qrcode", label: "Pair Mac") { showPairingSheet = true }
                     .accessibilityIdentifier("workspace.broadcast.pair")
-            }
-
-            GVConsoleSection(label: "APP") {
                 GVConsoleKey(symbol: "lock", label: "Lock") { showControlLockSheet = true }
                     .accessibilityIdentifier("workspace.control-lock")
 
@@ -1451,9 +1517,9 @@ private extension WorkspaceView {
                             .strokeBorder(Color.white.opacity(0.055), lineWidth: GVMetrics.hairline)
                     }
                 }
-                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
+                .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? GVMotion.softPressScale : 1))
                 .brightness(configuration.isPressed ? 0.02 : 0)
-                .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+                .animation(GVMotion.resolved(GVMotion.softPress(configuration.isPressed), reduceMotion: reduceMotion), value: configuration.isPressed)
         }
     }
 

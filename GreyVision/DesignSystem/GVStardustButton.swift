@@ -19,8 +19,8 @@ struct GVStardustButtonStyle: ButtonStyle {
             .overlay { stardustBorder(isPressed: configuration.isPressed) }
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? 0.96 : 1))
-            .animation(GVMotion.resolved(GVMotion.micro, reduceMotion: reduceMotion), value: configuration.isPressed)
+            .scaleEffect(reduceMotion ? 1 : (configuration.isPressed ? GVMotion.softPressScale : 1))
+            .animation(GVMotion.resolved(GVMotion.softPress(configuration.isPressed), reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 
     @ViewBuilder

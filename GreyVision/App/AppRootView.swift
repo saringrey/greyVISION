@@ -32,6 +32,9 @@ struct AppRootView: View {
                 scheduleCaptureOrientationRefresh()
             }
         }
+        // Every button without its own style gets the soft press, so no tap
+        // in the app lands without a response under the finger.
+        .buttonStyle(GVPressStyle())
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
         // Type tracks the user's preference on a compressed scale (see

@@ -15,7 +15,6 @@ struct GVEffectDock: View {
     @EnvironmentObject private var decay: GVDecayEngine
     @EnvironmentObject private var toasts: GVToastBox
     @StateObject private var thumbnails = GVEffectThumbnailStore.shared
-    @ObservedObject private var ambient = GVAmbientLight.shared
     @ObservedObject var editor: EffectEditingSession
     /// Opens the full-screen catalogue (search and every shelf).
     let onOpenCatalogue: () -> Void
@@ -66,16 +65,18 @@ struct GVEffectDock: View {
     }
 
     var body: some View {
-        // Spaced for the tracker tags that hang off each plate's corner.
-        VStack(spacing: 18) {
+        // No tracker tags any more, so the plates sit close together.
+        VStack(spacing: 8) {
+            // The group's own row (shelves and Single/Stack) sits on top, the
+            // effects it opens below it, and the groups at the bottom.
+            if let group {
+                subRow(for: group)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let category {
                 strip(for: category)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .id(category)
-            }
-            if let group {
-                subRow(for: group)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             mainRow
         }
@@ -101,7 +102,7 @@ struct GVEffectDock: View {
             catalogueButton
         }
         .padding(5)
-        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous), tag: "EFFECTS")
+        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous))
         .accessibilityIdentifier("workspace.browser.categories")
     }
 
@@ -131,12 +132,12 @@ struct GVEffectDock: View {
             .foregroundStyle(isOpen ? Color.black : GVTheme.bone.opacity(0.88))
             .frame(maxWidth: .infinity, minHeight: 58)
             .background {
-                let tile = RoundedRectangle(cornerRadius: 5, style: .continuous)
+                let tile = RoundedRectangle(cornerRadius: 9, style: .continuous)
                 if isOpen {
-                    tile.fill(ambient.hue)
+                    tile.fill(GVTheme.accent)
                 } else {
                     tile.fill(Color.white.opacity(0.05))
-                        .overlay(tile.fill(ambient.hue.opacity(0.10)))
+                        .overlay(tile.fill(GVTheme.accent.opacity(0.10)))
                 }
             }
             .overlay(alignment: .topTrailing) {
@@ -167,8 +168,8 @@ struct GVEffectDock: View {
             .foregroundStyle(GVTheme.bone.opacity(0.88))
             .frame(maxWidth: .infinity, minHeight: 58)
             .background {
-                let tile = RoundedRectangle(cornerRadius: 5, style: .continuous)
-                tile.fill(Color.white.opacity(0.05)).overlay(tile.fill(ambient.hue.opacity(0.10)))
+                let tile = RoundedRectangle(cornerRadius: 9, style: .continuous)
+                tile.fill(Color.white.opacity(0.05)).overlay(tile.fill(GVTheme.accent.opacity(0.10)))
             }
             .contentShape(Rectangle())
         }
@@ -216,7 +217,7 @@ struct GVEffectDock: View {
             .frame(height: 30)
             .background {
                 let shape = Capsule(style: .continuous)
-                if isOpen { shape.fill(GVTheme.bone) } else { shape.fill(.ultraThinMaterial).overlay(shape.fill(Color.black.opacity(0.35))).overlay(shape.fill(ambient.hue.opacity(0.14))) }
+                if isOpen { shape.fill(GVTheme.bone) } else { shape.fill(.ultraThinMaterial).overlay(shape.fill(Color.black.opacity(0.35))).overlay(shape.fill(GVTheme.accent.opacity(0.14))) }
             }
             .contentShape(Capsule(style: .continuous))
         }
@@ -248,8 +249,7 @@ struct GVEffectDock: View {
         }
         .padding(.top, 8)
         .padding(.bottom, 8)
-        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous),
-                       tag: item.displayLabel)
+        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous))
     }
 
     /// Replace or stack, as one small switch on the strip it governs.
@@ -307,7 +307,7 @@ struct GVEffectDock: View {
         } label: {
             VStack(spacing: 5) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(Color.white.opacity(0.06))
                     if let image = thumbnails.image(for: effect) {
                         Image(uiImage: image)
@@ -320,10 +320,10 @@ struct GVEffectDock: View {
                     }
                 }
                 .frame(width: 66, height: 66)
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .strokeBorder(active ? ambient.hue : Color.white.opacity(0.08), lineWidth: active ? 2 : 0.75)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(active ? GVTheme.accent : Color.white.opacity(0.08), lineWidth: active ? 2 : 0.75)
                 }
                 .overlay {
                     // A live effect is a tracked object, as on the splash.
@@ -463,18 +463,19 @@ struct GVEffectDock: View {
 
     // MARK: - Actions
 
-    /// Applies and keeps the dock open: the picture is still on screen above
-    /// it, so the next tap can compare straight away.
+    /// Applies the effect, then closes the dock so its adjust pane opens
+    /// straight away in the dock's place.
     private func select(_ effect: WorkspaceAdjustableEffect) {
         appModel.deactivateDepthMode()
         appModel.deactivateObjectMode()
         armAudioIfNeeded(for: effect)
         editor.applyFromBrowser(effect)
+        GVInteractionHaptics.select()
         if editor.selectedEffect != nil {
             preferences.noteEffectUsed((editor.selectedEffect ?? effect).rawValue)
             decay.fire(.effectActivated)
+            onClose()
         }
-        GVInteractionHaptics.select()
     }
 
     private func selectDepth(_ mode: DepthEffectMode) {

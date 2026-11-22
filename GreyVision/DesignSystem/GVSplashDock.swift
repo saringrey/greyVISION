@@ -8,12 +8,12 @@ import SwiftUI
 /// a hairline, four lime brackets on its corners and, where a dock names a
 /// thing, a lime tag. One language from the first frame to the last control.
 enum GVSplashDock {
-    /// The splash tracker's lime. Framing only — never a state colour, so it
-    /// cannot be mistaken for `GVTheme.acid` (armed) on a key.
-    static let lime = Color(red: 0.89, green: 0.96, blue: 0.36)
+    /// The tracker colour. Now the live accent (`GVAccent`): lime at rest on
+    /// the splash, then whatever colour the camera is looking at.
+    static var lime: Color { GVAccent.shared.color }
     /// Tracker boxes are nearly square; the docks keep a whisper of rounding
     /// so they still sit well against the rounded display.
-    static let radius: CGFloat = 7
+    static let radius: CGFloat = 13
     /// The longest a bracket arm gets, matching the splash's object boxes.
     static let arm: CGFloat = 12
 }
@@ -94,12 +94,13 @@ struct GVSplashDockPlate<S: InsettableShape>: ViewModifier {
         content
             .background {
                 if reduceTransparency {
-                    shape.fill(Color(red: 0.02, green: 0.025, blue: 0.035))
+                    shape.fill(Color(red: 0.010, green: 0.010, blue: 0.012))
                 } else {
                     ZStack {
                         shape.fill(.ultraThinMaterial)
-                        // The x-ray: near-black with the film's cool cast.
-                        shape.fill(Color(red: 0.012, green: 0.018, blue: 0.03).opacity(0.80))
+                        // Smoked near-black, neutral: a little of the frame shows through,
+                        // and the accent is the only colour.
+                        shape.fill(Color(red: 0.006, green: 0.006, blue: 0.008).opacity(0.66))
                         GVXrayScanlines().clipShape(shape)
                     }
                 }

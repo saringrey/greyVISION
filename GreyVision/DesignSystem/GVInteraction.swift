@@ -32,11 +32,7 @@ struct GVPressButtonStyle: ButtonStyle {
                 )
             )
             .animation(
-                reduceMotion
-                    ? nil
-                    : configuration.isPressed
-                    ? GVMotion.snap
-                    : GVMotion.press,
+                reduceMotion ? nil : GVMotion.softPress(configuration.isPressed),
                 value: configuration.isPressed
             )
             .onChange(of: configuration.isPressed) { _, pressed in

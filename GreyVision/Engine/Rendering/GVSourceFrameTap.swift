@@ -17,36 +17,53 @@ final class GVSourceFrameTap: @unchecked Sendable {
     /// idle tap costs one lock per frame and no GPU work.
     let feed = GVTrackingFeed()
 
+    /// Callers waiting for the next frame. Several can wait at once (the
+    /// live accent samples several times a second while the effect browser
+    /// asks for thumbnail frames), so they share one feed attachment and the
+    /// one frame that arrives answers all of them.
+    private let lock = NSLock()
+    private var waiters: [UUID: CheckedContinuation<CGImage?, Never>] = [:]
+
     /// The next clean frame, or nil when nothing is rendering (camera denied,
     /// app backgrounded) within the timeout.
     func nextFrame(timeout: Duration = .seconds(1.5)) async -> CGImage? {
-        let once = GVResumeOnce()
+        let id = UUID()
         return await withCheckedContinuation { continuation in
-            feed.attach(rate: 60) { [feed] frame in
-                feed.detach()
-                once.run { continuation.resume(returning: frame.makeCGImage()) }
+            // Attach and detach happen under this lock so a frame arriving
+            // as a new caller registers can never strand that caller. The
+            // feed calls its consumer outside its own lock, so the order
+            // (this lock, then the feed's) cannot invert.
+            lock.withLock {
+                waiters[id] = continuation
+                if waiters.count == 1 {
+                    feed.attach(rate: 60) { [weak self] frame in
+                        self?.deliver(frame.makeCGImage())
+                    }
+                }
             }
             Task {
                 try? await Task.sleep(for: timeout)
-                once.run {
-                    self.feed.detach()
-                    continuation.resume(returning: nil)
-                }
+                self.expire(id)
             }
         }
     }
-}
 
-/// Guards a continuation that two paths race to resume.
-private final class GVResumeOnce: @unchecked Sendable {
-    private let lock = NSLock()
-    private var done = false
-
-    func run(_ body: () -> Void) {
-        let first = lock.withLock { () -> Bool in
-            defer { done = true }
-            return !done
+    private func deliver(_ image: CGImage?) {
+        let ready = lock.withLock { () -> [CheckedContinuation<CGImage?, Never>] in
+            let all = Array(waiters.values)
+            waiters.removeAll()
+            feed.detach()
+            return all
         }
-        if first { body() }
+        for continuation in ready { continuation.resume(returning: image) }
+    }
+
+    private func expire(_ id: UUID) {
+        let continuation = lock.withLock { () -> CheckedContinuation<CGImage?, Never>? in
+            let removed = waiters.removeValue(forKey: id)
+            if removed != nil, waiters.isEmpty { feed.detach() }
+            return removed
+        }
+        continuation?.resume(returning: nil)
     }
 }
