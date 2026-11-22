@@ -62,6 +62,9 @@ struct GVLaunchSplash: View {
 
                     Spacer()
 
+                    GVSplashFormatRow()
+                        .padding(.bottom, 26)
+
                     GVBracketButton(title: "+CAMERA", tag: "CAM 00  LIVE", action: openCamera)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
                             lensFrame = frame
@@ -186,5 +189,75 @@ private struct GVBracketFace<Label: View>: View {
             }
             .opacity(isEnabled ? 1 : 0.45)
             .animation(reduceMotion ? nil : GVMotion.softPress(pressed), value: pressed)
+    }
+}
+
+
+// MARK: - Format row
+
+/// Resolution, frame rate and codec, picked before the camera opens. Three
+/// small tracker plates in the splash's own language; a tap steps each to its
+/// next value. They write the capture draft, which the session reads when it
+/// starts, so the camera opens already in the chosen format.
+private struct GVSplashFormatRow: View {
+    @EnvironmentObject private var appModel: AppModel
+
+    private static let resolutions: [CaptureSetupDraft.Resolution] = [.ultraHD, .fullHD, .hd720]
+
+    private var codecs: [CaptureSetupDraft.VideoCodec] {
+        CaptureSetupDraft.VideoCodec.curated.filter(\.isOperatingSystemAvailable)
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            chip(label: "RES", value: appModel.setup.resolution.rawValue) {
+                appModel.setup.resolution = Self.next(after: appModel.setup.resolution, in: Self.resolutions)
+            }
+            .accessibilityIdentifier("boot.format.resolution")
+
+            chip(label: "FPS", value: "\(appModel.setup.frameRate.rawValue)") {
+                appModel.setup.frameRate = Self.next(after: appModel.setup.frameRate,
+                                                     in: CaptureSetupDraft.FrameRate.allCases)
+            }
+            .accessibilityIdentifier("boot.format.framerate")
+
+            chip(label: "CODEC", value: appModel.setup.videoCodec.compactLabel) {
+                guard !codecs.isEmpty else { return }
+                appModel.setup.videoCodec = Self.next(after: appModel.setup.videoCodec, in: codecs)
+            }
+            .accessibilityIdentifier("boot.format.codec")
+        }
+    }
+
+    private func chip(label: String, value: String, action: @escaping () -> Void) -> some View {
+        Button {
+            GVInteractionHaptics.select()
+            action()
+        } label: {
+            VStack(spacing: 2) {
+                Text(label)
+                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .tracking(1.2)
+                    .foregroundStyle(GVTheme.bone.opacity(0.55))
+                Text(value)
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(GVTheme.bone)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .contentTransition(.numericText())
+            }
+            .frame(width: 84, height: 46)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(GVPressStyle())
+        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous))
+        .animation(.easeOut(duration: 0.15), value: value)
+        .accessibilityLabel(label == "RES" ? "Resolution" : (label == "FPS" ? "Frame rate" : "Codec"))
+        .accessibilityValue(value)
+    }
+
+    private static func next<T: Equatable>(after current: T, in order: [T]) -> T {
+        guard let index = order.firstIndex(of: current) else { return order.first ?? current }
+        return order[(index + 1) % order.count]
     }
 }
