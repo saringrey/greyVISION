@@ -59,8 +59,8 @@ final class GVAmbientLight: ObservableObject {
 
     private func publishHue(_ rgb: SIMD3<Double>) {
         let delta = abs(rgb.x - hueRGB.x) + abs(rgb.y - hueRGB.y) + abs(rgb.z - hueRGB.z)
-        guard delta > 0.025 else { return }
-        withAnimation(.easeOut(duration: 0.14)) {
+        guard delta > 0.04 else { return }
+        withAnimation(.easeOut(duration: 0.25)) {
             hueRGB = rgb
             hue = Color(red: rgb.x, green: rgb.y, blue: rgb.z)
             GVAccent.shared.set(rgb)
@@ -94,7 +94,9 @@ final class GVAmbientLight: ObservableObject {
         let avg = sum / weight
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         UIColor(red: avg.x, green: avg.y, blue: avg.z, alpha: 1).getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        let accent = UIColor(hue: h, saturation: min(max(s * 1.5, 0.45), 0.85), brightness: 0.95, alpha: 1)
+        // Muted on purpose: the chrome should take a tint from the scene,
+        // not shout it. Low saturation, slightly under full brightness.
+        let accent = UIColor(hue: h, saturation: min(max(s * 0.6, 0.16), 0.36), brightness: 0.88, alpha: 1)
         var r: CGFloat = 0, g: CGFloat = 0, bl: CGFloat = 0
         accent.getRed(&r, green: &g, blue: &bl, alpha: &a)
         return SIMD3(Double(r), Double(g), Double(bl))

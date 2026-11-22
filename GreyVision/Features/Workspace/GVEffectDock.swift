@@ -65,16 +65,18 @@ struct GVEffectDock: View {
     }
 
     var body: some View {
-        // Spaced for the tracker tags that hang off each plate's corner.
-        VStack(spacing: 18) {
+        // No tracker tags any more, so the plates sit close together.
+        VStack(spacing: 8) {
+            // The group's own row (shelves and Single/Stack) sits on top, the
+            // effects it opens below it, and the groups at the bottom.
+            if let group {
+                subRow(for: group)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let category {
                 strip(for: category)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .id(category)
-            }
-            if let group {
-                subRow(for: group)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             mainRow
         }
@@ -130,7 +132,7 @@ struct GVEffectDock: View {
             .foregroundStyle(isOpen ? Color.black : GVTheme.bone.opacity(0.88))
             .frame(maxWidth: .infinity, minHeight: 58)
             .background {
-                let tile = RoundedRectangle(cornerRadius: 5, style: .continuous)
+                let tile = RoundedRectangle(cornerRadius: 9, style: .continuous)
                 if isOpen {
                     tile.fill(GVTheme.accent)
                 } else {
@@ -166,7 +168,7 @@ struct GVEffectDock: View {
             .foregroundStyle(GVTheme.bone.opacity(0.88))
             .frame(maxWidth: .infinity, minHeight: 58)
             .background {
-                let tile = RoundedRectangle(cornerRadius: 5, style: .continuous)
+                let tile = RoundedRectangle(cornerRadius: 9, style: .continuous)
                 tile.fill(Color.white.opacity(0.05)).overlay(tile.fill(GVTheme.accent.opacity(0.10)))
             }
             .contentShape(Rectangle())
@@ -305,7 +307,7 @@ struct GVEffectDock: View {
         } label: {
             VStack(spacing: 5) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(Color.white.opacity(0.06))
                     if let image = thumbnails.image(for: effect) {
                         Image(uiImage: image)
@@ -318,9 +320,9 @@ struct GVEffectDock: View {
                     }
                 }
                 .frame(width: 66, height: 66)
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(active ? GVTheme.accent : Color.white.opacity(0.08), lineWidth: active ? 2 : 0.75)
                 }
                 .overlay {

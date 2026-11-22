@@ -13,7 +13,7 @@ enum GVSplashDock {
     static var lime: Color { GVAccent.shared.color }
     /// Tracker boxes are nearly square; the docks keep a whisper of rounding
     /// so they still sit well against the rounded display.
-    static let radius: CGFloat = 7
+    static let radius: CGFloat = 13
     /// The longest a bracket arm gets, matching the splash's object boxes.
     static let arm: CGFloat = 12
 }

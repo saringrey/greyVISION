@@ -157,7 +157,7 @@ struct GVConsoleKey: View {
     }
 
     private var settingsTile: some View {
-        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
         return Button(action: action) {
             VStack(spacing: 7) {
                 ZStack(alignment: .topTrailing) {
@@ -213,7 +213,7 @@ struct GVConsoleKey: View {
     }
 
     private var key: some View {
-        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
         return Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: symbol)

@@ -29,7 +29,7 @@ struct GVEffectTileModel: Equatable {
 /// has to fight the picture for the same square, and the effect's picture is
 /// the more useful of the two.
 struct GVEffectTileFace: View {
-    static let cornerRadius: CGFloat = 4
+    static let cornerRadius: CGFloat = 8
     let model: GVEffectTileModel
 
     var body: some View {
@@ -145,7 +145,7 @@ private struct GVTileShimmer: View {
 /// tile's footprint never changes — neighbours do not shuffle while a finger
 /// is down.
 struct GVEffectTileStyle: ButtonStyle {
-    static let cornerRadius: CGFloat = 4
+    static let cornerRadius: CGFloat = 8
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {

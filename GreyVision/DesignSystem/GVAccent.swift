@@ -18,8 +18,8 @@ final class GVAccent: @unchecked Sendable {
     static let shared = GVAccent()
 
     /// Resting accent, used on the splash and whenever the scene has no
-    /// usable colour: the splash tracker's lime.
-    static let restingRGB = SIMD3<Double>(0.89, 0.96, 0.36)
+    /// usable colour: a muted version of the splash tracker's lime.
+    static let restingRGB = SIMD3<Double>(0.80, 0.84, 0.66)
 
     /// Written on the main actor only (by `GVAmbientLight`).
     private(set) var rgb: SIMD3<Double> = GVAccent.restingRGB
