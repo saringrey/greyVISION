@@ -13,10 +13,10 @@ enum GVMaterialRole {
 
     var tint: Color {
         switch self {
-        case .control: Color(red: 0.020, green: 0.020, blue: 0.024).opacity(0.78)
-        case .rail: Color(red: 0.018, green: 0.018, blue: 0.022).opacity(0.82)
-        case .deck: Color(red: 0.016, green: 0.016, blue: 0.020).opacity(0.86)
-        case .notice: Color(red: 0.022, green: 0.022, blue: 0.026).opacity(0.90)
+        case .control: Color(red: 0.020, green: 0.020, blue: 0.024).opacity(0.58)
+        case .rail: Color(red: 0.018, green: 0.018, blue: 0.022).opacity(0.60)
+        case .deck: Color(red: 0.016, green: 0.016, blue: 0.020).opacity(0.64)
+        case .notice: Color(red: 0.022, green: 0.022, blue: 0.026).opacity(0.70)
         }
     }
 
@@ -50,10 +50,10 @@ enum GVMaterialRole {
 
     var nativeVeilOpacity: Double {
         switch self {
-        case .control: 0.55
-        case .rail: 0.60
-        case .deck: 0.66
-        case .notice: 0.70
+        case .control: 0.32
+        case .rail: 0.36
+        case .deck: 0.40
+        case .notice: 0.46
         }
     }
 }
@@ -151,7 +151,19 @@ private struct GVMaterialModifier: ViewModifier {
             if role == .control {
                 // Keep control labels above an opaque plate; nested native
                 // glass containers can composite their dark tint over text.
-                content.background { shape.erased.fill(role.opaqueFallback).overlay { ambientWash } }
+                // Slightly see-through, over a blur, so the plate reads as
+                // smoked glass rather than a solid black slab.
+                content.background {
+                    ZStack {
+                        if reduceTransparency {
+                            shape.erased.fill(role.opaqueFallback)
+                        } else {
+                            shape.erased.fill(.ultraThinMaterial)
+                            shape.erased.fill(role.opaqueFallback.opacity(0.74))
+                        }
+                    }
+                    .overlay { ambientWash }
+                }
             } else if #available(iOS 26.0, *), !reduceTransparency {
                 nativeMaterial(content: content)
             } else {

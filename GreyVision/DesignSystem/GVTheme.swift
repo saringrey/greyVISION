@@ -119,15 +119,15 @@ enum GVTheme {
     /// Three tiers, distilled. Charcoal plates separate groups without heavy
     /// outlines; only the armed tier carries a clear state edge.
     static var surfacePrimary: Color {
-        Color(red: 0.030, green: 0.030, blue: 0.034).opacity(0.90)
+        Color(red: 0.030, green: 0.030, blue: 0.034).opacity(0.74)
     }
 
     static var surfaceSecondary: Color {
-        Color(red: 0.024, green: 0.024, blue: 0.028).opacity(0.70)
+        Color(red: 0.024, green: 0.024, blue: 0.028).opacity(0.54)
     }
 
     static var surfaceArmed: Color {
-        Color(red: 0.045, green: 0.045, blue: 0.050).opacity(0.94)
+        Color(red: 0.045, green: 0.045, blue: 0.050).opacity(0.80)
     }
 
     /// Shared elevation tint so panels feel lit by the same source.

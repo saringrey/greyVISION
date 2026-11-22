@@ -52,7 +52,8 @@ final class GVSoundEngine {
             if isEnabled {
                 if wantsMenuMusic { startMenuMusic() }
             } else {
-                music?.pause()
+                music?.stop()
+                music = nil
                 stopStings()
             }
         }
@@ -67,7 +68,7 @@ final class GVSoundEngine {
     private let format: AVAudioFormat
     private var buffers: [Cue: AVAudioPCMBuffer] = [:]
     private var started = false
-    private var music: AVAudioPlayer?
+    private var music: GVSplashBed?
     private var stings: [String: AVAudioPlayer] = [:]
     private var wantsMenuMusic = false
 
@@ -295,49 +296,29 @@ final class GVSoundEngine {
         stings.removeAll()
     }
 
-    // MARK: - Menu music
+    // MARK: - Splash bed
 
-    /// Starts the looping splash bed (`gv_splash_loop.mp3`).
-    ///
-    /// Uses `AVAudioPlayer` rather than the cue engine: it decodes MP3, loops
-    /// natively and carries its own volume, none of which is worth rebuilding
-    /// on top of the PCM path used for the beeps.
+    /// Starts the splash's glitch bed: the opening of the glitch clip once,
+    /// then its sustained tail looping forever as a constant buzz. See
+    /// `GVSplashBed`.
     func startMenuMusic() {
         wantsMenuMusic = true
-        guard isEnabled else { return }
-
-        if let music {
-            if !music.isPlaying { music.play() }
-            return
-        }
-        guard let url = Bundle.main.url(forResource: "gv_splash_loop", withExtension: "mp3") else {
-            GVLog.audio.error("menu music missing from bundle")
-            return
-        }
+        guard isEnabled, music == nil else { return }
         configureSessionIfSafe()
-        do {
-            let player = try AVAudioPlayer(contentsOf: url)
-            player.numberOfLoops = -1
-            player.volume = musicVolume
-            player.prepareToPlay()
-            player.play()
-            music = player
-        } catch {
-            GVLog.audio.error("menu music failed: \(error.localizedDescription)")
+        guard let bed = GVSplashBed(volume: musicVolume) else {
+            GVLog.audio.error("splash bed unavailable")
+            return
         }
+        music = bed
     }
 
-    /// Fades out and releases the bed. Called when leaving the menu, so the
-    /// track never bleeds into the camera workspace.
+    /// Fades out and releases the bed. Called when leaving the splash, so the
+    /// sound never bleeds into the camera workspace.
     func stopMenuMusic(fadeDuration: TimeInterval = 0.6) {
         wantsMenuMusic = false
-        guard let player = music else { return }
+        guard let bed = music else { return }
         music = nil
-        player.setVolume(0, fadeDuration: fadeDuration)
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(fadeDuration))
-            player.stop()
-        }
+        bed.fadeOut(over: fadeDuration)
     }
 
     func shutdown() {
@@ -575,5 +556,70 @@ final class GVSoundEngine {
             cursor += frames
         }
         return buffer
+    }
+}
+
+// MARK: - Splash bed
+
+/// The splash's constant glitch noise.
+///
+/// Two PCM files cut from the supplied glitch clip: `gv_splash_intro.wav`
+/// is its attack, and `gv_splash_tail.wav` is the sustained buzz just before
+/// the clip decays, with its end crossfaded into its own start so it loops
+/// with no seam. Both go to one player node back to back (intro once, tail
+/// on `.loops`), which is sample-accurate; looping the original MP3 with
+/// `AVAudioPlayer` left the clip's silent head and fade-out in every cycle.
+@MainActor
+final class GVSplashBed {
+    private let engine = AVAudioEngine()
+    private let node = AVAudioPlayerNode()
+    private var fadeTask: Task<Void, Never>?
+
+    init?(volume: Float) {
+        guard
+            let introURL = Bundle.main.url(forResource: "gv_splash_intro", withExtension: "wav"),
+            let tailURL = Bundle.main.url(forResource: "gv_splash_tail", withExtension: "wav"),
+            let intro = try? AVAudioFile(forReading: introURL),
+            let tailFile = try? AVAudioFile(forReading: tailURL),
+            let tail = AVAudioPCMBuffer(pcmFormat: tailFile.processingFormat,
+                                        frameCapacity: AVAudioFrameCount(tailFile.length))
+        else { return nil }
+        do {
+            try tailFile.read(into: tail)
+        } catch {
+            return nil
+        }
+
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode, format: tail.format)
+        node.volume = volume
+        do {
+            try engine.start()
+        } catch {
+            GVLog.audio.error("splash bed engine failed: \(error.localizedDescription)")
+            return nil
+        }
+        node.scheduleFile(intro, at: nil, completionHandler: nil)
+        node.scheduleBuffer(tail, at: nil, options: .loops, completionHandler: nil)
+        node.play()
+    }
+
+    /// Ramps the bed to silence, then tears the engine down.
+    func fadeOut(over duration: TimeInterval) {
+        fadeTask?.cancel()
+        let steps = 12
+        let start = node.volume
+        fadeTask = Task { @MainActor [self] in
+            for step in 1...steps {
+                try? await Task.sleep(for: .seconds(duration / Double(steps)))
+                node.volume = start * Float(steps - step) / Float(steps)
+            }
+            stop()
+        }
+    }
+
+    func stop() {
+        node.stop()
+        engine.stop()
     }
 }

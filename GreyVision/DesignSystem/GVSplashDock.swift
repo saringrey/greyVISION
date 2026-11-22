@@ -98,8 +98,9 @@ struct GVSplashDockPlate<S: InsettableShape>: ViewModifier {
                 } else {
                     ZStack {
                         shape.fill(.ultraThinMaterial)
-                        // Near-black, neutral: the accent is the only colour.
-                        shape.fill(Color(red: 0.006, green: 0.006, blue: 0.008).opacity(0.90))
+                        // Smoked near-black, neutral: a little of the frame shows through,
+                        // and the accent is the only colour.
+                        shape.fill(Color(red: 0.006, green: 0.006, blue: 0.008).opacity(0.66))
                         GVXrayScanlines().clipShape(shape)
                     }
                 }

@@ -100,7 +100,7 @@ struct GVEffectDock: View {
             catalogueButton
         }
         .padding(5)
-        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous), tag: "EFFECTS")
+        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous))
         .accessibilityIdentifier("workspace.browser.categories")
     }
 
@@ -247,8 +247,7 @@ struct GVEffectDock: View {
         }
         .padding(.top, 8)
         .padding(.bottom, 8)
-        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous),
-                       tag: item.displayLabel)
+        .gvChromePlate(RoundedRectangle(cornerRadius: GVSplashDock.radius, style: .continuous))
     }
 
     /// Replace or stack, as one small switch on the strip it governs.

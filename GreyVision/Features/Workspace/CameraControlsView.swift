@@ -17,6 +17,16 @@ struct CameraControlsView: View {
 
     @State private var format: CaptureSetupDraft.Resolution = .ultraHD
     @State private var aspect: CaptureSetupDraft.AspectRatio = .native
+    @State private var frameRate: CaptureSetupDraft.FrameRate = .cinematic
+    @State private var codec: CaptureSetupDraft.VideoCodec = .hevc
+    /// Index into the stops below. 0 is always "auto".
+    @State private var biasIndex = 0
+    @State private var isoIndex = 0
+    @State private var whiteBalanceIndex = 0
+
+    private static let biasStops: [Double] = [0, 0.7, 1.3, -1.3, -0.7]
+    private static let isoStops: [Double] = [0, 100, 400, 1600]
+    private static let kelvinStops: [Int] = [0, 3200, 4300, 5600, 6500]
 
     var body: some View {
         let snapshot = cameraRuntime.snapshot
@@ -43,11 +53,62 @@ struct CameraControlsView: View {
             .accessibilityIdentifier("workspace.tool.flip")
 
             GVConsoleKey(symbol: snapshot.torchEnabled ? "bolt.fill" : "bolt",
-                         label: "Torch", active: snapshot.torchEnabled,
+                         label: "Flash", active: snapshot.torchEnabled,
                          enabled: snapshot.torchAvailable) {
                 cameraRuntime.pulseTorch()
             }
             .accessibilityIdentifier("workspace.tool.flash")
+        }
+
+        GVConsoleSection(label: "EXPOSURE") {
+            GVConsoleKey(symbol: "plusminus.circle",
+                         label: "Exposure",
+                         value: Self.biasLabel(Self.biasStops[biasIndex]),
+                         active: biasIndex != 0) {
+                biasIndex = (biasIndex + 1) % Self.biasStops.count
+                cameraRuntime.setExposureBias(Self.biasStops[biasIndex])
+                GVInteractionHaptics.select()
+            }
+            .accessibilityIdentifier("workspace.tool.exposure")
+
+            GVConsoleKey(symbol: "camera.metering.center.weighted",
+                         label: "ISO",
+                         value: isoIndex == 0 ? "AUTO" : "\(Int(Self.isoStops[isoIndex]))",
+                         active: isoIndex != 0) {
+                isoIndex = (isoIndex + 1) % Self.isoStops.count
+                if isoIndex == 0 {
+                    restoreAuto(keepWhiteBalance: true)
+                } else {
+                    cameraRuntime.setISO(Self.isoStops[isoIndex])
+                }
+                GVInteractionHaptics.select()
+            }
+            .accessibilityIdentifier("workspace.tool.iso")
+
+            GVConsoleKey(symbol: "thermometer.sun",
+                         label: "White Bal",
+                         value: whiteBalanceIndex == 0 ? "AUTO" : "\(Self.kelvinStops[whiteBalanceIndex])K",
+                         active: whiteBalanceIndex != 0) {
+                whiteBalanceIndex = (whiteBalanceIndex + 1) % Self.kelvinStops.count
+                if whiteBalanceIndex == 0 {
+                    restoreAuto(keepWhiteBalance: false)
+                } else {
+                    cameraRuntime.setWhiteBalanceKelvin(Self.kelvinStops[whiteBalanceIndex])
+                }
+                GVInteractionHaptics.select()
+            }
+            .accessibilityIdentifier("workspace.tool.whitebalance")
+
+            GVConsoleKey(symbol: "a.circle", label: "Auto", value: "RESET",
+                         enabled: biasIndex != 0 || isoIndex != 0 || whiteBalanceIndex != 0) {
+                biasIndex = 0
+                isoIndex = 0
+                whiteBalanceIndex = 0
+                cameraRuntime.setExposureBias(0)
+                cameraRuntime.resumeAutoExposure()
+                onNotice("Exposure back to auto")
+            }
+            .accessibilityIdentifier("workspace.tool.autoexposure")
         }
 
         GVConsoleSection(label: "FRAME") {
@@ -62,6 +123,18 @@ struct CameraControlsView: View {
             }
             .accessibilityIdentifier("workspace.tool.format")
 
+            GVConsoleKey(symbol: "speedometer", label: "Frame Rate", value: "\(frameRate.rawValue)") {
+                cycleFrameRate()
+                GVInteractionHaptics.select()
+            }
+            .accessibilityIdentifier("workspace.tool.framerate")
+
+            GVConsoleKey(symbol: "film", label: "Codec", value: codec.compactLabel) {
+                cycleCodec()
+                GVInteractionHaptics.select()
+            }
+            .accessibilityIdentifier("workspace.tool.codec")
+
             GVConsoleKey(symbol: aspectIcon, label: "Aspect", value: aspect.shortLabel) {
                 cycleAspect()
                 GVInteractionHaptics.select()
@@ -71,17 +144,72 @@ struct CameraControlsView: View {
         .onAppear {
             format = appModel.setup.resolution
             aspect = appModel.setup.aspectRatio
+            frameRate = appModel.setup.frameRate
+            codec = appModel.setup.videoCodec
         }
     }
 
     // MARK: - Format and aspect tools
 
     private func cycleResolution() {
+        guard formatChangeAllowed() else { return }
         let order: [CaptureSetupDraft.Resolution] = [.ultraHD, .fullHD, .hd720]
         let current = order.firstIndex(of: format) ?? 0
         let next = order[(current + 1) % order.count]
         format = next
         appModel.setup.resolution = next
+        appModel.restartEngine()
+    }
+
+    private func cycleFrameRate() {
+        guard formatChangeAllowed() else { return }
+        let order = CaptureSetupDraft.FrameRate.allCases
+        let current = order.firstIndex(of: frameRate) ?? 0
+        let next = order[(current + 1) % order.count]
+        frameRate = next
+        appModel.setup.frameRate = next
+        appModel.restartEngine()
+        onNotice(next.label)
+    }
+
+    private func cycleCodec() {
+        guard formatChangeAllowed() else { return }
+        let curated = CaptureSetupDraft.VideoCodec.curated.filter(\.isOperatingSystemAvailable)
+        let reported = cameraRuntime.snapshot.availableVideoCodecs.filter { curated.contains($0) }
+        let order = reported.isEmpty ? curated : reported
+        guard !order.isEmpty else { return }
+        let current = order.firstIndex(of: codec) ?? -1
+        let next = order[(current + 1) % order.count]
+        codec = next
+        appModel.setup.videoCodec = next
+        appModel.restartEngine()
+        onNotice("Codec \(next.compactLabel)")
+    }
+
+    /// Format changes restart the capture session, which would end a take.
+    private func formatChangeAllowed() -> Bool {
+        guard !cameraRuntime.isRecording else {
+            onNotice("Locked during a take")
+            return false
+        }
+        return true
+    }
+
+    /// Hands metering back to the device, then re-applies whichever manual
+    /// value the operator is keeping.
+    private func restoreAuto(keepWhiteBalance: Bool) {
+        cameraRuntime.resumeAutoExposure()
+        if keepWhiteBalance, whiteBalanceIndex != 0 {
+            cameraRuntime.setWhiteBalanceKelvin(Self.kelvinStops[whiteBalanceIndex])
+        }
+        if !keepWhiteBalance, isoIndex != 0 {
+            cameraRuntime.setISO(Self.isoStops[isoIndex])
+        }
+        cameraRuntime.setExposureBias(Self.biasStops[biasIndex])
+    }
+
+    private static func biasLabel(_ bias: Double) -> String {
+        bias == 0 ? "0 EV" : String(format: "%+.1f", bias)
     }
 
     private func cycleAspect() {
