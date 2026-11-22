@@ -36,6 +36,7 @@ struct GVCaptureHidden<Content: View>: View {
 private struct GVSecureHost: UIViewRepresentable {
     let rootView: AnyView
 
+    @MainActor
     final class Coordinator {
         let host: UIHostingController<AnyView>
         init(rootView: AnyView) {
