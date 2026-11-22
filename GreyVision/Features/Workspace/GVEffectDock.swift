@@ -461,18 +461,19 @@ struct GVEffectDock: View {
 
     // MARK: - Actions
 
-    /// Applies and keeps the dock open: the picture is still on screen above
-    /// it, so the next tap can compare straight away.
+    /// Applies the effect, then closes the dock so its adjust pane opens
+    /// straight away in the dock's place.
     private func select(_ effect: WorkspaceAdjustableEffect) {
         appModel.deactivateDepthMode()
         appModel.deactivateObjectMode()
         armAudioIfNeeded(for: effect)
         editor.applyFromBrowser(effect)
+        GVInteractionHaptics.select()
         if editor.selectedEffect != nil {
             preferences.noteEffectUsed((editor.selectedEffect ?? effect).rawValue)
             decay.fire(.effectActivated)
+            onClose()
         }
-        GVInteractionHaptics.select()
     }
 
     private func selectDepth(_ mode: DepthEffectMode) {

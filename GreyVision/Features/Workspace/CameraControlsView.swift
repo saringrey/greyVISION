@@ -32,7 +32,7 @@ struct CameraControlsView: View {
         let snapshot = cameraRuntime.snapshot
         let stops = snapshot.lensZoomFactors
 
-        GVConsoleSection(label: "LENS") {
+        GVConsoleSection(label: "CAMERA") {
             GVConsoleKey(symbol: "camera.aperture",
                          label: "Lens",
                          value: stops.isEmpty ? "1×" : snapshot.lensLabel(for: stops[snapshot.currentLensIndex]),
@@ -58,6 +58,17 @@ struct CameraControlsView: View {
                 cameraRuntime.pulseTorch()
             }
             .accessibilityIdentifier("workspace.tool.flash")
+
+            GVConsoleKey(symbol: "squareshape.split.3x3", label: "Grid", active: preferences.gridEnabled) {
+                preferences.gridEnabled.toggle()
+            }
+            .accessibilityIdentifier("workspace.tool.grid")
+
+            GVConsoleKey(symbol: aspectIcon, label: "Aspect", value: aspect.shortLabel) {
+                cycleAspect()
+                GVInteractionHaptics.select()
+            }
+            .accessibilityIdentifier("workspace.tool.aspect")
         }
 
         GVConsoleSection(label: "EXPOSURE") {
@@ -111,12 +122,7 @@ struct CameraControlsView: View {
             .accessibilityIdentifier("workspace.tool.autoexposure")
         }
 
-        GVConsoleSection(label: "FRAME") {
-            GVConsoleKey(symbol: "squareshape.split.3x3", label: "Grid", active: preferences.gridEnabled) {
-                preferences.gridEnabled.toggle()
-            }
-            .accessibilityIdentifier("workspace.tool.grid")
-
+        GVConsoleSection(label: "FORMAT") {
             GVConsoleKey(symbol: "4k.tv", label: "Format", value: format.rawValue) {
                 cycleResolution()
                 GVInteractionHaptics.select()
@@ -134,12 +140,6 @@ struct CameraControlsView: View {
                 GVInteractionHaptics.select()
             }
             .accessibilityIdentifier("workspace.tool.codec")
-
-            GVConsoleKey(symbol: aspectIcon, label: "Aspect", value: aspect.shortLabel) {
-                cycleAspect()
-                GVInteractionHaptics.select()
-            }
-            .accessibilityIdentifier("workspace.tool.aspect")
         }
         .onAppear {
             format = appModel.setup.resolution

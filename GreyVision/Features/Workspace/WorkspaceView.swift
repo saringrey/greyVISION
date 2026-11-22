@@ -143,6 +143,7 @@ struct WorkspaceView: View {
 
     /// A new subject to adjust brings the pane back even if it was hidden.
     private func revealAdjustPane() {
+        adjustRevealSignal &+= 1
         guard isAdjustPaneHidden else { return }
         withAnimation(GVMotion.resolved(GVMotion.panel, reduceMotion: reduceMotion)) {
             isAdjustPaneHidden = false
@@ -204,7 +205,7 @@ struct WorkspaceView: View {
             let bleedLeading = isLandscape ? geometry.safeAreaInsets.leading : 0
             let bleedTrailing = isLandscape ? geometry.safeAreaInsets.trailing : 0
             let topDeckMaxHeight = min(
-                geometry.size.height * (isLandscape ? 0.38 : 0.48),
+                geometry.size.height * (isLandscape ? 0.38 : 0.58),
                 max(44, geometry.size.height - dockMaxHeight - fixedChromeHeight)
             )
             // A collection plate replaces the effect browser, so it gets the
@@ -364,6 +365,8 @@ struct WorkspaceView: View {
                             maximumHeight: dockMaxHeight,
                             revealSignal: adjustRevealSignal
                         )
+                        // On the glass, never in a take or a screenshot.
+                        .gvHiddenFromCapture()
                         .frame(height: isDeckCollapsed ? 0 : nil, alignment: .bottom)
                         .clipped()
                         // The capture pill's inset, so the deck and the pill
@@ -384,6 +387,7 @@ struct WorkspaceView: View {
                                 },
                                 onClose: { effectDockPresented = false }
                             )
+                            .gvHiddenFromCapture()
                             .padding(.horizontal, 18)
                             .padding(.top, 6)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -393,7 +397,9 @@ struct WorkspaceView: View {
                             .padding(.horizontal, 22)
                             // Room for the plate's tracker tag above it.
                             .padding(.top, 18)
-                            .padding(.bottom, 14)
+                            // Lifted clear of the home indicator and the
+                            // display's bottom corners.
+                            .padding(.bottom, 26)
                     }
                     .overlay(alignment: .top) {
                         GVToastCapsule(
@@ -655,6 +661,10 @@ struct WorkspaceView: View {
         .task { await runEffectAuditIfRequested() }
         .onChange(of: effectEditor.selectedEffect) { _, effect in
             if effect != nil { revealAdjustPane() }
+        }
+        // Closing the effect dock after a pick lands on the adjust pane.
+        .onChange(of: effectDockPresented) { _, presented in
+            if !presented, effectEditor.selectedEffect != nil { revealAdjustPane() }
         }
         .onChange(of: cameraRuntime.screenshotMessage) { _, message in
             updateShutter(for: message)
@@ -1443,7 +1453,7 @@ private extension WorkspaceView {
                 renderQualityKey
             }
 
-            GVConsoleSection(label: "MAC LINK") {
+            GVConsoleSection(label: "SYSTEM") {
                 GVConsoleKey(symbol: broadcastRuntime.isArmed
                                 ? (broadcastRuntime.isConnected ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right")
                                 : "display.and.arrow.down",
@@ -1468,9 +1478,6 @@ private extension WorkspaceView {
 
                 GVConsoleKey(symbol: "qrcode", label: "Pair Mac") { showPairingSheet = true }
                     .accessibilityIdentifier("workspace.broadcast.pair")
-            }
-
-            GVConsoleSection(label: "APP") {
                 GVConsoleKey(symbol: "lock", label: "Lock") { showControlLockSheet = true }
                     .accessibilityIdentifier("workspace.control-lock")
 
